@@ -1,0 +1,6 @@
+.git
+.env
+vendor
+storage/establishment-photos/*
+*.log
+

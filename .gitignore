@@ -1,0 +1,8 @@
+/.env
+/vendor/
+/storage/establishment-photos/*
+!/storage/establishment-photos/.gitkeep
+/.idea/
+/.vscode/
+*.log
+

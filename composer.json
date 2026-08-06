@@ -1,0 +1,22 @@
+{
+  "name": "chambre-rose/api",
+  "description": "PHP API for Chambre Rose",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": "^8.2",
+    "ext-fileinfo": "*",
+    "ext-json": "*",
+    "ext-pdo": "*",
+    "phpmailer/phpmailer": "^6.9"
+  },
+  "autoload": {
+    "psr-4": {
+      "ChambreRose\\": "src/"
+    }
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "sort-packages": true
+  }
+}
