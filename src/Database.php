@@ -150,6 +150,9 @@ final class DatabaseMigrator
             ['version' => 'php-' . $suffix . '-6-account-email-newsletter',
                 'file' => dirname(__DIR__) . '/database/migrations/006-account-email-newsletter.' . $suffix . '.sql',
                 'base' => false, 'ignoreDuplicateIndex' => false],
+            ['version' => 'php-' . $suffix . '-7-account-review',
+                'file' => dirname(__DIR__) . '/database/migrations/007-account-review.' . $suffix . '.sql',
+                'base' => false, 'ignoreDuplicateIndex' => false],
         ];
     }
 
@@ -255,4 +258,3 @@ final class DatabaseMigrator
         }
     }
 }
-

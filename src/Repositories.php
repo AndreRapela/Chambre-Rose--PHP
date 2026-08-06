@@ -255,7 +255,7 @@ final class UserRepository
 {
     private const SELECT_COLUMNS = <<<'SQL'
         users.id, email, password_hash, first_name, last_name, phone, address, city, country,
-        postal_code, role, vip_active, vip_since, vip_until, created_at, updated_at,
+        postal_code, role, account_status, vip_active, vip_since, vip_until, created_at, updated_at,
         EXISTS (SELECT 1 FROM user_establishment_photos WHERE user_establishment_photos.user_id=users.id)
           AS has_establishment_photo
         SQL;
@@ -298,9 +298,9 @@ final class UserRepository
     {
         $sql = <<<'SQL'
             INSERT INTO users (email,password_hash,first_name,last_name,phone,address,city,country,postal_code,
-              role,vip_active,created_at,updated_at)
+              role,account_status,vip_active,created_at,updated_at)
             VALUES (:email,:password_hash,:first_name,:last_name,:phone,:address,:city,:country,:postal_code,
-              :role,FALSE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+              :role,:account_status,FALSE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
             SQL;
         if (!$this->isMySql()) {
             $sql .= ' RETURNING id';
@@ -309,7 +309,8 @@ final class UserRepository
         $statement->execute(['email'=>strtolower(trim($user['email'])),'password_hash'=>$passwordHash,
             'first_name'=>trim($user['firstName']),'last_name'=>trim($user['lastName']),
             'phone'=>trim($user['phone']),'address'=>trim($user['address']),'city'=>trim($user['city']),
-            'country'=>trim($user['country']),'postal_code'=>trim($user['postalCode']),'role'=>strtoupper($role)]);
+            'country'=>trim($user['country']),'postal_code'=>trim($user['postalCode']),'role'=>strtoupper($role),
+            'account_status'=>strtoupper($role) === 'ADMIN' ? 'APPROVED' : 'PENDING']);
         $id = $this->isMySql() ? (int) $this->pdo->lastInsertId() : (int) $statement->fetchColumn();
         return $this->find($id) ?? throw new ApiException(500, 'Unable to create user.');
     }
@@ -416,6 +417,16 @@ final class UserRepository
         return $this->find($id) ?? throw new ApiException(404, 'User not found.');
     }
 
+    public function setAccountStatus(int $id, string $status): array
+    {
+        $statement = $this->pdo->prepare('UPDATE users SET account_status=:status,updated_at=CURRENT_TIMESTAMP WHERE id=:id');
+        $statement->execute(['id' => $id, 'status' => strtoupper($status)]);
+        if ($statement->rowCount() === 0 && $this->find($id) === null) {
+            throw new ApiException(404, 'User not found.');
+        }
+        return $this->find($id) ?? throw new ApiException(404, 'User not found.');
+    }
+
     /** @param array<string, mixed> $row @return array<string, mixed> */
     private static function mapUser(array $row): array
     {
@@ -423,6 +434,7 @@ final class UserRepository
             'firstName'=>(string)$row['first_name'],'lastName'=>(string)$row['last_name'],'phone'=>(string)$row['phone'],
             'address'=>(string)$row['address'],'city'=>(string)$row['city'],'country'=>(string)$row['country'],
             'postalCode'=>(string)$row['postal_code'],'role'=>(string)$row['role'],
+            'accountStatus'=>(string)$row['account_status'],
             'vipActive'=>self::toBool($row['vip_active']),'vipSince'=>self::time($row['vip_since']),
             'vipUntil'=>self::time($row['vip_until']),'createdAt'=>self::time($row['created_at']),
             'updatedAt'=>self::time($row['updated_at']),
@@ -448,4 +460,3 @@ final class UserRepository
         return $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
     }
 }
-

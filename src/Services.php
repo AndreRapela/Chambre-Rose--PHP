@@ -28,6 +28,12 @@ final class AuthService
         if ($user === null || !password_verify($data['password'], $user['passwordHash'])) {
             throw new ApiException(401, 'Invalid email or password.');
         }
+        if ($user['accountStatus'] === 'PENDING') {
+            throw new ApiException(403, 'Your registration is still under review. Our team will respond within 24 hours.');
+        }
+        if ($user['accountStatus'] === 'REJECTED') {
+            throw new ApiException(403, 'Your registration was not approved. Please contact Chambre Rose for assistance.');
+        }
         return $this->authenticationResponse($user);
     }
 
@@ -63,7 +69,8 @@ final class AuthService
         } catch (Throwable $exception) {
             error_log('[Chambre Rose API] Registration confirmation email failed: ' . $exception->getMessage());
         }
-        return $this->authenticationResponse($user);
+        return ['message'=>'Registration received. Our team will review your details and respond by email within 24 hours.',
+            'reviewStatus'=>'PENDING','estimatedReviewHours'=>24];
     }
 
     /** @return array<string, mixed> */
@@ -105,6 +112,7 @@ final class AuthService
         return ['id'=>$user['id'],'firstName'=>$user['firstName'],'lastName'=>$user['lastName'],
             'email'=>$user['email'],'phone'=>$user['phone'],'address'=>$user['address'],'city'=>$user['city'],
             'country'=>$user['country'],'postalCode'=>$user['postalCode'],'role'=>$user['role'],
+            'accountStatus'=>$user['accountStatus'],
             'vipActive'=>$user['vipActive'],'vipSince'=>$user['vipSince'],'vipUntil'=>$user['vipUntil'],
             'establishmentPhotoUrl'=>$user['establishmentPhotoUrl'] ?? null];
     }
@@ -271,7 +279,7 @@ final class ProductService
 
 final class AdminUserService
 {
-    public function __construct(private readonly UserRepository $users)
+    public function __construct(private readonly UserRepository $users, private readonly Mailer $mailer)
     {
     }
 
@@ -284,7 +292,35 @@ final class AdminUserService
 
     public function updateVip(int $id, bool $active): array
     {
+        $user = $this->users->find($id);
+        if ($user === null) {
+            throw new ApiException(404, 'User not found.');
+        }
+        if ($active && $user['accountStatus'] !== 'APPROVED') {
+            throw new ApiException(409, 'Only approved accounts can receive VIP access.');
+        }
         return self::summary($this->users->setVip($id, $active));
+    }
+
+    public function updateAccountStatus(int $id, string $status): array
+    {
+        $current = $this->users->find($id);
+        if ($current === null) {
+            throw new ApiException(404, 'User not found.');
+        }
+        if (strtoupper($current['role']) === 'ADMIN') {
+            throw new ApiException(409, 'Administrator accounts cannot be reviewed here.');
+        }
+        $updated = $this->users->setAccountStatus($id, $status);
+        if ($current['accountStatus'] !== $updated['accountStatus']) {
+            try {
+                $this->mailer->sendAccountReviewDecision($updated['email'], $updated['firstName'],
+                    $updated['accountStatus']);
+            } catch (Throwable $exception) {
+                error_log('[Chambre Rose API] Account review email failed: ' . $exception->getMessage());
+            }
+        }
+        return self::summary($updated);
     }
 
     private static function clean(?string $value): ?string
@@ -298,8 +334,8 @@ final class AdminUserService
     {
         return ['id'=>$user['id'],'firstName'=>$user['firstName'],'lastName'=>$user['lastName'],
             'email'=>$user['email'],'role'=>$user['role'],'vipActive'=>$user['vipActive'],
+            'accountStatus'=>$user['accountStatus'],
             'vipSince'=>$user['vipSince'],'vipUntil'=>$user['vipUntil'],'createdAt'=>$user['createdAt'],
             'updatedAt'=>$user['updatedAt'],'establishmentPhotoUrl'=>$user['establishmentPhotoUrl'] ?? null];
     }
 }
-

@@ -16,15 +16,45 @@ final class Mailer
     {
         $name = self::escape($firstName);
         $body = $this->layout(
-            'Welcome to Chambre Rose',
-            "<p>Hello {$name},</p><p>Your Chambre Rose account has been created successfully.</p>"
-            . '<p>You can now sign in to manage your profile and access your private area.</p>'
-            . $this->button($this->frontendUrl() . '/auth/login', 'Sign in')
+            'Registration received',
+            "<p>Hello {$name},</p><p>We have received your Chambre Rose registration.</p>"
+            . '<p>Our team will now review your information and establishment photo. Your account is not active yet.</p>'
+            . '<p>You will receive our decision by email within 24 hours. Sign-in will become available after approval.</p>'
+            . $this->button($this->frontendUrl(), 'Visit Chambre Rose')
             . '<p>If you did not create this account, please contact Chambre Rose.</p>'
         );
-        $this->send($email, 'Welcome to Chambre Rose', $body,
-            "Hello {$firstName},\n\nYour Chambre Rose account has been created successfully.\n\n"
-            . 'Sign in: ' . $this->frontendUrl() . '/auth/login');
+        $this->send($email, 'We received your Chambre Rose registration', $body,
+            "Hello {$firstName},\n\nWe received your Chambre Rose registration. Our team will review your "
+            . "information and establishment photo.\n\nYou will receive our decision by email within 24 hours. "
+            . "Sign-in will become available after approval.\n\n" . $this->frontendUrl());
+    }
+
+    public function sendAccountReviewDecision(string $email, string $firstName, string $status): void
+    {
+        $name = self::escape($firstName);
+        if ($status === 'APPROVED') {
+            $body = $this->layout(
+                'Your account has been approved',
+                "<p>Hello {$name},</p><p>Your Chambre Rose registration has been approved.</p>"
+                . '<p>You can now sign in and access your private area.</p>'
+                . $this->button($this->frontendUrl() . '/auth/login', 'Sign in')
+            );
+            $this->send($email, 'Your Chambre Rose account has been approved', $body,
+                "Hello {$firstName},\n\nYour Chambre Rose registration has been approved.\n\nSign in: "
+                . $this->frontendUrl() . '/auth/login');
+            return;
+        }
+
+        $body = $this->layout(
+            'Registration review completed',
+            "<p>Hello {$name},</p><p>We have completed the review of your Chambre Rose registration.</p>"
+            . '<p>We are unable to approve the account at this time. If you believe this is a mistake or would like '
+            . 'more information, please contact the Chambre Rose team.</p>'
+            . $this->button($this->frontendUrl() . '/contact', 'Contact Chambre Rose')
+        );
+        $this->send($email, 'Update on your Chambre Rose registration', $body,
+            "Hello {$firstName},\n\nWe completed the review of your Chambre Rose registration and are unable "
+            . "to approve the account at this time.\n\nContact us: " . $this->frontendUrl() . '/contact');
     }
 
     public function sendPasswordReset(string $email, string $firstName, string $token): void

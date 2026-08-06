@@ -112,6 +112,17 @@ final class Validator
         return $data['vipActive'];
     }
 
+    /** @param array<string, mixed> $data */
+    public static function accountStatus(array $data): string
+    {
+        $status = strtoupper(trim((string) ($data['accountStatus'] ?? '')));
+        if (!in_array($status, ['APPROVED', 'REJECTED'], true)) {
+            throw new ApiException(400, 'Invalid request data.',
+                ['accountStatus' => 'must be APPROVED or REJECTED']);
+        }
+        return $status;
+    }
+
     /** @param array<string, mixed> $data @param array<string, string> $errors */
     private static function requiredString(array $data, string $field, int $min, int $max, array &$errors): void
     {
@@ -208,4 +219,3 @@ final class Validator
         return $value === null || $value === '' ? null : (int) $value;
     }
 }
-

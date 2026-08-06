@@ -5,8 +5,9 @@ Production-oriented PHP 8.2+ API for [Chambre Rose](https://www.chambre-rose.com
 ## Features
 
 - JWT authentication and role-based administrator routes
-- Customer registration with establishment photo upload
-- English registration confirmation email
+- Customer registration with establishment photo upload and manual account review
+- English registration-received email with a 24-hour review window
+- Approval or rejection email sent after the admin decision
 - Secure, single-use password reset links with a configurable expiry
 - Idempotent newsletter subscription and English confirmation email
 - Product CRUD, product images, categories and purchase counters
@@ -67,6 +68,7 @@ For authenticated SMTP, set `MAIL_TRANSPORT=smtp` and configure `SMTP_HOST`, `SM
 | `POST` | `/api/auth/reset-password` | Consume a reset token |
 | `GET/PUT` | `/api/auth/me` | Read or update the current profile |
 | `POST` | `/api/newsletter/subscribe` | Subscribe an email address |
+| `PATCH` | `/api/admin/users/{id}/status` | Approve or reject a pending account (admin) |
 | `GET` | `/api/products` | List products |
 | `GET` | `/api/products/{id}` | Product details |
 | `POST/PUT/DELETE` | `/api/products...` | Administrator product management |
@@ -90,4 +92,3 @@ Point the web root to `public/`, keep `.env` outside version control, make `stor
 - `.env`, `vendor/`, uploads and logs are ignored by Git.
 - Public Supabase keys may be used by browser applications, but the Supabase secret/service key must remain server-side.
 - Rotate any credential that has been shared outside the server's secret store.
-

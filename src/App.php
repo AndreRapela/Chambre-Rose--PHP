@@ -174,7 +174,7 @@ final class App
 
         if ($method === 'GET' && $path === '/api/admin/users') {
             $this->requireAdmin($request);
-            $service = new AdminUserService($this->users);
+            $service = new AdminUserService($this->users, $this->mailer);
             return Response::json($service->list(self::queryString($request, 'email'),
                 self::queryString($request, 'name'), self::queryString($request, 'sort') ?? 'newest'),
                 200, self::noStore());
@@ -182,8 +182,14 @@ final class App
         if ($method === 'PATCH' && preg_match('#^/api/admin/users/(\d+)/vip$#', $path, $match)) {
             $this->requireAdmin($request);
             $this->requireJson($request);
-            return Response::json((new AdminUserService($this->users))->updateVip((int)$match[1],
+            return Response::json((new AdminUserService($this->users, $this->mailer))->updateVip((int)$match[1],
                 Validator::vipActive($request->json())), 200, self::noStore());
+        }
+        if ($method === 'PATCH' && preg_match('#^/api/admin/users/(\d+)/status$#', $path, $match)) {
+            $this->requireAdmin($request);
+            $this->requireJson($request);
+            return Response::json((new AdminUserService($this->users, $this->mailer))->updateAccountStatus(
+                (int)$match[1], Validator::accountStatus($request->json())), 200, self::noStore());
         }
         throw new ApiException(404, 'Endpoint not found.');
     }
@@ -314,4 +320,3 @@ final class App
         return is_scalar($value) ? (string)$value : null;
     }
 }
-
