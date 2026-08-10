@@ -18,15 +18,16 @@ final class Mailer
         $body = $this->layout(
             'Registration received',
             "<p>Hello {$name},</p><p>We have received your Chambre Rose registration.</p>"
-            . '<p>Our team will now review your information and establishment photo. Your account is not active yet.</p>'
-            . '<p>You will receive our decision by email within 24 hours. Sign-in will become available after approval.</p>'
+            . '<p>Our team will now review your information, establishment photo and store. Your account is not active yet.</p>'
+            . '<p>If approved, your store will be published on Chambre Rose within 24 hours. We will send the decision by email, and sign-in will become available after approval.</p>'
             . $this->button($this->frontendUrl(), 'Visit Chambre Rose')
             . '<p>If you did not create this account, please contact Chambre Rose.</p>'
         );
         $this->send($email, 'We received your Chambre Rose registration', $body,
             "Hello {$firstName},\n\nWe received your Chambre Rose registration. Our team will review your "
-            . "information and establishment photo.\n\nYou will receive our decision by email within 24 hours. "
-            . "Sign-in will become available after approval.\n\n" . $this->frontendUrl());
+            . "information, establishment photo and store.\n\nIf approved, your store will be published on Chambre Rose "
+            . "within 24 hours. We will send the decision by email, and sign-in will become available after approval.\n\n"
+            . $this->frontendUrl());
     }
 
     public function sendAccountReviewDecision(string $email, string $firstName, string $status): void
