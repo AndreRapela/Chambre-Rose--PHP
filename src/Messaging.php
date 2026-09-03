@@ -4,303 +4,293 @@ declare(strict_types=1);
 
 namespace ChambreRose;
 
-use DateTimeImmutable;
-use DateTimeZone;
 use PDO;
-use PHPMailer\PHPMailer\PHPMailer;
-use Throwable;
 
-final class Mailer
-{
-    public function sendRegistrationConfirmation(string $email, string $firstName): void
-    {
-        $name = self::escape($firstName);
-        $body = $this->layout(
-            'Registration received',
-            "<p>Hello {$name},</p><p>We have received your Chambre Rose registration.</p>"
-            . '<p>Our team will now review your information, establishment photo and store. Your account is not active yet.</p>'
-            . '<p>If approved, your store will be published on Chambre Rose within 24 hours. We will send the decision by email, and sign-in will become available after approval.</p>'
-            . $this->button($this->frontendUrl(), 'Visit Chambre Rose')
-            . '<p>If you did not create this account, please contact Chambre Rose.</p>'
-        );
-        $this->send($email, 'We received your Chambre Rose registration', $body,
-            "Hello {$firstName},\n\nWe received your Chambre Rose registration. Our team will review your "
-            . "information, establishment photo and store.\n\nIf approved, your store will be published on Chambre Rose "
-            . "within 24 hours. We will send the decision by email, and sign-in will become available after approval.\n\n"
-            . $this->frontendUrl());
-    }
-
-    public function sendAccountReviewDecision(string $email, string $firstName, string $status): void
-    {
-        $name = self::escape($firstName);
-        if ($status === 'APPROVED') {
-            $body = $this->layout(
-                'Your account has been approved',
-                "<p>Hello {$name},</p><p>Your Chambre Rose registration has been approved.</p>"
-                . '<p>You can now sign in and access your private area.</p>'
-                . $this->button($this->frontendUrl() . '/auth/login', 'Sign in')
-            );
-            $this->send($email, 'Your Chambre Rose account has been approved', $body,
-                "Hello {$firstName},\n\nYour Chambre Rose registration has been approved.\n\nSign in: "
-                . $this->frontendUrl() . '/auth/login');
-            return;
-        }
-
-        $body = $this->layout(
-            'Registration review completed',
-            "<p>Hello {$name},</p><p>We have completed the review of your Chambre Rose registration.</p>"
-            . '<p>We are unable to approve the account at this time. If you believe this is a mistake or would like '
-            . 'more information, please contact the Chambre Rose team.</p>'
-            . $this->button($this->frontendUrl() . '/contact', 'Contact Chambre Rose')
-        );
-        $this->send($email, 'Update on your Chambre Rose registration', $body,
-            "Hello {$firstName},\n\nWe completed the review of your Chambre Rose registration and are unable "
-            . "to approve the account at this time.\n\nContact us: " . $this->frontendUrl() . '/contact');
-    }
-
-    public function sendPasswordReset(string $email, string $firstName, string $token): void
-    {
-        $url = $this->frontendUrl() . '/auth/reset-password?token=' . rawurlencode($token);
-        $minutes = max(5, Config::int('PASSWORD_RESET_TTL_MINUTES', 30));
-        $name = self::escape($firstName);
-        $body = $this->layout(
-            'Reset your password',
-            "<p>Hello {$name},</p><p>We received a request to reset your Chambre Rose password.</p>"
-            . $this->button($url, 'Reset password')
-            . "<p>This link expires in {$minutes} minutes and can only be used once.</p>"
-            . '<p>If you did not request a password reset, you can safely ignore this email.</p>'
-        );
-        $this->send($email, 'Reset your Chambre Rose password', $body,
-            "Hello {$firstName},\n\nReset your password: {$url}\n\nThis link expires in {$minutes} minutes."
-        );
-    }
-
-    public function sendNewsletterConfirmation(string $email): void
-    {
-        $body = $this->layout(
-            'You are on the list',
-            '<p>Thank you for subscribing to the Chambre Rose newsletter.</p>'
-            . '<p>You will receive selected news, offers and inspiration from Chambre Rose.</p>'
-            . $this->button($this->frontendUrl(), 'Visit Chambre Rose')
-        );
-        $this->send($email, 'Chambre Rose newsletter subscription', $body,
-            "Thank you for subscribing to the Chambre Rose newsletter.\n\n" . $this->frontendUrl());
-    }
-
-    private function send(string $recipient, string $subject, string $html, string $text): void
-    {
-        $transport = strtolower(Config::get('MAIL_TRANSPORT', 'mail') ?? 'mail');
-        if ($transport === 'mail') {
-            $fromAddress = Config::get('MAIL_FROM_ADDRESS', 'no-reply@chambre-rose.com') ?? 'no-reply@chambre-rose.com';
-            $fromName = Config::get('MAIL_FROM_NAME', 'Chambre Rose') ?? 'Chambre Rose';
-            $headers = [
-                'MIME-Version: 1.0',
-                'Content-Type: text/html; charset=UTF-8',
-                'From: ' . self::header($fromName) . ' <' . self::header($fromAddress) . '>',
-            ];
-            if (!mail($recipient, $subject, $html, implode("\r\n", $headers))) {
-                throw new \RuntimeException('The email transport rejected the message.');
-            }
-            return;
-        }
-        if ($transport !== 'smtp') {
-            throw new \RuntimeException('MAIL_TRANSPORT must be smtp or mail.');
-        }
-        if (!class_exists(PHPMailer::class)) {
-            throw new \RuntimeException('PHPMailer is not installed. Run composer install.');
-        }
-        $mail = new PHPMailer(true);
-        $mail->isSMTP();
-        $mail->Host = Config::get('SMTP_HOST', '') ?? '';
-        $mail->Port = Config::int('SMTP_PORT', 587);
-        $mail->SMTPAuth = Config::bool('SMTP_AUTH', true);
-        $mail->Username = Config::get('SMTP_USERNAME', '') ?? '';
-        $mail->Password = Config::get('SMTP_PASSWORD', '') ?? '';
-        $encryption = strtolower(Config::get('SMTP_ENCRYPTION', 'tls') ?? 'tls');
-        if (in_array($encryption, ['tls', 'ssl', 'smtps'], true)) {
-            $mail->SMTPSecure = $encryption === 'tls' ? PHPMailer::ENCRYPTION_STARTTLS : PHPMailer::ENCRYPTION_SMTPS;
-        }
-        $mail->CharSet = 'UTF-8';
-        $mail->setFrom(Config::get('MAIL_FROM_ADDRESS', 'no-reply@chambre-rose.com') ?? 'no-reply@chambre-rose.com',
-            Config::get('MAIL_FROM_NAME', 'Chambre Rose') ?? 'Chambre Rose');
-        $mail->addAddress($recipient);
-        $mail->isHTML(true);
-        $mail->Subject = $subject;
-        $mail->Body = $html;
-        $mail->AltBody = $text;
-        $mail->send();
-    }
-
-    private function layout(string $title, string $content): string
-    {
-        $safeTitle = self::escape($title);
-        return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
-            . 'content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#f8f1f4;'
-            . 'font-family:Arial,sans-serif;color:#35272e"><table role="presentation" width="100%" cellspacing="0" '
-            . 'cellpadding="0"><tr><td align="center" style="padding:32px 16px"><table role="presentation" width="100%" '
-            . 'cellspacing="0" cellpadding="0" style="max-width:600px;background:#fff;border-radius:16px;overflow:hidden">'
-            . '<tr><td style="background:#7d294b;color:#fff;padding:26px 32px;font-family:Georgia,serif;font-size:26px">'
-            . 'Chambre Rose</td></tr><tr><td style="padding:32px;line-height:1.65"><h1 style="font-family:Georgia,serif;'
-            . 'font-size:25px;margin:0 0 20px;color:#7d294b">' . $safeTitle . '</h1>' . $content
-            . '<p style="margin-top:28px">Chambre Rose</p></td></tr></table></td></tr></table></body></html>';
-    }
-
-    private function button(string $url, string $label): string
-    {
-        return '<p style="margin:28px 0"><a href="' . self::escape($url) . '" style="display:inline-block;'
-            . 'background:#7d294b;color:#fff;text-decoration:none;padding:13px 22px;border-radius:999px;font-weight:bold">'
-            . self::escape($label) . '</a></p>';
-    }
-
-    private function frontendUrl(): string
-    {
-        return rtrim(Config::get('APP_FRONTEND_URL', 'https://www.chambre-rose.com') ?? 'https://www.chambre-rose.com', '/');
-    }
-
-    private static function escape(string $value): string
-    {
-        return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    }
-
-    private static function header(string $value): string
-    {
-        return trim(str_replace(["\r", "\n"], '', $value));
-    }
-}
-
-final class PasswordResetRepository
+final class MessagingRepository
 {
     public function __construct(private readonly PDO $pdo)
     {
     }
 
-    public function issue(int $userId, int $ttlMinutes): string
+    public function conversation(int $userId, int $otherId): array
     {
-        $token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
-        $hash = hash('sha256', $token);
-        $expiresAt = (new DateTimeImmutable('now', new DateTimeZone('UTC')))
-            ->modify('+' . max(5, $ttlMinutes) . ' minutes')->format('Y-m-d H:i:s.u');
-        $this->pdo->beginTransaction();
-        try {
-            $delete = $this->pdo->prepare('DELETE FROM password_reset_tokens WHERE user_id=:user_id AND used_at IS NULL');
-            $delete->execute(['user_id' => $userId]);
-            $insert = $this->pdo->prepare('INSERT INTO password_reset_tokens '
-                . '(user_id,token_hash,expires_at,created_at) VALUES (:user_id,:token_hash,:expires_at,CURRENT_TIMESTAMP)');
-            $insert->execute(['user_id' => $userId, 'token_hash' => $hash, 'expires_at' => $expiresAt]);
-            $this->pdo->commit();
-        } catch (Throwable $exception) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-            throw $exception;
+        if ($userId === $otherId) {
+            throw new ApiException(400, 'A conversation requires another user.');
         }
-        return $token;
-    }
-
-    /** @param callable(int): void $updatePassword */
-    public function consume(string $token, callable $updatePassword): void
-    {
-        $hash = hash('sha256', $token);
-        $this->pdo->beginTransaction();
-        try {
-            $select = $this->pdo->prepare('SELECT id,user_id FROM password_reset_tokens '
-                . 'WHERE token_hash=:token_hash AND used_at IS NULL AND expires_at>CURRENT_TIMESTAMP FOR UPDATE');
-            $select->execute(['token_hash' => $hash]);
-            $row = $select->fetch();
-            if (!is_array($row)) {
-                throw new ApiException(400, 'This password reset link is invalid or has expired.');
-            }
-            $updatePassword((int) $row['user_id']);
-            $mark = $this->pdo->prepare('UPDATE password_reset_tokens SET used_at=CURRENT_TIMESTAMP WHERE id=:id');
-            $mark->execute(['id' => (int) $row['id']]);
-            $invalidate = $this->pdo->prepare('DELETE FROM password_reset_tokens WHERE user_id=:user_id AND used_at IS NULL');
-            $invalidate->execute(['user_id' => (int) $row['user_id']]);
-            $this->pdo->commit();
-        } catch (Throwable $exception) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-            throw $exception;
+        if ($this->isBlocked($userId, $otherId)) {
+            throw new ApiException(403, 'Messaging is unavailable between these users.');
         }
-    }
-}
-
-final class NewsletterRepository
-{
-    public function __construct(private readonly PDO $pdo)
-    {
-    }
-
-    public function subscribe(string $email): void
-    {
-        if ($this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+        $this->assertCanMessage($userId, $otherId);
+        [$one, $two] = $userId < $otherId ? [$userId, $otherId] : [$otherId, $userId];
+        if ($this->isMySql()) {
             $statement = $this->pdo->prepare(<<<'SQL'
-                INSERT INTO newsletter_subscribers (email,active,subscribed_at,updated_at)
-                VALUES (:email,TRUE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
-                ON DUPLICATE KEY UPDATE active=TRUE,updated_at=CURRENT_TIMESTAMP
+                INSERT INTO conversations (
+                  participant_one_id, participant_two_id, created_at, updated_at
+                ) VALUES (:one, :two, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
+                ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)
                 SQL);
+            $statement->execute(['one' => $one, 'two' => $two]);
+            $id = (int) $this->pdo->lastInsertId();
         } else {
             $statement = $this->pdo->prepare(<<<'SQL'
-                INSERT INTO newsletter_subscribers (email,active,subscribed_at,updated_at)
-                VALUES (:email,TRUE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
-                ON CONFLICT (email) DO UPDATE SET active=TRUE,updated_at=CURRENT_TIMESTAMP
+                INSERT INTO conversations (
+                  participant_one_id, participant_two_id, created_at, updated_at
+                ) VALUES (:one, :two, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (participant_one_id, participant_two_id)
+                DO UPDATE SET updated_at=conversations.updated_at
+                RETURNING id
                 SQL);
+            $statement->execute(['one' => $one, 'two' => $two]);
+            $id = (int) $statement->fetchColumn();
         }
-        $statement->execute(['email' => strtolower(trim($email))]);
-    }
-}
 
-final class AccountRecoveryService
-{
-    public function __construct(
-        private readonly UserRepository $users,
-        private readonly PasswordResetRepository $tokens,
-        private readonly Mailer $mailer
-    ) {
-    }
+        $memberCount = $this->conversationMemberCount($id);
+        $this->addConversationMember($id, $userId);
+        if ($memberCount === 0) {
+            $this->addConversationMember($id, $otherId);
+        }
 
-    /** @param array<string, mixed> $input @return array{message: string} */
-    public function forgotPassword(array $input): array
+        return $this->get($id, $userId);
+    }
+    /** @return list<array<string,mixed>> */
+    public function list(int $userId): array
     {
-        $email = Validator::emailOnly($input);
-        $user = $this->users->findByEmail($email);
-        if ($user !== null) {
-            $token = $this->tokens->issue((int) $user['id'], Config::int('PASSWORD_RESET_TTL_MINUTES', 30));
-            try {
-                $this->mailer->sendPasswordReset($user['email'], $user['firstName'], $token);
-            } catch (Throwable $exception) {
-                error_log('[Chambre Rose API] Password reset email failed: ' . $exception->getMessage());
+        $s = $this->pdo->prepare('SELECT c.id FROM conversations c JOIN conversation_members cm ON cm.conversation_id=c.id WHERE cm.user_id=:uid ORDER BY c.updated_at DESC');
+        $s->execute(['uid' => $userId]);
+
+        return array_map(fn ($id) => $this->get((int) $id, $userId), $s->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    public function get(int $id, int $userId): array
+    {
+        $s = $this->pdo->prepare('SELECT c.*,cm.user_id AS member_user_id,cm.archived_at,cm.last_read_at FROM conversations c LEFT JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.user_id=:uid WHERE c.id=:id');
+        $s->execute(['uid' => $userId,'id' => $id]);
+        $r = $s->fetch();
+        if (!is_array($r)
+            || $r['member_user_id'] === null
+            || ((int)$r['participant_one_id'] !== $userId && (int)$r['participant_two_id'] !== $userId)
+        ) {
+            throw new ApiException(404, 'Conversation not found.');
+        }
+        $other = (int)$r['participant_one_id'] === $userId ? (int)$r['participant_two_id'] : (int)$r['participant_one_id'];
+        $u = $this->pdo->prepare("SELECT u.id,u.first_name,u.last_name,u.role,u.approval_status,COALESCE(p.display_name,CONCAT(u.first_name,' ',u.last_name)) display_name FROM users u LEFT JOIN professional_profiles p ON p.user_id=u.id WHERE u.id=:id");
+        $u->execute(['id' => $other]);
+        $otherUser = $u->fetch();
+        $last = $this->pdo->prepare('SELECT id,conversation_id,sender_id,body,created_at FROM messages WHERE conversation_id=:id ORDER BY id DESC LIMIT 1');
+        $last->execute(['id' => $id]);
+        $lastRow = $last->fetch();
+        $unread = $this->pdo->prepare('SELECT COUNT(*) FROM messages WHERE conversation_id=:id AND sender_id<>:uid AND (:read_null IS NULL OR created_at>:read_after)');
+        $unread->execute([
+            'id' => $id,
+            'uid' => $userId,
+            'read_null' => $r['last_read_at'],
+            'read_after' => $r['last_read_at'],
+        ]);
+        $blockedByMe = false;
+        $avatarUrl = null;
+        if ($otherUser) {
+            $b = $this->pdo->prepare('SELECT 1 FROM blocked_users WHERE blocker_id=:uid AND blocked_id=:oid');
+            $b->execute(['uid' => $userId,'oid' => $other]);
+            $blockedByMe = (bool)$b->fetchColumn();
+            $avatar = $this->pdo->prepare("SELECT id FROM profile_media WHERE user_id=:uid AND media_type='PHOTO' ORDER BY position,id LIMIT 1");
+            $avatar->execute(['uid' => $other]);
+            $avatarId = $avatar->fetchColumn();
+            if ($avatarId !== false) {
+                $avatarUrl = '/api/profiles/' . $other . '/media/' . (int)$avatarId;
             }
         }
-        return ['message' => 'If an account exists for this email, a password reset link has been sent.'];
+
+        return [
+            'id' => $id,
+            'otherUser' => $otherUser ? [
+                'id' => (int) $otherUser['id'],
+                'displayName' => (string) $otherUser['display_name'],
+                'role' => (string) $otherUser['role'],
+                'approvalStatus' => (string) $otherUser['approval_status'],
+                'blocked' => $blockedByMe,
+                'avatarUrl' => $avatarUrl,
+                'profileImageUrl' => $avatarUrl,
+            ] : null,
+            'archived' => $r['archived_at'] !== null,
+            'unreadCount' => (int) $unread->fetchColumn(),
+            'lastMessage' => is_array($lastRow) ? self::message($lastRow) : null,
+            'updatedAt' => (string) $r['updated_at'],
+        ];
     }
 
-    /** @param array<string, mixed> $input @return array{message: string} */
-    public function resetPassword(array $input): array
+    /** @return list<array<string,mixed>> */
+    public function messages(int $id, int $userId): array
     {
-        $data = Validator::passwordReset($input);
-        $hash = password_hash($data['password'], PASSWORD_BCRYPT, ['cost' => 12]);
-        $this->tokens->consume($data['token'], fn (int $userId) => $this->users->updatePassword($userId, $hash));
-        return ['message' => 'Your password has been updated. You can now sign in.'];
-    }
-}
+        $this->get($id, $userId);
+        $s = $this->pdo->prepare('SELECT id,conversation_id,sender_id,body,created_at FROM (SELECT * FROM messages WHERE conversation_id=:id ORDER BY id DESC LIMIT 200) recent ORDER BY id ASC');
+        $s->execute(['id' => $id]);
 
-final class NewsletterService
-{
-    public function __construct(private readonly NewsletterRepository $subscribers, private readonly Mailer $mailer)
-    {
+        return array_map([self::class,'message'], $s->fetchAll());
     }
-
-    /** @param array<string, mixed> $input @return array{message: string} */
-    public function subscribe(array $input): array
+    public function send(int $id, int $userId, string $body): array
     {
-        $email = Validator::emailOnly($input);
-        $this->subscribers->subscribe($email);
-        try {
-            $this->mailer->sendNewsletterConfirmation($email);
-        } catch (Throwable $exception) {
-            error_log('[Chambre Rose API] Newsletter confirmation email failed: ' . $exception->getMessage());
+        $conversation = $this->get($id, $userId);
+        $other = (int)$conversation['otherUser']['id'];
+        if (($conversation['otherUser']['approvalStatus'] ?? null) !== 'APPROVED') {
+            throw new ApiException(403, 'Messaging is unavailable while an account is not approved.');
         }
-        return ['message' => 'You are subscribed to the Chambre Rose newsletter.'];
+        $this->assertCanMessage($userId, $other);
+        if ($this->isBlocked($userId, $other)) {
+            throw new ApiException(403, 'Messaging is unavailable between these users.');
+        }
+        $body = trim($body);
+        if ($body === '' || self::length($body) > 4000) {
+            throw new ApiException(400, 'Message body must contain between 1 and 4000 characters.');
+        }
+        if ($this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+            $s = $this->pdo->prepare('INSERT INTO messages (conversation_id,sender_id,body,created_at) VALUES (:cid,:uid,:body,CURRENT_TIMESTAMP(3))');
+            $s->execute(['cid' => $id,'uid' => $userId,'body' => $body]);
+            $mid = (int)$this->pdo->lastInsertId();
+        } else {
+            $s = $this->pdo->prepare('INSERT INTO messages (conversation_id,sender_id,body,created_at) VALUES (:cid,:uid,:body,CURRENT_TIMESTAMP) RETURNING id');
+            $s->execute(['cid' => $id,'uid' => $userId,'body' => $body]);
+            $mid = (int)$s->fetchColumn();
+        }
+        $this->pdo->prepare('UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=:id')->execute(['id' => $id]);
+        $this->pdo->prepare('UPDATE conversation_members SET archived_at=NULL WHERE conversation_id=:id')->execute(['id' => $id]);
+        $s = $this->pdo->prepare('SELECT id,conversation_id,sender_id,body,created_at FROM messages WHERE id=:id');
+        $s->execute(['id' => $mid]);
+
+        return self::message($s->fetch());
+    }
+    public function read(int $id, int $userId): void
+    {
+        $this->get($id, $userId);
+        $statement = $this->pdo->prepare(
+            'UPDATE conversation_members SET last_read_at=CURRENT_TIMESTAMP '
+            . 'WHERE conversation_id=:cid AND user_id=:uid'
+        );
+        $statement->execute(['cid' => $id, 'uid' => $userId]);
+    }
+    public function archive(int $id, int $userId, bool $archived): void
+    {
+        $this->get($id, $userId);
+        $sql = $archived ? 'UPDATE conversation_members SET archived_at=CURRENT_TIMESTAMP WHERE conversation_id=:cid AND user_id=:uid' : 'UPDATE conversation_members SET archived_at=NULL WHERE conversation_id=:cid AND user_id=:uid';
+        $this->pdo->prepare($sql)->execute(['cid' => $id,'uid' => $userId]);
+    }
+    public function deleteForUser(int $id, int $userId): void
+    {
+        $this->get($id, $userId);
+        $this->pdo->prepare('DELETE FROM conversation_members WHERE conversation_id=:cid AND user_id=:uid')->execute(['cid' => $id,'uid' => $userId]);
+        $s = $this->pdo->prepare('SELECT COUNT(*) FROM conversation_members WHERE conversation_id=:cid');
+        $s->execute(['cid' => $id]);
+        if ((int)$s->fetchColumn() === 0) {
+            $this->pdo->prepare('DELETE FROM conversations WHERE id=:cid')->execute(['cid' => $id]);
+        }
+    }
+    public function block(int $userId, int $otherId): void
+    {
+        if ($userId === $otherId) {
+            throw new ApiException(400, 'You cannot block yourself.');
+        }
+        $sql = $this->isMySql()
+            ? 'INSERT IGNORE INTO blocked_users (blocker_id,blocked_id,created_at) '
+                . 'VALUES (:uid,:oid,CURRENT_TIMESTAMP(3))'
+            : 'INSERT INTO blocked_users (blocker_id,blocked_id,created_at) '
+                . 'VALUES (:uid,:oid,CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING';
+        $this->pdo->prepare($sql)->execute(['uid' => $userId, 'oid' => $otherId]);
+    }
+    public function unblock(int $userId, int $otherId): void
+    {
+        $this->pdo->prepare('DELETE FROM blocked_users WHERE blocker_id=:uid AND blocked_id=:oid')->execute(['uid' => $userId,'oid' => $otherId]);
+    }
+    public function report(int $userId, int $otherId, string $reason, ?string $details): array
+    {
+        if ($userId === $otherId) {
+            throw new ApiException(400, 'You cannot report yourself.');
+        }
+        $reason = trim($reason);
+        $details = $details === null ? null : trim($details);
+        if ($reason === '' || self::length($reason) > 80 || ($details !== null && self::length($details) > 1000)) {
+            throw new ApiException(400, 'Invalid report data.');
+        }
+        if ($this->isMySql()) {
+            $s = $this->pdo->prepare("INSERT INTO user_reports (reporter_id,reported_id,reason,details,status,created_at) VALUES (:uid,:oid,:reason,:details,'OPEN',CURRENT_TIMESTAMP(3))");
+            $s->execute(['uid' => $userId,'oid' => $otherId,'reason' => $reason,'details' => $details]);
+            $id = (int)$this->pdo->lastInsertId();
+        } else {
+            $s = $this->pdo->prepare("INSERT INTO user_reports (reporter_id,reported_id,reason,details,status,created_at) VALUES (:uid,:oid,:reason,:details,'OPEN',CURRENT_TIMESTAMP) RETURNING id");
+            $s->execute(['uid' => $userId,'oid' => $otherId,'reason' => $reason,'details' => $details]);
+            $id = (int)$s->fetchColumn();
+        }
+
+        return ['id' => $id, 'status' => 'OPEN'];
+    }
+    private function isBlocked(int $one, int $two): bool
+    {
+        $s = $this->pdo->prepare('SELECT 1 FROM blocked_users WHERE (blocker_id=:one_a AND blocked_id=:two_a) OR (blocker_id=:two_b AND blocked_id=:one_b) LIMIT 1');
+        $s->execute(['one_a' => $one,'two_a' => $two,'two_b' => $two,'one_b' => $one]);
+
+        return(bool)$s->fetchColumn();
+    }
+
+    private function assertCanMessage(int $one, int $two): void
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT id,role,approval_status,vip_active FROM users WHERE id IN (:one,:two)'
+        );
+        $statement->execute(['one' => $one, 'two' => $two]);
+        $users = [];
+        foreach ($statement->fetchAll() as $row) {
+            $users[(int) $row['id']] = $row;
+        }
+        if (count($users) !== 2 || array_filter($users, static fn (array $user): bool => $user['approval_status'] !== 'APPROVED') !== []) {
+            throw new ApiException(403, 'Messaging is unavailable while an account is not approved.');
+        }
+        $escort = null;
+        $visitor = null;
+        foreach ($users as $user) {
+            $escort = $user['role'] === 'ESCORT' ? $user : $escort;
+            $visitor = $user['role'] === 'VISITOR' ? $user : $visitor;
+        }
+        if ($escort !== null && $visitor !== null && !in_array($visitor['vip_active'], [true, 1, '1', 't', 'true'], true)) {
+            throw new ApiException(403, 'VIP membership is required to contact a companion.', ['vipRequired' => 'true']);
+        }
+    }
+    private function conversationMemberCount(int $conversationId): int
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT COUNT(*) FROM conversation_members WHERE conversation_id=:conversation_id'
+        );
+        $statement->execute(['conversation_id' => $conversationId]);
+
+        return (int) $statement->fetchColumn();
+    }
+
+    private function addConversationMember(int $conversationId, int $userId): void
+    {
+        $sql = $this->isMySql()
+            ? 'INSERT IGNORE INTO conversation_members (conversation_id,user_id) VALUES (:cid,:uid)'
+            : 'INSERT INTO conversation_members (conversation_id,user_id) '
+                . 'VALUES (:cid,:uid) ON CONFLICT DO NOTHING';
+        $statement = $this->pdo->prepare($sql);
+        $statement->execute(['cid' => $conversationId, 'uid' => $userId]);
+    }
+
+    /** @param array<string,mixed> $row @return array<string,mixed> */
+    private static function message(array $row): array
+    {
+        return [
+            'id' => (int) $row['id'],
+            'conversationId' => (int) $row['conversation_id'],
+            'senderId' => (int) $row['sender_id'],
+            'body' => (string) $row['body'],
+            'createdAt' => (string) $row['created_at'],
+        ];
+    }
+
+    private static function length(string $value): int
+    {
+        return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
+    }
+
+    private function isMySql(): bool
+    {
+        return $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
     }
 }

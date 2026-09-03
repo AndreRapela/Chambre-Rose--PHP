@@ -17,7 +17,9 @@ final class Database
         if (self::$connection !== null) {
             return self::$connection;
         }
+
         [$dsn, $username, $password] = self::settings();
+
         try {
             self::$connection = new PDO($dsn, $username, $password, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -29,8 +31,10 @@ final class Database
             self::$connection->exec($driver === 'mysql' ? "SET time_zone = '+00:00'" : "SET TIME ZONE 'UTC'");
         } catch (PDOException $exception) {
             error_log('[Chambre Rose API] Database connection failed: ' . $exception->getMessage());
+
             throw new ApiException(503, 'Database connection is unavailable.');
         }
+
         return self::$connection;
     }
 
@@ -40,6 +44,7 @@ final class Database
         $url = Config::first(['DATABASE_URL', 'SPRING_DATASOURCE_URL']);
         $username = Config::first(['DB_USERNAME', 'SPRING_DATASOURCE_USERNAME'], '') ?? '';
         $password = Config::first(['DB_PASSWORD', 'SPRING_DATASOURCE_PASSWORD'], '') ?? '';
+
         if ($url !== null) {
             $url = preg_replace('/^jdbc:/', '', $url) ?? $url;
             if (str_starts_with($url, 'mysql://')) {
@@ -47,38 +52,81 @@ final class Database
                 if ($parts === false || !isset($parts['host'])) {
                     throw new RuntimeException('DATABASE_URL is invalid.');
                 }
-                $username = isset($parts['user']) ? rawurldecode($parts['user']) : $username;
-                $password = isset($parts['pass']) ? rawurldecode($parts['pass']) : $password;
-                return [sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', $parts['host'],
-                    (int) ($parts['port'] ?? 3306), ltrim($parts['path'] ?? '/', '/')), $username, $password];
+
+                if (isset($parts['user'])) {
+                    $username = rawurldecode($parts['user']);
+                }
+                if (isset($parts['pass'])) {
+                    $password = rawurldecode($parts['pass']);
+                }
+
+                $dsn = sprintf(
+                    'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+                    $parts['host'],
+                    (int) ($parts['port'] ?? 3306),
+                    ltrim($parts['path'] ?? '/', '/')
+                );
+
+                return [$dsn, $username, $password];
             }
+
             if (str_starts_with($url, 'postgresql://') || str_starts_with($url, 'postgres://')) {
                 $parts = parse_url($url);
                 if ($parts === false || !isset($parts['host'])) {
                     throw new RuntimeException('DATABASE_URL is invalid.');
                 }
-                $username = isset($parts['user']) ? rawurldecode($parts['user']) : $username;
-                $password = isset($parts['pass']) ? rawurldecode($parts['pass']) : $password;
+
+                if (isset($parts['user'])) {
+                    $username = rawurldecode($parts['user']);
+                }
+                if (isset($parts['pass'])) {
+                    $password = rawurldecode($parts['pass']);
+                }
+
                 parse_str($parts['query'] ?? '', $query);
-                return [sprintf('pgsql:host=%s;port=%d;dbname=%s;sslmode=%s', $parts['host'],
-                    (int) ($parts['port'] ?? 5432), ltrim($parts['path'] ?? '/postgres', '/'),
-                    $query['sslmode'] ?? 'require'), $username, $password];
+                $dsn = sprintf(
+                    'pgsql:host=%s;port=%d;dbname=%s;sslmode=%s',
+                    $parts['host'],
+                    (int) ($parts['port'] ?? 5432),
+                    ltrim($parts['path'] ?? '/postgres', '/'),
+                    $query['sslmode'] ?? 'require'
+                );
+
+                return [$dsn, $username, $password];
             }
         }
+
         $host = Config::get('DB_HOST');
         if ($host === null) {
             throw new RuntimeException('Configure DATABASE_URL, SPRING_DATASOURCE_URL or DB_HOST.');
         }
+
         $driver = strtolower(Config::get('DB_DRIVER', 'mysql') ?? 'mysql');
         if ($driver === 'mysql') {
-            return [sprintf('mysql:host=%s;port=%d;dbname=%s;charset=%s', $host, Config::int('DB_PORT', 3306),
-                Config::get('DB_NAME', ''), Config::get('DB_CHARSET', 'utf8mb4')), $username, $password];
+            $dsn = sprintf(
+                'mysql:host=%s;port=%d;dbname=%s;charset=%s',
+                $host,
+                Config::int('DB_PORT', 3306),
+                Config::get('DB_NAME', ''),
+                Config::get('DB_CHARSET', 'utf8mb4')
+            );
+
+            return [$dsn, $username, $password];
         }
-        if (!in_array($driver, ['pgsql', 'postgres', 'postgresql'], true)) {
+
+        if ($driver !== 'pgsql' && $driver !== 'postgres' && $driver !== 'postgresql') {
             throw new RuntimeException('DB_DRIVER must be mysql or pgsql.');
         }
-        return [sprintf('pgsql:host=%s;port=%d;dbname=%s;sslmode=%s', $host, Config::int('DB_PORT', 5432),
-            Config::get('DB_NAME', 'postgres'), Config::get('DB_SSLMODE', 'require')), $username, $password];
+
+        $dsn = sprintf(
+            'pgsql:host=%s;port=%d;dbname=%s;sslmode=%s',
+            $host,
+            Config::int('DB_PORT', 5432),
+            Config::get('DB_NAME', 'postgres'),
+            Config::get('DB_SSLMODE', 'require')
+        );
+
+        return [$dsn, $username, $password];
     }
 }
 
@@ -102,16 +150,24 @@ final class DatabaseMigrator
         if (!$forceCheck && $this->hasFreshCheckCache($cacheFile)) {
             return false;
         }
-        $timestampType = $driver === 'mysql' ? 'TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)'
+
+        $timestampType = $driver === 'mysql'
+            ? 'TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)'
             : 'TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP';
-        $this->pdo->exec('CREATE TABLE IF NOT EXISTS chambre_rose_schema_migrations (' .
-            'version VARCHAR(80) PRIMARY KEY, applied_at ' . $timestampType . ')');
+        $this->pdo->exec(
+            'CREATE TABLE IF NOT EXISTS chambre_rose_schema_migrations (' .
+            'version VARCHAR(80) PRIMARY KEY, applied_at ' . $timestampType . ')'
+        );
+
         if (!$this->hasPendingMigration($migrations)) {
             $this->writeCheckCache($cacheFile);
+
             return false;
         }
+
         $baseSchemaCreated = false;
         $this->acquireLock($driver);
+
         try {
             foreach ($migrations as $migration) {
                 if ($this->isApplied($migration['version'])) {
@@ -124,8 +180,10 @@ final class DatabaseMigrator
         } finally {
             $this->releaseLock($driver);
         }
+
         $this->writeCheckCache($cacheFile);
-        return $baseSchemaCreated;
+
+        return $this->changed;
     }
 
     public function changed(): bool
@@ -133,30 +191,57 @@ final class DatabaseMigrator
         return $this->changed;
     }
 
-    /** @return list<array{version: string, file: string, base: bool, ignoreDuplicateIndex: bool}> */
+    /** @return list<array{version: string, file: string, base: bool, ignoreDuplicateIndex: bool, resumable?: bool}> */
     private function migrations(string $driver): array
     {
         $suffix = $driver === 'mysql' ? 'mysql' : 'pgsql';
+
         return [
-            ['version' => $driver === 'mysql' ? 'php-mysql-3-user-photo-files' : 'php-3-user-photo-files',
+            [
+                'version' => $driver === 'mysql'
+                    ? 'php-mysql-3-user-photo-files'
+                    : 'php-3-user-photo-files',
                 'file' => dirname(__DIR__) . '/database/' . ($driver === 'mysql' ? 'schema.mysql.sql' : 'schema.sql'),
-                'base' => true, 'ignoreDuplicateIndex' => false],
-            ['version' => 'php-' . $suffix . '-4-user-list-index',
+                'base' => true,
+                'ignoreDuplicateIndex' => false,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-4-user-list-index',
                 'file' => dirname(__DIR__) . '/database/migrations/004-user-list.' . $suffix . '.sql',
-                'base' => false, 'ignoreDuplicateIndex' => true],
-            ['version' => 'php-' . $suffix . '-5-neutral-seed-copy',
+                'base' => false,
+                'ignoreDuplicateIndex' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-5-neutral-seed-copy',
                 'file' => dirname(__DIR__) . '/database/migrations/005-neutral-seed-copy.' . $suffix . '.sql',
-                'base' => false, 'ignoreDuplicateIndex' => false],
-            ['version' => 'php-' . $suffix . '-6-account-email-newsletter',
-                'file' => dirname(__DIR__) . '/database/migrations/006-account-email-newsletter.' . $suffix . '.sql',
-                'base' => false, 'ignoreDuplicateIndex' => false],
-            ['version' => 'php-' . $suffix . '-7-account-review',
-                'file' => dirname(__DIR__) . '/database/migrations/007-account-review.' . $suffix . '.sql',
-                'base' => false, 'ignoreDuplicateIndex' => false],
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-6-marketplace',
+                'file' => dirname(__DIR__) . '/database/migrations/006-marketplace.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-7-commerce',
+                'file' => dirname(__DIR__) . '/database/migrations/007-commerce.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-8-product-reviews',
+                'file' => dirname(__DIR__) . '/database/migrations/008-product-reviews.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 
-    /** @param list<array{version: string, file: string, base: bool, ignoreDuplicateIndex: bool}> $migrations */
+    /** @param list<array{version: string, file: string, base: bool, ignoreDuplicateIndex: bool, resumable?: bool}> $migrations */
     private function hasPendingMigration(array $migrations): bool
     {
         foreach ($migrations as $migration) {
@@ -164,38 +249,72 @@ final class DatabaseMigrator
                 return true;
             }
         }
+
         return false;
     }
 
     private function isApplied(string $version): bool
     {
-        $statement = $this->pdo->prepare('SELECT 1 FROM chambre_rose_schema_migrations WHERE version = :version');
+        $statement = $this->pdo->prepare(
+            'SELECT 1 FROM chambre_rose_schema_migrations WHERE version = :version'
+        );
         $statement->execute(['version' => $version]);
+
         return (bool) $statement->fetchColumn();
     }
 
-    /** @param array{version: string, file: string, base: bool, ignoreDuplicateIndex: bool} $migration */
+    /** @param array{version: string, file: string, base: bool, ignoreDuplicateIndex: bool, resumable?: bool} $migration */
     private function apply(string $driver, array $migration): void
     {
         $sql = file_get_contents($migration['file']);
         if ($sql === false) {
             throw new RuntimeException('Unable to load database migration: ' . basename($migration['file']) . '.');
         }
+
         $transactionalDdl = $driver !== 'mysql';
         if ($transactionalDdl) {
             $this->pdo->beginTransaction();
         }
+
         try {
             try {
-                $this->pdo->exec($sql);
+                if ($driver === 'mysql' && ($migration['resumable'] ?? false)) {
+                    foreach (array_filter(array_map('trim', explode(';', $sql))) as $statement) {
+                        try {
+                            $this->pdo->exec($statement);
+                        } catch (PDOException $exception) {
+                            $code = (int) ($exception->errorInfo[1] ?? 0);
+                            if (!in_array($code, [1050, 1060, 1061, 1826], true)) {
+                                throw $exception;
+                            }
+                            $message = strtolower($exception->getMessage());
+                            $expected = match ($code) {
+                                1050 => str_starts_with(strtolower(ltrim($statement)), 'create table'),
+                                1060 => preg_match('/^alter\s+table\s+[a-z0-9_]+\s+add\s+column/i', ltrim($statement)) === 1,
+                                1061 => str_starts_with(strtolower(ltrim($statement)), 'create index'),
+                                1826 => str_contains($message, 'duplicate foreign key constraint'),
+                                default => false,
+                            };
+                            if (!$expected) {
+                                throw $exception;
+                            }
+                        }
+                    }
+                } else {
+                    $this->pdo->exec($sql);
+                }
             } catch (PDOException $exception) {
-                $duplicateIndex = $driver === 'mysql' && $migration['ignoreDuplicateIndex']
+                $duplicateIndex = $driver === 'mysql'
+                    && $migration['ignoreDuplicateIndex']
                     && (int) ($exception->errorInfo[1] ?? 0) === 1061;
                 if (!$duplicateIndex) {
                     throw $exception;
                 }
             }
-            $insert = $this->pdo->prepare('INSERT INTO chambre_rose_schema_migrations (version) VALUES (:version)');
+
+            $insert = $this->pdo->prepare(
+                'INSERT INTO chambre_rose_schema_migrations (version) VALUES (:version)'
+            );
             $insert->execute(['version' => $migration['version']]);
             if ($transactionalDdl) {
                 $this->pdo->commit();
@@ -204,6 +323,7 @@ final class DatabaseMigrator
             if ($transactionalDdl && $this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
             }
+
             throw $exception;
         }
     }
@@ -216,8 +336,10 @@ final class DatabaseMigrator
             if ((int) $statement->fetchColumn() !== 1) {
                 throw new ApiException(503, 'Database migration is temporarily busy.');
             }
+
             return;
         }
+
         $this->pdo->query('SELECT pg_advisory_lock(' . self::POSTGRES_LOCK_ID . ')');
     }
 
@@ -227,6 +349,7 @@ final class DatabaseMigrator
             if ($driver === 'mysql') {
                 $statement = $this->pdo->prepare('SELECT RELEASE_LOCK(:name)');
                 $statement->execute(['name' => self::LOCK_NAME]);
+
                 return;
             }
             $this->pdo->query('SELECT pg_advisory_unlock(' . self::POSTGRES_LOCK_ID . ')');
@@ -235,19 +358,33 @@ final class DatabaseMigrator
         }
     }
 
-    /** @param list<array{version: string, file: string, base: bool, ignoreDuplicateIndex: bool}> $migrations */
+    /**
+     * @param list<array{version: string, file: string, base: bool, ignoreDuplicateIndex: bool}> $migrations
+     */
     private function cacheFile(string $driver, array $migrations): string
     {
         $databaseIdentity = Config::first(['DATABASE_URL', 'SPRING_DATASOURCE_URL'])
-            ?? implode('|', [Config::get('DB_HOST', ''), Config::get('DB_PORT', ''), Config::get('DB_NAME', '')]);
-        $fingerprint = hash('sha256', implode('|', [$driver, $databaseIdentity, dirname(__DIR__),
-            ...array_column($migrations, 'version')]));
-        return rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . 'chambre-rose-schema-' . $fingerprint . '.ok';
+            ?? implode('|', [
+                Config::get('DB_HOST', ''),
+                Config::get('DB_PORT', ''),
+                Config::get('DB_NAME', ''),
+            ]);
+        $versions = array_column($migrations, 'version');
+        $fingerprint = hash('sha256', implode('|', [
+            $driver,
+            $databaseIdentity,
+            dirname(__DIR__),
+            ...$versions,
+        ]));
+
+        return rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR
+            . 'chambre-rose-schema-' . $fingerprint . '.ok';
     }
 
     private function hasFreshCheckCache(string $file): bool
     {
         $modifiedAt = is_file($file) ? filemtime($file) : false;
+
         return $modifiedAt !== false && $modifiedAt >= time() - self::CHECK_CACHE_SECONDS;
     }
 

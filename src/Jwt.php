@@ -24,10 +24,17 @@ final class Jwt
     {
         $now = time();
         $header = ['alg' => 'HS256', 'typ' => 'JWT'];
-        $payload = ['sub' => $email, 'role' => strtoupper($role), 'iat' => $now,
-            'exp' => $now + ($this->expirationMinutes * 60)];
+        $payload = [
+            'sub' => $email,
+            'role' => strtoupper($role),
+            'iat' => $now,
+            'exp' => $now + ($this->expirationMinutes * 60),
+        ];
+
         $unsigned = self::encodeJson($header) . '.' . self::encodeJson($payload);
-        return $unsigned . '.' . self::base64UrlEncode(hash_hmac('sha256', $unsigned, $this->secret, true));
+        $signature = hash_hmac('sha256', $unsigned, $this->secret, true);
+
+        return $unsigned . '.' . self::base64UrlEncode($signature);
     }
 
     /** @return array{sub: string, role: string, iat?: int, exp: int} */
@@ -37,28 +44,40 @@ final class Jwt
         if (count($parts) !== 3) {
             throw new ApiException(401, 'Invalid or expired authentication token.');
         }
+
         try {
             $header = json_decode(self::base64UrlDecode($parts[0]), true, 16, JSON_THROW_ON_ERROR);
             $payload = json_decode(self::base64UrlDecode($parts[1]), true, 32, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
             throw new ApiException(401, 'Invalid or expired authentication token.');
         }
+
         if (!is_array($header) || ($header['alg'] ?? null) !== 'HS256' || !is_array($payload)) {
             throw new ApiException(401, 'Invalid or expired authentication token.');
         }
+
         $expected = hash_hmac('sha256', $parts[0] . '.' . $parts[1], $this->secret, true);
-        if (!hash_equals($expected, self::base64UrlDecode($parts[2]))) {
+        $actual = self::base64UrlDecode($parts[2]);
+        if (!hash_equals($expected, $actual)) {
             throw new ApiException(401, 'Invalid or expired authentication token.');
         }
+
         $subject = $payload['sub'] ?? null;
         $role = $payload['role'] ?? null;
         $expiration = $payload['exp'] ?? null;
-        if (!is_string($subject) || $subject === '' || !is_string($role) || !is_numeric($expiration)
-            || (int) $expiration <= time()) {
+        if (!is_string($subject) || $subject === '' || !is_string($role) || !is_numeric($expiration)) {
             throw new ApiException(401, 'Invalid or expired authentication token.');
         }
-        return ['sub' => $subject, 'role' => strtoupper($role),
-            'iat' => isset($payload['iat']) ? (int) $payload['iat'] : 0, 'exp' => (int) $expiration];
+        if ((int) $expiration <= time()) {
+            throw new ApiException(401, 'Invalid or expired authentication token.');
+        }
+
+        return [
+            'sub' => $subject,
+            'role' => strtoupper($role),
+            'iat' => isset($payload['iat']) ? (int) $payload['iat'] : 0,
+            'exp' => (int) $expiration,
+        ];
     }
 
     /** @param array<string, mixed> $value */
@@ -78,10 +97,10 @@ final class Jwt
             throw new ApiException(401, 'Invalid or expired authentication token.');
         }
         $decoded = base64_decode(strtr($value, '-_', '+/'), true);
-        if ($decoded === false) {
+        if ($decoded === false || !hash_equals(self::base64UrlEncode($decoded), $value)) {
             throw new ApiException(401, 'Invalid or expired authentication token.');
         }
+
         return $decoded;
     }
 }
-

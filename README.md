@@ -1,94 +1,199 @@
-# Chambre Rose PHP API
+# Chambre Rose API em PHP
 
-Production-oriented PHP 8.2+ API for [Chambre Rose](https://www.chambre-rose.com). This repository is the source-controlled version of the PHP backend currently used by the Angular storefront, with account email, password recovery and newsletter support added.
+Backend PHP 8.2+ do marketplace Chambre Rose. Ele suporta MySQL na EasyHost e PostgreSQL no desenvolvimento local.
 
-## Features
+## O que esta implementado
 
-- JWT authentication and role-based administrator routes
-- Customer registration with establishment photo upload and manual account review
-- English registration-received email with a 24-hour review window
-- Approval or rejection email sent after the admin decision
-- Secure, single-use password reset links with a configurable expiry
-- Idempotent newsletter subscription and English confirmation email
-- Product CRUD, product images, categories and purchase counters
-- VIP user administration
-- MySQL and PostgreSQL/Supabase-compatible migrations
-- CORS, security headers, upload validation and non-enumerating recovery responses
+- login, cadastro de visitante, acompanhante ou loja e edicao do proprio perfil;
+- aprovacao administrativa de contas profissionais, com prazo informado de 24 horas;
+- ate 15 fotos e 3 videos reais por perfil, armazenados no banco;
+- autenticacao JWT HS256 e senhas BCrypt;
+- papeis `VISITOR`, `ESCORT`, `STORE` e `ADMIN` (`USER` legado e migrado para `VISITOR`);
+- ativacao e desativacao de VIP no painel administrativo;
+- listagem e filtros de usuarios;
+- listagens publicas profissionais com filtros e paginacao;
+- favoritos, conversas, mensagens, bloqueio, arquivamento e denuncia;
+- recuperacao de senha por token de uso unico;
+- CORS, headers de seguranca, respostas padronizadas de erro;
+- migrations incrementais e contas de acesso opcionais, sem perfis ou midias ficticios;
+- Apache/EasyHost, servidor embutido do PHP e Docker.
 
-## Requirements
+## Requisitos
 
-- PHP 8.2 or newer
-- PDO MySQL or PDO PostgreSQL
-- Fileinfo
-- Composer when SMTP/PHPMailer is used
-- Apache with `mod_rewrite`, or PHP's development server
+- PHP 8.2 ou superior (8.3 recomendado);
+- extensoes `pdo`, `pdo_mysql`, `fileinfo` e `json` na EasyHost;
+- banco MySQL criado no painel da hospedagem;
+- Apache com `mod_rewrite` para producao;
+- `mbstring` e Composer sao recomendados, mas nao obrigatorios.
 
-## Local setup
+## Configuracao
 
-```bash
-cp .env.example .env
-composer install
-php -S 127.0.0.1:8080 -t public public/router.php
+O backend procura primeiro o `.env` da raiz do projeto e depois um `.env` nesta pasta. Ele entende tanto as variaveis antigas do Spring quanto as novas `DB_*`.
+
+```powershell
+Copy-Item ..\.env.example ..\.env
 ```
 
-Generate a strong `JWT_SECRET`, then configure either `DATABASE_URL` or the individual `DB_*` variables in `.env`. Never expose the database password, JWT secret, Supabase secret key or SMTP password in the Angular application.
+Variaveis essenciais na EasyHost:
 
-The Angular development server already proxies `/api` to `http://localhost:8080`.
-
-### Docker
-
-```bash
-docker build -t chambre-rose-php .
-docker run --rm -p 8080:80 --env-file .env chambre-rose-php
+```text
+DB_DRIVER=mysql
+DB_HOST=HOST_MYSQL_DA_EASYHOST
+DB_PORT=3306
+DB_NAME=NOME_DO_BANCO
+DB_USERNAME=USUARIO_DO_BANCO
+DB_PASSWORD=SENHA_DO_BANCO
+DB_CHARSET=utf8mb4
+JWT_SECRET=SEGREDO_ALEATORIO_COM_PELO_MENOS_32_BYTES
+JWT_EXPIRATION_MINUTES=180
+APP_CORS_ALLOWED_ORIGINS=http://localhost:4200,https://seu-dominio.com
+APP_AUTO_MIGRATE=true
 ```
 
-## Email configuration
+Em producao, deixe `APP_AUTO_MIGRATE=true` somente ate o primeiro `/api/health`
+concluir depois de um deploy com migration nova. Em seguida, volte para `false`.
+Isso evita consultas de controle de schema em todas as requisicoes. O comando
+`php bin/setup.php` continua sendo a opcao preferida quando houver acesso ao terminal.
 
-Messages are intentionally English-only.
+Para PostgreSQL local, use `DB_DRIVER=pgsql` com `DB_SSLMODE`, ou mantenha as variaveis `SPRING_DATASOURCE_*` antigas.
 
-Easyhost can use its server-side PHP mail transport:
+## Rodar localmente
 
-```dotenv
-MAIL_TRANSPORT=mail
-MAIL_FROM_ADDRESS=no-reply@chambre-rose.com
-MAIL_FROM_NAME=Chambre Rose
-APP_FRONTEND_URL=https://www.chambre-rose.com
+Com Docker, a partir da raiz:
+
+```powershell
+docker compose up --build
 ```
 
-For authenticated SMTP, set `MAIL_TRANSPORT=smtp` and configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_ENCRYPTION`, `SMTP_USERNAME` and `SMTP_PASSWORD`. The real values belong only in `.env` on the server.
+Sem Docker:
 
-## API overview
+```powershell
+cd backend-php
+php bin\setup.php
+php -S localhost:8080 -t public public\router.php
+```
 
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/health` | Health check |
-| `POST` | `/api/auth/register` | Register with multipart `establishmentPhoto` |
-| `POST` | `/api/auth/login` | Sign in |
-| `POST` | `/api/auth/forgot-password` | Request a reset link |
-| `POST` | `/api/auth/reset-password` | Consume a reset token |
-| `GET/PUT` | `/api/auth/me` | Read or update the current profile |
-| `POST` | `/api/newsletter/subscribe` | Subscribe an email address |
-| `PATCH` | `/api/admin/users/{id}/status` | Approve or reject a pending account (admin) |
-| `GET` | `/api/products` | List products |
-| `GET` | `/api/products/{id}` | Product details |
-| `POST/PUT/DELETE` | `/api/products...` | Administrator product management |
-| `GET/PATCH` | `/api/admin/users...` | Administrator user/VIP management |
+Em outro terminal:
 
-Password reset tokens are random, stored only as SHA-256 hashes, expire after 30 minutes by default and are invalidated after use. The forgot-password response is identical for known and unknown addresses.
+```powershell
+cd ..
+npm install
+npm start
+```
 
-## Database migrations
+Abra `http://localhost:4200`. O proxy do Angular envia `/api` para `http://localhost:8080`.
 
-Migrations run automatically by default (`APP_AUTO_MIGRATE=true`) and are protected by a database advisory lock. Both engines are supported:
+## Testes
 
-- MySQL: `database/schema.mysql.sql` and `database/migrations/*.mysql.sql`
-- PostgreSQL/Supabase: `database/schema.sql` and `database/migrations/*.pgsql.sql`
+```powershell
+composer test
+```
 
-## Deployment notes
+Ou, sem Composer:
 
-Point the web root to `public/`, keep `.env` outside version control, make `storage/establishment-photos` writable by the PHP user, and run `composer install --no-dev --optimize-autoloader` when SMTP is enabled. The Angular production config uses the same-origin `/api` path.
+```powershell
+php tests\run.php
+```
 
-## Security
+Health check:
 
-- `.env`, `vendor/`, uploads and logs are ignored by Git.
-- Public Supabase keys may be used by browser applications, but the Supabase secret/service key must remain server-side.
-- Rotate any credential that has been shared outside the server's secret store.
+```powershell
+Invoke-RestMethod http://localhost:8080/api/health
+```
+
+## Endpoints
+
+### Contas, perfis profissionais e mensagens
+
+- `POST /api/auth/register`: cria `VISITOR`, `ESCORT` ou `STORE`. Contas profissionais ficam `PENDING` para revisao em ate 24 horas.
+- `POST /api/auth/forgot-password` e `POST /api/auth/reset-password`: recuperacao por token de uso unico, valido por uma hora.
+- `GET|PUT /api/profiles/me`: consulta e edita o proprio perfil profissional.
+- `GET|PUT /api/profiles/{userId}`: consulta ou edita qualquer perfil como administrador.
+- `GET /api/listings` e `GET /api/listings/{userId}`: busca publica paginada de acompanhantes e lojas aprovadas.
+- `POST /api/profiles/me/media`: upload real multipart no campo `media`; limite de 15 fotos e 3 videos por perfil.
+- `GET|POST /api/conversations` e `GET|POST /api/conversations/{id}/messages`: mensagens internas autenticadas.
+- `PATCH /api/conversations/{id}/read|archive` e `DELETE /api/conversations/{id}`: leitura, arquivamento e remocao do proprio inbox.
+- `POST|DELETE /api/users/{userId}/block` e `POST /api/users/{userId}/reports`: bloqueio e denuncia.
+- `GET /api/favorites` e `POST|DELETE /api/favorites/{profileId}`: favoritos por usuario autenticado.
+- `PATCH /api/admin/users/{id}/approval`: aprovacao ou rejeicao por administrador.
+
+Fotos aceitam JPG, PNG e WebP ate 8 MB. Videos aceitam MP4 e WebM ate 25 MB. Para que o PHP nao descarte o arquivo antes da aplicacao valida-lo, configure no painel EasyHost (ou em `php.ini`/`.user.ini) `upload_max_filesize=26M` e `post_max_size=30M`, no minimo. A API limita o corpo completo a 30 MB e devolve HTTP 413 quando esse limite e excedido.
+
+Por privacidade, nomes originais nunca aparecem no catalogo nem no cabecalho de download e toda midia usa `Cache-Control: private, no-store`. O frontend oficial redimensiona e reencoda fotos em canvas antes do envio, removendo metadados EXIF/GPS. Integracoes que enviarem arquivos diretamente para a API tambem devem reencodar as imagens antes do upload; o backend PHP sem GD/Imagick valida tipo e tamanho, mas armazena os bytes recebidos.
+
+Os e-mails usam `MAIL_TRANSPORT=log`, `mail` ou `smtp`. No modo `log`, nenhum envio e fingido: a API devolve resposta neutra e registra somente metadados mascarados, mantendo o conteudo no `email_outbox` para diagnostico. Em producao, configure SMTP pelas variaveis documentadas em `.env.example`.
+
+```text
+POST   /api/auth/login
+POST   /api/auth/register
+GET    /api/auth/me
+PUT    /api/auth/me
+
+GET    /api/listings
+GET    /api/listings/{id}
+GET    /api/profiles/me
+PUT    /api/profiles/me
+GET    /api/profiles/{id}
+PUT    /api/profiles/{id}
+POST   /api/profiles/me/media
+DELETE /api/profiles/me/media/{id}
+GET    /api/favorites
+POST   /api/favorites/{profileId}
+DELETE /api/favorites/{profileId}
+GET    /api/conversations
+POST   /api/conversations
+DELETE /api/conversations/{id}
+
+GET    /api/admin/users
+PATCH  /api/admin/users/{id}/vip
+
+GET    /api/brand/logo
+GET    /api/health
+```
+
+## Estrutura segura na EasyHost
+
+Para manter `src`, `.env` e recursos fora da area publica, use esta estrutura no diretorio da conta:
+
+```text
+home/SEU_USUARIO/
+  chambre-rose-api/       conteudo desta pasta, exceto public
+  public_html/
+    index.html             build do Angular
+    assets/
+    api/
+      index.php            copiado de backend-php/public
+      .htaccess            copiado de backend-php/public
+      .user.ini            copiado de backend-php/public
+```
+
+O `index.php` ja procura automaticamente `~/chambre-rose-api/bootstrap.php`. No `public_html`, envie o conteudo de `dist/chambre-rose/browser`, e nao a pasta `browser` em si.
+
+No painel EasyHost:
+
+1. selecione PHP 8.3;
+2. crie um banco e um usuario MySQL e anote host, porta, nome, usuario e senha;
+3. habilite `pdo`, `pdo_mysql`, `fileinfo` e, se disponivel, `mbstring`;
+4. configure `upload_max_filesize=26M`, `post_max_size=30M`, `memory_limit=192M` e `display_errors=Off`;
+5. confirme que arquivos `.htaccess` estao visiveis no gerenciador de arquivos;
+6. crie `~/chambre-rose-api/.env` com as variaveis de producao;
+7. deixe `APP_DEBUG=false` e CORS somente com os dominios HTTPS reais;
+8. no primeiro acesso, use `SEED_DEMO_USERS=true`, `SEED_ADMIN_EMAIL=admin@admin.com` e uma senha temporaria; depois volte `SEED_DEMO_USERS=false` e apague a senha do `.env`;
+9. acesse `https://seu-dominio.com/api/health` e, depois do primeiro sucesso, defina `APP_AUTO_MIGRATE=false`.
+
+## Permissoes sugeridas
+
+```text
+diretorios: 755
+arquivos PHP/SQL/imagens: 644
+.env: 600 ou a opcao mais restrita aceita pelo provedor
+```
+
+Nunca coloque `.env`, senha do banco ou `JWT_SECRET` dentro de `public_html`, no Git ou em prints.
+
+## Adicionando migrations
+
+Migrations novas ficam em `database/migrations`, com um arquivo para MySQL e outro
+para PostgreSQL. Registre a nova versao em `DatabaseMigrator::migrations()` sem editar
+uma migration que ja tenha sido aplicada. O migrator usa lock no banco para impedir
+que dois processos apliquem a mesma versao ao mesmo tempo.

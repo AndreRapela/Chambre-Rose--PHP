@@ -14,6 +14,7 @@ final class Validator
         self::email($data, 'email', $errors);
         self::requiredString($data, 'password', 6, 120, $errors);
         self::throwIfInvalid($errors);
+
         return ['email' => trim((string) $data['email']), 'password' => (string) $data['password']];
     }
 
@@ -21,86 +22,54 @@ final class Validator
     public static function register(array $data, bool $includePassword = true): array
     {
         $errors = [];
-        foreach ([['firstName', 2, 80], ['lastName', 2, 80], ['email', 1, 160], ['phone', 8, 40],
-            ['address', 4, 160], ['city', 2, 80], ['country', 2, 80], ['postalCode', 4, 20]] as [$field, $min, $max]) {
-            self::requiredString($data, $field, $min, $max, $errors);
-        }
+        self::requiredString($data, 'firstName', 2, 80, $errors);
+        self::requiredString($data, 'lastName', 2, 80, $errors);
+        self::requiredString($data, 'email', 1, 160, $errors);
         self::email($data, 'email', $errors);
+        self::requiredString($data, 'phone', 8, 40, $errors);
+        self::optionalString($data, 'address', 160, $errors);
+        self::optionalString($data, 'city', 80, $errors);
+        self::optionalString($data, 'country', 80, $errors);
+        self::optionalString($data, 'postalCode', 20, $errors);
         if ($includePassword) {
-            self::requiredString($data, 'password', 6, 120, $errors);
+            self::validatePassword($data['password'] ?? null, $errors);
         }
         self::throwIfInvalid($errors);
+
         $result = [];
         foreach (['firstName', 'lastName', 'email', 'phone', 'address', 'city', 'country', 'postalCode'] as $field) {
-            $result[$field] = trim((string) $data[$field]);
+            $result[$field] = trim((string) ($data[$field] ?? ''));
         }
         if ($includePassword) {
             $result['password'] = (string) $data['password'];
         }
+
         return $result;
     }
 
-    /** @param array<string, mixed> $data */
-    public static function emailOnly(array $data): string
+    public static function accountType(array $data): string
     {
-        $errors = [];
-        self::requiredString($data, 'email', 1, 160, $errors);
-        self::email($data, 'email', $errors);
-        self::throwIfInvalid($errors);
-        return strtolower(trim((string) $data['email']));
+        $value = strtoupper(trim((string) ($data['accountType'] ?? $data['role'] ?? 'VISITOR')));
+        if ($value === 'USER') {
+            $value = 'VISITOR';
+        }
+        if (!in_array($value, ['VISITOR', 'ESCORT', 'STORE'], true)) {
+            throw new ApiException(400, 'Invalid request data.', [
+                'accountType' => 'must be VISITOR, ESCORT or STORE',
+            ]);
+        }
+
+        return $value;
     }
 
-    /** @param array<string, mixed> $data @return array{token: string, password: string} */
-    public static function passwordReset(array $data): array
+    public static function locale(array $data): string
     {
-        $errors = [];
-        self::requiredString($data, 'token', 32, 512, $errors);
-        self::requiredString($data, 'password', 8, 120, $errors);
-        self::throwIfInvalid($errors);
-        return ['token' => trim((string) $data['token']), 'password' => (string) $data['password']];
+        $locale = strtolower(substr(trim((string) ($data['locale'] ?? 'fr')), 0, 2));
+
+        return in_array($locale, ['fr', 'en', 'pt'], true) ? $locale : 'fr';
     }
 
     /** @param array<string, mixed> $data @return array<string, mixed> */
-    public static function product(array $data, bool $imageUrlRequired): array
-    {
-        $errors = [];
-        self::requiredString($data, 'name', 1, 120, $errors);
-        self::requiredString($data, 'category', 1, 60, $errors);
-        self::number($data, 'price', true, 0.01, 99999999.99, $errors);
-        self::number($data, 'originalPrice', false, 0.01, 99999999.99, $errors);
-        if ($imageUrlRequired) {
-            self::requiredString($data, 'imageUrl', 1, 500, $errors);
-        } else {
-            self::optionalString($data, 'imageUrl', 500, $errors);
-        }
-        foreach (['secondaryImageUrl' => 500, 'tag' => 40, 'saleLabel' => 40, 'description' => 1500,
-            'storeName' => 120, 'storeAddress' => 160, 'storeCity' => 80, 'storeSegment' => 80,
-            'storeHours' => 80, 'productType' => 80, 'material' => 160, 'availableSizes' => 120,
-            'colorOptions' => 120, 'stockStatus' => 80, 'shippingNote' => 160, 'careInstructions' => 160] as $field => $max) {
-            self::optionalString($data, $field, $max, $errors);
-        }
-        self::integer($data, 'rating', false, 0, 10, $errors);
-        self::integer($data, 'reviews', false, 0, 2147483647, $errors);
-        self::integer($data, 'purchaseCount', false, 0, 2147483647, $errors);
-        self::throwIfInvalid($errors);
-        $result = [];
-        foreach (['name', 'category', 'imageUrl', 'secondaryImageUrl', 'tag', 'saleLabel', 'description',
-            'storeName', 'storeAddress', 'storeCity', 'storeSegment', 'storeHours', 'productType', 'material',
-            'availableSizes', 'colorOptions', 'stockStatus', 'shippingNote', 'careInstructions'] as $field) {
-            $value = isset($data[$field]) ? trim((string) $data[$field]) : '';
-            $result[$field] = $value === '' ? null : $value;
-        }
-        $result['name'] = trim((string) $data['name']);
-        $result['category'] = strtolower(trim((string) $data['category']));
-        $result['price'] = (float) $data['price'];
-        $result['originalPrice'] = self::nullableFloat($data['originalPrice'] ?? null);
-        $result['reviews'] = self::nullableInt($data['reviews'] ?? null) ?? 0;
-        $result['rating'] = self::nullableInt($data['rating'] ?? null);
-        $result['purchaseCount'] = self::nullableInt($data['purchaseCount'] ?? null);
-        return $result;
-    }
-
-    /** @param array<string, mixed> $data */
     public static function vipActive(array $data): bool
     {
         if (!array_key_exists('vipActive', $data)) {
@@ -109,18 +78,34 @@ final class Validator
         if (!is_bool($data['vipActive'])) {
             throw new ApiException(400, 'Invalid request data.', ['vipActive' => 'must be true or false']);
         }
+
         return $data['vipActive'];
     }
 
-    /** @param array<string, mixed> $data */
-    public static function accountStatus(array $data): string
+    /** @param array<string,string> $errors */
+    public static function validatePassword(mixed $password, array &$errors): void
     {
-        $status = strtoupper(trim((string) ($data['accountStatus'] ?? '')));
-        if (!in_array($status, ['APPROVED', 'REJECTED'], true)) {
-            throw new ApiException(400, 'Invalid request data.',
-                ['accountStatus' => 'must be APPROVED or REJECTED']);
+        if (!is_string($password) || strlen($password) < 8 || strlen($password) > 20) {
+            $errors['password'] = 'must contain between 8 and 20 characters';
+
+            return;
         }
-        return $status;
+        if (!preg_match('/[a-z]/', $password)
+            || !preg_match('/[A-Z]/', $password)
+            || !preg_match('/\d/', $password)
+            || !preg_match('/[^A-Za-z0-9]/', $password)
+        ) {
+            $errors['password'] = 'must include an uppercase letter, a lowercase letter, a number and a special character';
+        }
+    }
+
+    public static function password(string $password): string
+    {
+        $errors = [];
+        self::validatePassword($password, $errors);
+        self::throwIfInvalid($errors);
+
+        return $password;
     }
 
     /** @param array<string, mixed> $data @param array<string, string> $errors */
@@ -128,10 +113,12 @@ final class Validator
     {
         if (!isset($data[$field]) || !is_string($data[$field]) || trim($data[$field]) === '') {
             $errors[$field] = 'must not be blank';
+
             return;
         }
         if (!self::isValidUtf8($data[$field])) {
             $errors[$field] = 'must be valid UTF-8';
+
             return;
         }
         $length = self::length($data[$field]);
@@ -154,20 +141,26 @@ final class Validator
     /** @param array<string, mixed> $data @param array<string, string> $errors */
     private static function email(array $data, string $field, array &$errors): void
     {
-        if (isset($data[$field]) && is_string($data[$field])
-            && filter_var(trim($data[$field]), FILTER_VALIDATE_EMAIL) === false) {
+        if (isset($data[$field]) && is_string($data[$field]) && filter_var(trim($data[$field]), FILTER_VALIDATE_EMAIL) === false) {
             $errors[$field] = 'must be a well-formed email address';
         }
     }
 
     /** @param array<string, mixed> $data @param array<string, string> $errors */
-    private static function number(array $data, string $field, bool $required, float $min, float $max, array &$errors): void
-    {
+    private static function number(
+        array $data,
+        string $field,
+        bool $required,
+        float $min,
+        float $max,
+        array &$errors
+    ): void {
         $value = $data[$field] ?? null;
         if ($value === null || $value === '') {
             if ($required) {
                 $errors[$field] = 'must not be null';
             }
+
             return;
         }
         if (!is_numeric($value) || !is_finite((float) $value) || (float) $value < $min || (float) $value > $max) {
@@ -183,6 +176,7 @@ final class Validator
             if ($required) {
                 $errors[$field] = 'must not be null';
             }
+
             return;
         }
         $valid = filter_var($value, FILTER_VALIDATE_INT);

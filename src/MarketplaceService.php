@@ -1,0 +1,238 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ChambreRose;
+
+use DateTimeImmutable;
+
+final class MarketplaceService
+{
+    private const IMAGE_MAX = 8 * 1024 * 1024;
+    private const VIDEO_MAX = 25 * 1024 * 1024;
+
+    public function __construct(
+        private readonly UserRepository $users,
+        private readonly ProfessionalProfileRepository $profiles,
+        private readonly ProfileMediaRepository $media
+    ) {
+    }
+
+    /** @param array<string,mixed> $input */
+    public function saveProfile(int $userId, array $input): array
+    {
+        $user = $this->users->find($userId) ?? throw new ApiException(404, 'User not found.');
+        if (!in_array($user['role'], ['ESCORT','STORE'], true)) {
+            throw new ApiException(403, 'A professional account is required.');
+        }
+        $existing = $this->profiles->findByUser($userId) ?? [];
+        $data = $this->validateProfile($user['role'], array_replace($existing, $input), $user);
+
+        return $this->withMedia($this->profiles->upsert($userId, $user['role'], $data));
+    }
+
+    /** @param array<string,mixed> $input @param array<string,mixed> $user */
+    public function validateProfileInput(string $type, array $input, array $user): void
+    {
+        $this->validateProfile($type, $input, $user);
+    }
+
+    public function ownProfile(int $userId): array
+    {
+        $profile = $this->profiles->findByUser($userId) ?? throw new ApiException(404, 'Professional profile not found.');
+
+        return $this->withMedia($profile);
+    }
+
+    public function publicProfile(int $userId): array
+    {
+        $this->profiles->incrementViews($userId);
+        $profile = $this->profiles->findByUser($userId, true) ?? throw new ApiException(404, 'Listing not found.');
+        $profile['reviews'] = $this->profiles->reviews($userId);
+
+        return $this->withMedia($profile, true);
+    }
+
+    /** @param array<string,mixed> $filters @return array<string,mixed> */
+    public function listings(array $filters): array
+    {
+        $result = $this->profiles->search($filters);
+        $userIds = array_map(
+            static fn (array $profile): int => (int) $profile['userId'],
+            $result['items']
+        );
+        $mediaByUser = $this->media->listForUsers($userIds, true);
+        $result['items'] = array_map(
+            static function (array $profile) use ($mediaByUser): array {
+                $profile['media'] = $mediaByUser[(int) $profile['userId']] ?? [];
+
+                return $profile;
+            },
+            $result['items']
+        );
+
+        return $result;
+    }
+
+    public function upload(int $userId, UploadedFile $file, int $position = 0): array
+    {
+        $this->ownProfile($userId);
+        if ($file->isEmpty()) {
+            throw new ApiException(400, 'A media file is required.', ['media' => 'is required']);
+        }
+        $mime = $file->detectedContentType();
+        $images = ['image/jpeg','image/png','image/webp'];
+        $videos = ['video/mp4','video/webm'];
+        if (in_array($mime, $images, true)) {
+            $type = 'PHOTO';
+            $max = self::IMAGE_MAX;
+            $limit = 15;
+        } elseif (in_array($mime, $videos, true)) {
+            $type = 'VIDEO';
+            $max = self::VIDEO_MAX;
+            $limit = 3;
+        } else {
+            throw new ApiException(400, 'Media must be JPG, PNG, WebP, MP4 or WebM.');
+        }
+        $size = $file->actualSize();
+        if ($size > $max) {
+            throw new ApiException(413, $type === 'PHOTO' ? 'A photo cannot exceed 8 MB.' : 'A video cannot exceed 25 MB.');
+        }
+        $name = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', basename(str_replace('\\', '/', $file->name))) ?? '') ?: strtolower($type);
+
+        return $this->media->insertWithinLimit(
+            $userId,
+            $type,
+            $name,
+            $mime,
+            $file->bytes(),
+            max(0, min(32767, $position)),
+            $limit
+        );
+    }
+
+    /** @param array<string,mixed> $input @param array<string,mixed> $user @return array<string,mixed> */
+    private function validateProfile(string $type, array $input, array $user): array
+    {
+        $aliases = ['description' => 'bio','serviceArea' => 'location','businessSegment' => 'segment'];
+        foreach ($aliases as $alias => $target) {
+            if (!array_key_exists($target, $input) && array_key_exists($alias, $input)) {
+                $input[$target] = $input[$alias];
+            }
+        }
+        $errors = [];
+        $display = trim((string)($input['displayName'] ?? ''));
+        if ($display === '' || self::len($display) > 120) {
+            $errors['displayName'] = 'must contain between 1 and 120 characters';
+        }
+        $data = ['displayName' => $display];
+        foreach (['gender' => 40,'location' => 160,'bio' => 3000,'hair' => 60,'eyes' => 60,'origin' => 80,'availability' => 500,'website' => 300,'businessName' => 160,'legalName' => 160,'segment' => 100,'businessAddress' => 200,'businessHours' => 500] as $field => $max) {
+            $value = isset($input[$field]) ? trim((string)$input[$field]) : '';
+            if (self::len($value) > $max) {
+                $errors[$field] = "cannot exceed {$max} characters";
+            }
+            $data[$field] = $value === '' ? null : $value;
+        }
+        if ($data['website'] !== null) {
+            $scheme = strtolower((string) parse_url($data['website'], PHP_URL_SCHEME));
+            if (filter_var($data['website'], FILTER_VALIDATE_URL) === false
+                || !in_array($scheme, ['http', 'https'], true)
+            ) {
+                $errors['website'] = 'must be a valid HTTP or HTTPS URL';
+            }
+        }
+        foreach (['languages','services','interests','contactOptions'] as $field) {
+            $value = $input[$field] ?? [];
+            if (is_string($value)) {
+                $decoded = json_decode($value, true);
+                $value = is_array($decoded) ? $decoded : array_filter(array_map('trim', explode(',', $value)));
+            }
+            if (!is_array($value) || count($value) > 30) {
+                $errors[$field] = 'must be a list with at most 30 values';
+            }
+            $items = is_array($value) ? $value : [];
+            $items = array_map(static fn ($item) => trim((string) $item), $items);
+            $items = array_filter($items, static fn (string $item) => $item !== '' && self::len($item) <= 80);
+            $data[$field] = array_values(array_unique($items));
+        }
+        foreach (['priceFrom','priceTo'] as $field) {
+            $value = $input[$field] ?? null;
+            if ($value !== null && $value !== '' && (!is_numeric($value) || (float)$value < 0 || (float)$value > 99999999.99)) {
+                $errors[$field] = 'must be a valid non-negative amount';
+            }
+            $data[$field] = $value === null || $value === '' ? null : (float)$value;
+        }
+        if ($data['priceFrom'] !== null && $data['priceTo'] !== null && $data['priceFrom'] > $data['priceTo']) {
+            $errors['priceTo'] = 'must be greater than or equal to priceFrom';
+        }
+        if ($type === 'ESCORT') {
+            $birth = trim((string)($input['birthDate'] ?? ''));
+
+            try {
+                $date = $birth === '' ? null : new DateTimeImmutable($birth);
+                $today = new DateTimeImmutable('today');
+                if ($date === null
+                    || $date->format('Y-m-d') !== $birth
+                    || $date > $today
+                    || $date->diff($today)->y < 18
+                ) {
+                    $errors['birthDate'] = 'must be a valid date for an adult (18+)';
+                }
+            } catch (\Throwable) {
+                $errors['birthDate'] = 'must be a valid date for an adult (18+)';
+            }
+            $data['birthDate'] = $birth === '' ? null : $birth;
+            $height = $input['heightCm'] ?? null;
+            if ($height !== null && $height !== '' && (filter_var($height, FILTER_VALIDATE_INT) === false || (int)$height < 100 || (int)$height > 250)) {
+                $errors['heightCm'] = 'must be between 100 and 250';
+            }
+            $data['heightCm'] = $height === null || $height === '' ? null : (int)$height;
+            foreach (['weightKg' => [35, 250], 'bustCm' => [40, 200], 'waistCm' => [40, 200], 'hipsCm' => [40, 220]] as $field => [$minimum, $maximum]) {
+                $value = $input[$field] ?? null;
+                if ($value !== null && $value !== '' && (filter_var($value, FILTER_VALIDATE_INT) === false || (int) $value < $minimum || (int) $value > $maximum)) {
+                    $errors[$field] = "must be between {$minimum} and {$maximum}";
+                }
+                $data[$field] = $value === null || $value === '' ? null : (int) $value;
+            }
+            if ($data['gender'] === null) {
+                $errors['gender'] = 'is required';
+            }
+        } else {
+            $data['birthDate'] = null;
+            $data['heightCm'] = null;
+            $data['gender'] = null;
+            $data['hair'] = null;
+            $data['eyes'] = null;
+            $data['weightKg'] = null;
+            $data['bustCm'] = null;
+            $data['waistCm'] = null;
+            $data['hipsCm'] = null;
+            $data['origin'] = null;
+            if ($data['businessName'] === null) {
+                $data['businessName'] = $display;
+            }
+            if ($data['segment'] === null) {
+                $errors['segment'] = 'is required';
+            }
+        }
+        if ($data['location'] === null) {
+            $data['location'] = $user['city'];
+        }
+        if ($errors !== []) {
+            throw new ApiException(400, 'Invalid professional profile data.', $errors);
+        }
+
+        return $data;
+    }
+    /** @param array<string,mixed> $profile @return array<string,mixed> */
+    private function withMedia(array $profile, bool $public = false): array
+    {
+        $profile['media'] = $this->media->listFor((int) $profile['userId'], $public);
+
+        return $profile;
+    }
+    private static function len(string $value): int
+    {
+        return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
+    }
+}

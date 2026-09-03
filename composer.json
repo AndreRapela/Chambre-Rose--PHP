@@ -1,22 +1,24 @@
 {
-  "name": "chambre-rose/api",
-  "description": "PHP API for Chambre Rose",
+  "name": "chambre-rose/backend-php",
+  "description": "API PHP da loja Chambre Rose, compativel com o frontend Angular existente.",
   "type": "project",
-  "license": "proprietary",
   "require": {
     "php": "^8.2",
     "ext-fileinfo": "*",
     "ext-json": "*",
-    "ext-pdo": "*",
-    "phpmailer/phpmailer": "^6.9"
+    "ext-pdo": "*"
   },
-  "autoload": {
-    "psr-4": {
-      "ChambreRose\\": "src/"
-    }
+  "suggest": {
+    "ext-pdo_mysql": "Necessaria para usar o MySQL da EasyHost.",
+    "ext-pdo_pgsql": "Necessaria somente para desenvolvimento com PostgreSQL."
+  },
+  "scripts": {
+    "serve": "php -S localhost:8080 -t public public/router.php",
+    "setup": "php bin/setup.php",
+    "test": "php tests/run.php",
+    "test:integration": "php tests/integration.php"
   },
   "config": {
-    "optimize-autoloader": true,
     "sort-packages": true
   }
 }

@@ -1,6 +1,4 @@
-.git
 .env
-vendor
-storage/establishment-photos/*
-*.log
-
+.git
+tests
+README.md
