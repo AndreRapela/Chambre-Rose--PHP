@@ -16,7 +16,8 @@
     "serve": "php -S localhost:8080 -t public public/router.php",
     "setup": "php bin/setup.php",
     "test": "php tests/run.php",
-    "test:integration": "php tests/integration.php"
+    "test:integration": "php tests/integration.php",
+    "test:cleanup": "php tests/cleanup-integration-data.php"
   },
   "config": {
     "sort-packages": true

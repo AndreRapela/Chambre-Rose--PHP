@@ -2,12 +2,44 @@
 
 declare(strict_types=1);
 
+require dirname(__DIR__) . '/bootstrap.php';
+require __DIR__ . '/IntegrationDataCleanup.php';
+
+use ChambreRose\Database;
+use ChambreRose\Tests\IntegrationDataCleanup;
+
 $base = rtrim(getenv('TEST_API_URL') ?: 'http://localhost:8080', '/');
 $adminEmail = getenv('TEST_ADMIN_EMAIL') ?: 'admin@admin.com';
 $adminPassword = getenv('TEST_ADMIN_PASSWORD') ?: '';
 $fixture = dirname(__DIR__) . '/resources/brand/brand-logo.png';
-$suffix = (string)time();
+$runId = gmdate('YmdHis') . '-' . bin2hex(random_bytes(6));
+$cleanup = new IntegrationDataCleanup(Database::connection(), $runId);
+$profileName = $cleanup->profileName();
 $assertions = 0;
+$cleanupComplete = false;
+
+$cleanupFixtures = static function () use ($cleanup, &$cleanupComplete): void {
+    if ($cleanupComplete) {
+        return;
+    }
+
+    $cleanup->cleanup();
+    if ($cleanup->remainingCount() !== 0) {
+        throw new RuntimeException('Integration fixtures remained in the database after cleanup.');
+    }
+    $cleanupComplete = true;
+};
+
+register_shutdown_function(static function () use ($cleanupFixtures): void {
+    try {
+        $cleanupFixtures();
+    } catch (Throwable $exception) {
+        fwrite(STDERR, "Integration cleanup failed: {$exception->getMessage()}\n");
+        if (error_get_last() === null) {
+            exit(1);
+        }
+    }
+});
 
 $assert = static function (bool $condition, string $message) use (&$assertions): void {
     $assertions++;
@@ -39,14 +71,14 @@ $request = static function (string $method, string $path, ?array $body = null, ?
 
 [$visitorStatus, $visitor] = $request('POST', '/api/auth/register', [
     'firstName' => 'Visitor', 'lastName' => 'Integration',
-    'email' => "visitor-{$suffix}@example.com", 'phone' => '12345678',
+    'email' => $cleanup->email('visitor'), 'phone' => '12345678',
     'password' => 'Integration9!pass', 'accountType' => 'VISITOR',
 ]);
 $assert($visitorStatus === 201 && isset($visitor['token']), 'Visitor registration must return a token.');
 
 [$weakPasswordStatus, $weakPasswordBody] = $request('POST', '/api/auth/register', [
     'firstName' => 'Weak', 'lastName' => 'Password',
-    'email' => "weak-password-{$suffix}@example.com", 'phone' => '12345678',
+    'email' => $cleanup->email('weak-password'), 'phone' => '12345678',
     'password' => 'password', 'accountType' => 'VISITOR',
 ]);
 $assert(
@@ -55,15 +87,15 @@ $assert(
 );
 
 $profile = json_encode([
-    'displayName' => 'Profile Integration', 'birthDate' => '1995-05-12', 'gender' => 'woman',
+    'displayName' => $profileName, 'birthDate' => '1995-05-12', 'gender' => 'woman',
     'location' => 'Brussels', 'bio' => 'Integration profile', 'languages' => ['fr'],
-    'services' => ['massage'], 'contactEmail' => "contact-{$suffix}@example.com",
+    'services' => ['massage'], 'contactEmail' => "contact-{$runId}@example.com",
     'responseTime' => 'FEW_HOURS',
 ], JSON_THROW_ON_ERROR);
 $boundary = 'integration-' . bin2hex(random_bytes(12));
 $fields = [
     'firstName' => 'Profile', 'lastName' => 'Integration',
-    'email' => "profile-{$suffix}@example.com", 'phone' => '12345678',
+    'email' => $cleanup->email('profile'), 'phone' => '12345678',
     'password' => 'Integration9!pass', 'accountType' => 'ESCORT', 'locale' => 'pt', 'profile' => $profile,
 ];
 $parts = [];
@@ -93,7 +125,7 @@ $futureProfile = json_encode([
 ], JSON_THROW_ON_ERROR);
 $futureBoundary = 'future-profile-' . bin2hex(random_bytes(12));
 $futureFields = $fields;
-$futureFields['email'] = "future-profile-{$suffix}@example.com";
+$futureFields['email'] = $cleanup->email('future-profile');
 $futureFields['profile'] = $futureProfile;
 $futureParts = [];
 foreach ($futureFields as $name => $value) {
@@ -125,7 +157,7 @@ $unsafeWebsiteProfile = json_encode([
 ], JSON_THROW_ON_ERROR);
 $unsafeBoundary = 'unsafe-website-' . bin2hex(random_bytes(12));
 $unsafeFields = $fields;
-$unsafeFields['email'] = "unsafe-website-{$suffix}@example.com";
+$unsafeFields['email'] = $cleanup->email('unsafe-website');
 $unsafeFields['profile'] = $unsafeWebsiteProfile;
 $unsafeParts = [];
 foreach ($unsafeFields as $name => $value) {
@@ -149,7 +181,7 @@ $assert(
 );
 
 [$pendingStatus] = $request('POST', '/api/auth/login', [
-    'email' => "profile-{$suffix}@example.com", 'password' => 'Integration9!pass',
+    'email' => $cleanup->email('profile'), 'password' => 'Integration9!pass',
 ]);
 $assert($pendingStatus === 403, 'Pending professional login must be blocked.');
 
@@ -157,12 +189,12 @@ if ($adminPassword !== '') {
     [$adminStatus, $admin] = $request('POST', '/api/auth/login', ['email' => $adminEmail, 'password' => $adminPassword]);
     $assert($adminStatus === 200, 'Admin login must work.');
     [$productCreateStatus, $testProduct] = $request('POST', '/api/products', [
-        'name' => 'Integration Product',
+        'name' => $cleanup->productName(),
         'category' => 'wellness',
         'price' => 29.9,
         'imageUrl' => '/assets/carousel-pink-lace-tie.jpeg',
-        'description' => 'Integration product for purchase-count validation.',
-        'storeName' => 'Integration Store',
+        'description' => $cleanup->productDescription(),
+        'storeName' => $cleanup->storeName(),
         'active' => true,
     ], $admin['token']);
     $productId = (int) ($testProduct['id'] ?? 0);
@@ -181,7 +213,7 @@ if ($adminPassword !== '') {
         'A non-VIP visitor must be able to buy a store product and add exactly one star count.'
     );
     [$usersStatus, $users] = $request('GET', '/api/admin/users', null, $admin['token']);
-    $match = array_values(array_filter($users, static fn (array $user): bool => $user['email'] === "profile-{$suffix}@example.com"));
+    $match = array_values(array_filter($users, static fn (array $user): bool => $user['email'] === $cleanup->email('profile')));
     $assert($usersStatus === 200 && count($match) === 1, 'Admin must see the pending account.');
     $id = (int)$match[0]['id'];
     [$adminProfileStatus, $adminProfile] = $request('GET', "/api/profiles/{$id}", null, $admin['token']);
@@ -210,7 +242,7 @@ if ($adminPassword !== '') {
     );
     [$listingsStatus, $listings] = $request(
         'GET',
-        '/api/listings?pageSize=50&q=' . rawurlencode('Profile Integration')
+        '/api/listings?pageSize=50&q=' . rawurlencode($profileName)
     );
     $listedProfile = array_values(array_filter(
         $listings['items'] ?? [],
@@ -295,7 +327,7 @@ if ($adminPassword !== '') {
     );
 
     [$professionalLoginStatus, $professionalLogin] = $request('POST', '/api/auth/login', [
-        'email' => "profile-{$suffix}@example.com", 'password' => 'Integration9!pass',
+        'email' => $cleanup->email('profile'), 'password' => 'Integration9!pass',
     ]);
     $assert($professionalLoginStatus === 200, 'Approved professional login must work.');
     [$lockedSelectionStatus, $lockedSelection] = $request(
@@ -359,7 +391,7 @@ if ($adminPassword !== '') {
     [$contactStatus, $contact] = $request('GET', "/api/listings/{$id}/contact", null, $visitor['token']);
     $assert(
         $contactStatus === 200
-        && ($contact['email'] ?? null) === "contact-{$suffix}@example.com"
+        && ($contact['email'] ?? null) === "contact-{$runId}@example.com"
         && ($contact['responseTime'] ?? null) === 'FEW_HOURS'
         && ($contact['canReview'] ?? false) === true,
         'A VIP visitor must receive protected contact details and review eligibility.'
@@ -434,4 +466,5 @@ if ($adminPassword !== '') {
     $assert($participantAccessStatus === 200, 'Deleting one inbox copy must preserve the other participant copy.');
 }
 
-fwrite(STDOUT, "OK - {$assertions} integration assertions\n");
+$cleanupFixtures();
+fwrite(STDOUT, "OK - {$assertions} integration assertions; database cleanup verified\n");
