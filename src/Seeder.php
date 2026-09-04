@@ -58,6 +58,7 @@ final class Seeder
                 'languages' => ['French', 'English'],
                 'services' => ['Discreet delivery', 'Store pickup', 'Private advice'],
                 'interests' => [], 'contactOptions' => ['Internal message'],
+                'contactEmail' => 'contact@maison-rose.invalid', 'responseTime' => 'WITHIN_DAY',
                 'availability' => 'Monday to Saturday, 10:00–20:00', 'website' => null,
                 'priceFrom' => 19, 'priceTo' => 189, 'businessName' => 'Maison Rose Intime',
                 'legalName' => 'MVP demonstration account', 'segment' => 'Sex shop & intimate wellness',
@@ -180,6 +181,7 @@ final class Seeder
                     'services' => ['Private message', 'Personalized photos', 'Video call'],
                     'interests' => ['Fine lingerie', 'Travel', 'Photography', 'Conversation'],
                     'contactOptions' => ['Private message|0', 'Personalized photos|20', 'Short custom video|35', 'Video call (15 min)|45'],
+                    'contactEmail' => $email, 'responseTime' => $index < 2 ? 'LESS_THAN_HOUR' : 'FEW_HOURS',
                     'availability' => 'Online today', 'website' => null, 'priceFrom' => 89, 'priceTo' => 189,
                     'businessName' => null, 'legalName' => null, 'segment' => null, 'businessAddress' => null, 'businessHours' => null,
                 ]);

@@ -15,8 +15,10 @@ final class ProfessionalProfileRepository
         p.languages, p.height_cm, p.hair, p.eyes, p.services, p.availability, p.website,
         p.price_from, p.price_to, p.business_name, p.legal_name, p.segment,
         p.business_address, p.business_hours, p.weight_kg, p.bust_cm, p.waist_cm, p.hips_cm,
-        p.origin, p.interests, p.contact_options, p.purchase_count, p.views_count, p.verified,
+        p.origin, p.interests, p.contact_options, p.contact_email, p.response_time,
+        p.purchase_count, p.views_count, p.verified,
         (SELECT COUNT(*) FROM profile_reviews r WHERE r.profile_user_id=p.user_id) AS review_count,
+        (SELECT AVG(r.rating) FROM profile_reviews r WHERE r.profile_user_id=p.user_id) AS average_rating,
         p.created_at, p.updated_at,
         u.city, u.role, u.vip_active, u.approval_status
         SQL;
@@ -36,12 +38,14 @@ final class ProfessionalProfileRepository
                   height_cm, hair, eyes, services, availability, website, price_from, price_to,
                   business_name, legal_name, segment, business_address, business_hours,
                   weight_kg, bust_cm, waist_cm, hips_cm, origin, interests, contact_options,
+                  contact_email, response_time,
                   created_at, updated_at
                 ) VALUES (
                   :user_id, :profile_type, :display_name, :birth_date, :gender, :location, :bio, :languages,
                   :height_cm, :hair, :eyes, :services, :availability, :website, :price_from, :price_to,
                   :business_name, :legal_name, :segment, :business_address, :business_hours,
                   :weight_kg, :bust_cm, :waist_cm, :hips_cm, :origin, :interests, :contact_options,
+                  :contact_email, :response_time,
                   CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3)
                 ) ON DUPLICATE KEY UPDATE
                   profile_type=VALUES(profile_type), display_name=VALUES(display_name),
@@ -54,6 +58,7 @@ final class ProfessionalProfileRepository
                   business_hours=VALUES(business_hours), weight_kg=VALUES(weight_kg),
                   bust_cm=VALUES(bust_cm), waist_cm=VALUES(waist_cm), hips_cm=VALUES(hips_cm),
                   origin=VALUES(origin), interests=VALUES(interests), contact_options=VALUES(contact_options),
+                  contact_email=VALUES(contact_email), response_time=VALUES(response_time),
                   updated_at=CURRENT_TIMESTAMP(3)
                 SQL;
         } else {
@@ -63,12 +68,14 @@ final class ProfessionalProfileRepository
                   height_cm, hair, eyes, services, availability, website, price_from, price_to,
                   business_name, legal_name, segment, business_address, business_hours,
                   weight_kg, bust_cm, waist_cm, hips_cm, origin, interests, contact_options,
+                  contact_email, response_time,
                   created_at, updated_at
                 ) VALUES (
                   :user_id, :profile_type, :display_name, :birth_date, :gender, :location, :bio, :languages,
                   :height_cm, :hair, :eyes, :services, :availability, :website, :price_from, :price_to,
                   :business_name, :legal_name, :segment, :business_address, :business_hours,
                   :weight_kg, :bust_cm, :waist_cm, :hips_cm, :origin, :interests, :contact_options,
+                  :contact_email, :response_time,
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 ) ON CONFLICT (user_id) DO UPDATE SET
                   profile_type=EXCLUDED.profile_type, display_name=EXCLUDED.display_name,
@@ -82,7 +89,8 @@ final class ProfessionalProfileRepository
                   business_hours=EXCLUDED.business_hours, weight_kg=EXCLUDED.weight_kg,
                   bust_cm=EXCLUDED.bust_cm, waist_cm=EXCLUDED.waist_cm, hips_cm=EXCLUDED.hips_cm,
                   origin=EXCLUDED.origin, interests=EXCLUDED.interests,
-                  contact_options=EXCLUDED.contact_options, updated_at=CURRENT_TIMESTAMP
+                  contact_options=EXCLUDED.contact_options, contact_email=EXCLUDED.contact_email,
+                  response_time=EXCLUDED.response_time, updated_at=CURRENT_TIMESTAMP
                 SQL;
         }
         $this->pdo->prepare($sql)->execute($params);
@@ -127,16 +135,66 @@ final class ProfessionalProfileRepository
     public function reviews(int $userId): array
     {
         $statement = $this->pdo->prepare(
-            'SELECT id,reviewer_name,body,created_at FROM profile_reviews WHERE profile_user_id=:id ORDER BY created_at DESC,id DESC LIMIT 12'
+            'SELECT id,reviewer_name,rating,body,created_at FROM profile_reviews WHERE profile_user_id=:id ORDER BY created_at DESC,id DESC LIMIT 12'
         );
         $statement->execute(['id' => $userId]);
 
         return array_map(static fn (array $row): array => [
             'id' => (int) $row['id'],
             'reviewerName' => (string) $row['reviewer_name'],
+            'rating' => max(1, min(5, (int) $row['rating'])),
             'body' => (string) $row['body'],
             'createdAt' => self::time($row['created_at']),
         ], $statement->fetchAll());
+    }
+
+    public function canReview(int $profileUserId, int $reviewerUserId): bool
+    {
+        if ($profileUserId === $reviewerUserId) {
+            return false;
+        }
+        $statement = $this->pdo->prepare(
+            "SELECT 1 FROM marketplace_orders o
+             WHERE o.profile_user_id=:profile AND o.buyer_user_id=:reviewer
+               AND o.order_type='PROFILE' AND o.status='COMPLETED'
+               AND NOT EXISTS (
+                 SELECT 1 FROM profile_reviews r
+                 WHERE r.profile_user_id=o.profile_user_id AND r.reviewer_user_id=o.buyer_user_id
+               ) LIMIT 1"
+        );
+        $statement->execute(['profile' => $profileUserId, 'reviewer' => $reviewerUserId]);
+
+        return $statement->fetchColumn() !== false;
+    }
+
+    /** @return array<string,mixed> */
+    public function addReview(int $profileUserId, int $reviewerUserId, string $reviewerName, int $rating, string $body): array
+    {
+        if (!$this->canReview($profileUserId, $reviewerUserId)) {
+            throw new ApiException(403, 'A completed selection is required before reviewing this profile.');
+        }
+        $sql = 'INSERT INTO profile_reviews (profile_user_id,reviewer_user_id,reviewer_name,rating,body,created_at)
+                VALUES (:profile,:reviewer,:name,:rating,:body,CURRENT_TIMESTAMP)';
+        if (!$this->isMySql()) {
+            $sql .= ' RETURNING id';
+        }
+        $statement = $this->pdo->prepare($sql);
+        $statement->execute([
+            'profile' => $profileUserId,
+            'reviewer' => $reviewerUserId,
+            'name' => $reviewerName,
+            'rating' => $rating,
+            'body' => $body,
+        ]);
+        $reviewId = $this->isMySql() ? (int) $this->pdo->lastInsertId() : (int) $statement->fetchColumn();
+
+        return [
+            'id' => $reviewId,
+            'reviewerName' => $reviewerName,
+            'rating' => $rating,
+            'body' => $body,
+            'createdAt' => gmdate('Y-m-d\TH:i:s.000\Z'),
+        ];
     }
 
     /** @param array<string, mixed> $filters @return array<string, mixed> */
@@ -257,6 +315,8 @@ final class ProfessionalProfileRepository
             'waist_cm' => $profile['waistCm'] ?? null, 'hips_cm' => $profile['hipsCm'] ?? null,
             'origin' => $profile['origin'] ?? null, 'interests' => self::encodeList($profile['interests'] ?? []),
             'contact_options' => self::encodeList($profile['contactOptions'] ?? []),
+            'contact_email' => $profile['contactEmail'] ?? null,
+            'response_time' => $profile['responseTime'] ?? null,
         ];
     }
 
@@ -280,6 +340,7 @@ final class ProfessionalProfileRepository
             'hair' => $row['hair'], 'eyes' => $row['eyes'], 'services' => self::decodeList($row['services']),
             'origin' => $row['origin'], 'interests' => self::decodeList($row['interests']),
             'contactOptions' => self::decodeList($row['contact_options']),
+            'contactEmail' => $row['contact_email'], 'responseTime' => $row['response_time'],
             'availability' => $row['availability'], 'website' => $row['website'],
             'priceFrom' => $row['price_from'] === null ? null : (float) $row['price_from'],
             'priceTo' => $row['price_to'] === null ? null : (float) $row['price_to'],
@@ -290,6 +351,7 @@ final class ProfessionalProfileRepository
             'starCount' => max(0, (int) $row['purchase_count']),
             'viewsCount' => max(0, (int) $row['views_count']),
             'reviewCount' => max(0, (int) $row['review_count']),
+            'averageRating' => $row['average_rating'] === null ? null : round((float) $row['average_rating'], 1),
             'verified' => self::bool($row['verified']),
             'approvalStatus' => (string) $row['approval_status'],
             'createdAt' => self::time($row['created_at']), 'updatedAt' => self::time($row['updated_at']),
@@ -312,7 +374,8 @@ final class ProfessionalProfileRepository
     /** @param array<string,mixed> $profile @return array<string,mixed> */
     private static function publicView(array $profile): array
     {
-        unset($profile['birthDate'], $profile['legalName'], $profile['businessAddress']);
+        $profile['hasContactEmail'] = isset($profile['contactEmail']) && $profile['contactEmail'] !== '';
+        unset($profile['birthDate'], $profile['legalName'], $profile['businessAddress'], $profile['contactEmail']);
 
         return $profile;
     }

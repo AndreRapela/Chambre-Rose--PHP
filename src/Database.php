@@ -238,6 +238,13 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-9-profile-experience',
+                'file' => dirname(__DIR__) . '/database/migrations/009-profile-experience.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 

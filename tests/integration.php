@@ -57,7 +57,8 @@ $assert(
 $profile = json_encode([
     'displayName' => 'Profile Integration', 'birthDate' => '1995-05-12', 'gender' => 'woman',
     'location' => 'Brussels', 'bio' => 'Integration profile', 'languages' => ['fr'],
-    'services' => ['massage'],
+    'services' => ['massage'], 'contactEmail' => "contact-{$suffix}@example.com",
+    'responseTime' => 'FEW_HOURS',
 ], JSON_THROW_ON_ERROR);
 $boundary = 'integration-' . bin2hex(random_bytes(12));
 $fields = [
@@ -202,8 +203,10 @@ if ($adminPassword !== '') {
         && !array_key_exists('birthDate', $listing)
         && !array_key_exists('legalName', $listing)
         && !array_key_exists('businessAddress', $listing)
+        && !array_key_exists('contactEmail', $listing)
+        && ($listing['hasContactEmail'] ?? false) === true
         && !array_key_exists('fileName', $listing['media'][0] ?? []),
-        'Approved listings must expose media and withhold private professional fields.'
+        'Approved listings must expose media and contact availability while withholding private fields.'
     );
     [$listingsStatus, $listings] = $request(
         'GET',
@@ -305,6 +308,23 @@ if ($adminPassword !== '') {
         $lockedSelectionStatus === 403 && isset($lockedSelection['fields']['vipRequired']),
         'A visitor without VIP access must not confirm a companion selection.'
     );
+    [$lockedContactStatus, $lockedContact] = $request(
+        'GET',
+        "/api/listings/{$id}/contact",
+        null,
+        $visitor['token']
+    );
+    $assert(
+        $lockedContactStatus === 403 && isset($lockedContact['fields']['vipRequired']),
+        'A visitor without VIP access must not reveal a companion contact email.'
+    );
+    [$earlyReviewStatus] = $request(
+        'POST',
+        "/api/listings/{$id}/reviews",
+        ['rating' => 5, 'body' => 'This review must wait for a completed selection.'],
+        $visitor['token']
+    );
+    $assert($earlyReviewStatus === 403, 'A visitor must not review a companion before a completed selection.');
     [$lockedConversationStatus, $lockedConversation] = $request(
         'POST',
         '/api/conversations',
@@ -335,6 +355,36 @@ if ($adminPassword !== '') {
         && (int) ($selectedProfile['starCount'] ?? -1) === $starsBeforeSelection + 1
         && !array_key_exists('rating', $selectedProfile),
         'A completed VIP selection must add one star count without exposing a score.'
+    );
+    [$contactStatus, $contact] = $request('GET', "/api/listings/{$id}/contact", null, $visitor['token']);
+    $assert(
+        $contactStatus === 200
+        && ($contact['email'] ?? null) === "contact-{$suffix}@example.com"
+        && ($contact['responseTime'] ?? null) === 'FEW_HOURS'
+        && ($contact['canReview'] ?? false) === true,
+        'A VIP visitor must receive protected contact details and review eligibility.'
+    );
+    [$reviewStatus, $review] = $request(
+        'POST',
+        "/api/listings/{$id}/reviews",
+        ['rating' => 4, 'body' => 'A respectful and verified integration experience.'],
+        $visitor['token']
+    );
+    [$duplicateReviewStatus] = $request(
+        'POST',
+        "/api/listings/{$id}/reviews",
+        ['rating' => 5, 'body' => 'This duplicate review must not be accepted.'],
+        $visitor['token']
+    );
+    [$reviewedListingStatus, $reviewedListing] = $request('GET', "/api/listings/{$id}");
+    $assert(
+        $reviewStatus === 201
+        && (int) ($review['rating'] ?? 0) === 4
+        && $duplicateReviewStatus === 403
+        && $reviewedListingStatus === 200
+        && (float) ($reviewedListing['averageRating'] ?? 0) > 0
+        && count($reviewedListing['reviews'] ?? []) > 0,
+        'A completed selection must allow one rated comment and update the public average.'
     );
     [$conversationStatus, $conversation] = $request(
         'POST',

@@ -168,6 +168,25 @@ final class App
         if ($method === 'GET' && preg_match('#^/api/listings/(\d+)$#', $path, $match)) {
             return Response::json($this->marketplace->publicProfile((int) $match[1]), 200, self::noStore());
         }
+        if ($method === 'GET' && preg_match('#^/api/listings/(\d+)/contact$#', $path, $match)) {
+            $user = $this->currentUser($request);
+
+            return Response::json(
+                $this->marketplace->contactDetails((int) $match[1], $user),
+                200,
+                self::noStore()
+            );
+        }
+        if ($method === 'POST' && preg_match('#^/api/listings/(\d+)/reviews$#', $path, $match)) {
+            $user = $this->currentUser($request);
+            $this->requireJson($request);
+
+            return Response::json(
+                $this->marketplace->submitReview((int) $match[1], $user, $request->json()),
+                201,
+                self::noStore()
+            );
+        }
         if ($method === 'POST' && preg_match('#^/api/listings/(\d+)/purchases$#', $path, $match)) {
             $user = $this->currentUser($request);
             if (!$user['vipActive']) {

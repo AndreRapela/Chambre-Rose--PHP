@@ -53,6 +53,62 @@ final class MarketplaceService
         return $this->withMedia($profile, true);
     }
 
+    /** @param array<string,mixed> $requester @return array<string,mixed> */
+    public function contactDetails(int $profileUserId, array $requester): array
+    {
+        $profile = $this->profiles->findByUser($profileUserId)
+            ?? throw new ApiException(404, 'Listing not found.');
+        if (($profile['approvalStatus'] ?? '') !== 'APPROVED') {
+            throw new ApiException(404, 'Listing not found.');
+        }
+        if ($profile['type'] === 'ESCORT'
+            && ($requester['role'] ?? '') === 'VISITOR'
+            && ($requester['vipActive'] ?? false) !== true
+        ) {
+            throw new ApiException(403, 'VIP membership is required to access companion contact details.', ['vipRequired' => 'true']);
+        }
+
+        return [
+            'email' => $profile['contactEmail'] ?? null,
+            'responseTime' => $profile['responseTime'] ?? null,
+            'canReview' => $this->profiles->canReview($profileUserId, (int) $requester['id']),
+        ];
+    }
+
+    /** @param array<string,mixed> $reviewer @param array<string,mixed> $input @return array<string,mixed> */
+    public function submitReview(int $profileUserId, array $reviewer, array $input): array
+    {
+        $profile = $this->profiles->findByUser($profileUserId, true)
+            ?? throw new ApiException(404, 'Listing not found.');
+        if ($profile['type'] !== 'ESCORT') {
+            throw new ApiException(400, 'Only companion profiles can be reviewed here.');
+        }
+        $rating = filter_var($input['rating'] ?? null, FILTER_VALIDATE_INT);
+        $body = trim((string) ($input['body'] ?? ''));
+        $errors = [];
+        if ($rating === false || $rating < 1 || $rating > 5) {
+            $errors['rating'] = 'must be an integer between 1 and 5';
+        }
+        if (self::len($body) < 10 || self::len($body) > 500) {
+            $errors['body'] = 'must contain between 10 and 500 characters';
+        }
+        if ($errors !== []) {
+            throw new ApiException(400, 'Invalid review data.', $errors);
+        }
+        $reviewerName = trim((string) ($reviewer['firstName'] ?? '') . ' ' . (string) ($reviewer['lastName'] ?? ''));
+        if ($reviewerName === '') {
+            $reviewerName = 'Member';
+        }
+
+        return $this->profiles->addReview(
+            $profileUserId,
+            (int) $reviewer['id'],
+            $reviewerName,
+            (int) $rating,
+            $body
+        );
+    }
+
     /** @param array<string,mixed> $filters @return array<string,mixed> */
     public function listings(array $filters): array
     {
@@ -126,7 +182,7 @@ final class MarketplaceService
             $errors['displayName'] = 'must contain between 1 and 120 characters';
         }
         $data = ['displayName' => $display];
-        foreach (['gender' => 40,'location' => 160,'bio' => 3000,'hair' => 60,'eyes' => 60,'origin' => 80,'availability' => 500,'website' => 300,'businessName' => 160,'legalName' => 160,'segment' => 100,'businessAddress' => 200,'businessHours' => 500] as $field => $max) {
+        foreach (['gender' => 40,'location' => 160,'bio' => 3000,'hair' => 60,'eyes' => 60,'origin' => 80,'availability' => 500,'website' => 300,'businessName' => 160,'legalName' => 160,'segment' => 100,'businessAddress' => 200,'businessHours' => 500,'contactEmail' => 160,'responseTime' => 40] as $field => $max) {
             $value = isset($input[$field]) ? trim((string)$input[$field]) : '';
             if (self::len($value) > $max) {
                 $errors[$field] = "cannot exceed {$max} characters";
@@ -140,6 +196,13 @@ final class MarketplaceService
             ) {
                 $errors['website'] = 'must be a valid HTTP or HTTPS URL';
             }
+        }
+        if ($data['contactEmail'] !== null && filter_var($data['contactEmail'], FILTER_VALIDATE_EMAIL) === false) {
+            $errors['contactEmail'] = 'must be a valid email address';
+        }
+        $allowedResponseTimes = ['LESS_THAN_HOUR','FEW_HOURS','WITHIN_DAY','MORE_THAN_DAY','VARIES'];
+        if ($data['responseTime'] !== null && !in_array($data['responseTime'], $allowedResponseTimes, true)) {
+            $errors['responseTime'] = 'must be one of the supported response time options';
         }
         foreach (['languages','services','interests','contactOptions'] as $field) {
             $value = $input[$field] ?? [];
