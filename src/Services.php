@@ -9,24 +9,31 @@ use PDOException;
 final class AuthService
 {
     private const MAX_REGISTRATION_PHOTO_BYTES = 8 * 1024 * 1024;
+    private const DUMMY_PASSWORD_HASH = '$2y$12$QUdNK6i4Nykerj8gfpyc9u7pRhWnZ/eWluu5l7vwDEnnZ9O8R4OHG';
 
     public function __construct(
         private readonly UserRepository $users,
         private readonly Jwt $jwt,
-        private readonly ProfessionalProfileRepository $profiles,
         private readonly MarketplaceService $marketplace,
         private readonly PasswordResetRepository $passwordResets,
         private readonly MailService $mail
     ) {
     }
 
-    /** @param array<string, mixed> $input @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
     public function login(array $input): array
     {
         $data = Validator::login($input);
         $email = strtolower($data['email']);
         $user = $this->users->findByEmail($email);
-        if ($user === null || !password_verify($data['password'], $user['passwordHash'])) {
+        $passwordMatches = password_verify(
+            $data['password'],
+            $user['passwordHash'] ?? self::DUMMY_PASSWORD_HASH
+        );
+        if ($user === null || !$passwordMatches) {
             throw new ApiException(401, 'Invalid email or password.');
         }
         if ($user['approvalStatus'] === 'PENDING') {
@@ -39,7 +46,10 @@ final class AuthService
         return $this->authenticationResponse($user);
     }
 
-    /** @param array<string, mixed> $input @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
     public function register(array $input, ?UploadedFile $registrationPhoto = null): array
     {
         $data = Validator::register($input);
@@ -81,7 +91,7 @@ final class AuthService
             );
             if (in_array($type, ['ESCORT', 'STORE'], true)) {
                 $this->marketplace->saveProfile((int) $user['id'], $professionalProfile ?? []);
-                if ($registrationPhoto !== null && $photoInfo !== null) {
+                if ($registrationPhoto !== null) {
                     $this->marketplace->upload((int) $user['id'], $registrationPhoto, 0);
                 }
             }
@@ -127,7 +137,10 @@ final class AuthService
         return self::profileFromUser($user);
     }
 
-    /** @param array<string, mixed> $input @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
     public function updateProfile(string $currentEmail, array $input): array
     {
         $data = Validator::register($input, false);
@@ -153,7 +166,10 @@ final class AuthService
         return $this->authenticationResponse($updated);
     }
 
-    /** @param array<string, mixed> $user @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
     public static function profileFromUser(array $user): array
     {
         return [
@@ -200,7 +216,10 @@ final class AuthService
         return ['contentType' => $mime, 'size' => $size];
     }
 
-    /** @param array<string,mixed> $input */
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, string>
+     */
     public function forgotPassword(array $input): array
     {
         $email = strtolower(trim((string) ($input['email'] ?? '')));
@@ -219,7 +238,10 @@ final class AuthService
         return ['message' => 'If the account exists, password reset instructions will be sent.'];
     }
 
-    /** @param array<string,mixed> $input */
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, string>
+     */
     public function resetPassword(array $input): array
     {
         $token = is_string($input['token'] ?? null) ? trim($input['token']) : '';
@@ -245,7 +267,10 @@ final class AuthService
         }
     }
 
-    /** @param array<string, mixed> $user @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
     private function authenticationResponse(array $user): array
     {
         $profile = self::profileFromUser($user);
@@ -291,11 +316,13 @@ final class AdminUserService
         }, $this->users->list($email, $name, $sort, $approvalStatus, $role));
     }
 
+    /** @return array<string, mixed> */
     public function updateVip(int $id, bool $active): array
     {
         return self::summary($this->users->setVip($id, $active));
     }
 
+    /** @return array<string, mixed> */
     public function updateApproval(int $id, string $status, ?string $reason): array
     {
         $user = $this->users->setApproval($id, $status, $reason);
@@ -311,6 +338,7 @@ final class AdminUserService
         return self::summary($user);
     }
 
+    /** @return array<string, mixed> */
     public function updateRole(int $id, string $role): array
     {
         $user = $this->users->setRole($id, $role);
@@ -345,7 +373,10 @@ final class AdminUserService
         return $value;
     }
 
-    /** @param array<string, mixed> $user @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
     private static function summary(array $user): array
     {
         return [

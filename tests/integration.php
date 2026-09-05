@@ -5,12 +5,15 @@ declare(strict_types=1);
 require dirname(__DIR__) . '/bootstrap.php';
 require __DIR__ . '/IntegrationDataCleanup.php';
 
+use ChambreRose\ApiException;
+use ChambreRose\AuthRateLimiter;
+use ChambreRose\Config;
 use ChambreRose\Database;
 use ChambreRose\Tests\IntegrationDataCleanup;
 
 $base = rtrim(getenv('TEST_API_URL') ?: 'http://localhost:8080', '/');
-$adminEmail = getenv('TEST_ADMIN_EMAIL') ?: 'admin@admin.com';
-$adminPassword = getenv('TEST_ADMIN_PASSWORD') ?: '';
+$adminEmail = getenv('TEST_ADMIN_EMAIL') ?: getenv('SEED_ADMIN_EMAIL') ?: 'admin@admin.com';
+$adminPassword = getenv('TEST_ADMIN_PASSWORD') ?: getenv('SEED_ADMIN_PASSWORD') ?: '';
 $fixture = dirname(__DIR__) . '/resources/brand/brand-logo.png';
 $runId = gmdate('YmdHis') . '-' . bin2hex(random_bytes(6));
 $cleanup = new IntegrationDataCleanup(Database::connection(), $runId);
@@ -48,14 +51,21 @@ $assert = static function (bool $condition, string $message) use (&$assertions):
     }
 };
 
-$request = static function (string $method, string $path, ?array $body = null, ?string $token = null) use ($base): array {
+$request = static function (
+    string $method,
+    string $path,
+    ?array $body = null,
+    ?string $sessionCookie = null,
+    array $extraHeaders = []
+) use ($base): array {
     $headers = ['Accept: application/json'];
     if ($body !== null) {
         $headers[] = 'Content-Type: application/json';
     }
-    if ($token !== null) {
-        $headers[] = 'Authorization: Bearer ' . $token;
+    if ($sessionCookie !== null) {
+        $headers[] = 'Cookie: ' . $sessionCookie;
     }
+    array_push($headers, ...$extraHeaders);
     $context = stream_context_create(['http' => [
         'method' => $method,
         'header' => implode("\r\n", $headers),
@@ -65,16 +75,128 @@ $request = static function (string $method, string $path, ?array $body = null, ?
     $raw = file_get_contents($base . $path, false, $context);
     $statusLine = $http_response_header[0] ?? '';
     preg_match('/\s(\d{3})\s/', $statusLine, $match);
+    $responseCookie = null;
+    $responseHeaders = [];
+    foreach ($http_response_header ?? [] as $header) {
+        if (preg_match('/^Set-Cookie:\s*([^;]+)/i', $header, $cookieMatch)) {
+            $responseCookie = $cookieMatch[1];
+        }
+        if (str_contains($header, ':')) {
+            [$headerName, $headerValue] = explode(':', $header, 2);
+            $responseHeaders[strtolower(trim($headerName))] = trim($headerValue);
+        }
+    }
 
-    return [(int)($match[1] ?? 0), is_string($raw) && $raw !== '' ? json_decode($raw, true) : null];
+    return [
+        (int)($match[1] ?? 0),
+        is_string($raw) && $raw !== '' ? json_decode($raw, true) : null,
+        $responseCookie,
+        $responseHeaders,
+    ];
 };
 
-[$visitorStatus, $visitor] = $request('POST', '/api/auth/register', [
+putenv('AUTH_LOGIN_ACCOUNT_ATTEMPTS=3');
+putenv('AUTH_LOGIN_IP_ATTEMPTS=50');
+putenv('AUTH_RECOVERY_ACCOUNT_ATTEMPTS=2');
+putenv('AUTH_RECOVERY_IP_ATTEMPTS=50');
+putenv('AUTH_RESET_TOKEN_ATTEMPTS=2');
+putenv('AUTH_RESET_IP_ATTEMPTS=50');
+$rateLimiter = new AuthRateLimiter(Database::connection());
+$rateEmail = 'rate-' . $runId . '@example.invalid';
+$rateIp = '198.51.100.42';
+$rateToken = 'integration-reset-token-' . $runId;
+$rateSecret = Config::get('RATE_LIMIT_SECRET', Config::get('JWT_SECRET', '')) ?? '';
+$rateIdentifiers = [
+    ['login-account', $rateEmail],
+    ['login-ip', $rateIp],
+    ['recovery-account', $rateEmail],
+    ['recovery-ip', $rateIp],
+    ['reset-token', $rateToken],
+    ['reset-ip', $rateIp],
+];
+$rateHashes = array_map(
+    static fn (array $item): string => hash_hmac('sha256', $item[0] . "\0" . strtolower(trim($item[1])), $rateSecret),
+    $rateIdentifiers
+);
+
+try {
+    $loginLimited = false;
+    for ($attempt = 1; $attempt <= 3; $attempt++) {
+        try {
+            $rateLimiter->registerLoginFailure($rateEmail, $rateIp);
+        } catch (ApiException $exception) {
+            $loginLimited = $attempt === 3
+                && $exception->status === 429
+                && isset($exception->headers['Retry-After']);
+        }
+    }
+    $assert($loginLimited, 'Login failures must be rate limited with Retry-After metadata.');
+
+    $rateLimiter->consumeRecoveryRequest($rateEmail, $rateIp);
+    $rateLimiter->consumeRecoveryRequest($rateEmail, $rateIp);
+    try {
+        $rateLimiter->consumeRecoveryRequest($rateEmail, $rateIp);
+        $assert(false, 'Password recovery must reject requests above the configured limit.');
+    } catch (ApiException $exception) {
+        $assert($exception->status === 429, 'Password recovery must return 429 after its limit.');
+    }
+
+    $rateLimiter->consumePasswordResetAttempt($rateToken, $rateIp);
+    $rateLimiter->consumePasswordResetAttempt($rateToken, $rateIp);
+    try {
+        $rateLimiter->consumePasswordResetAttempt($rateToken, $rateIp);
+        $assert(false, 'Password reset must reject attempts above the configured limit.');
+    } catch (ApiException $exception) {
+        $assert($exception->status === 429, 'Password reset must return 429 after its limit.');
+    }
+} finally {
+    $placeholders = implode(', ', array_fill(0, count($rateHashes), '?'));
+    $statement = Database::connection()->prepare('DELETE FROM auth_rate_limits WHERE bucket_hash IN (' . $placeholders . ')');
+    $statement->execute($rateHashes);
+}
+
+$httpRateEmail = 'http-rate-' . $runId . '@example.invalid';
+$httpRateIp = '198.51.100.77';
+$httpRateHashes = array_map(
+    static fn (array $item): string => hash_hmac('sha256', $item[0] . "\0" . strtolower(trim($item[1])), $rateSecret),
+    [['login-account', $httpRateEmail], ['login-ip', $httpRateIp]]
+);
+try {
+    $statuses = [];
+    $lastHeaders = [];
+    for ($attempt = 1; $attempt <= 5; $attempt++) {
+        [$status, , , $lastHeaders] = $request(
+            'POST',
+            '/api/auth/login',
+            ['email' => $httpRateEmail, 'password' => 'Incorrect9!pass'],
+            null,
+            ['X-Forwarded-For: ' . $httpRateIp]
+        );
+        $statuses[] = $status;
+    }
+    $assert(
+        $statuses === [401, 401, 401, 401, 429]
+        && isset($lastHeaders['retry-after']),
+        'The HTTP login endpoint must enforce its limit through a trusted proxy and expose Retry-After.'
+    );
+} finally {
+    $placeholders = implode(', ', array_fill(0, count($httpRateHashes), '?'));
+    $statement = Database::connection()->prepare('DELETE FROM auth_rate_limits WHERE bucket_hash IN (' . $placeholders . ')');
+    $statement->execute($httpRateHashes);
+}
+
+[$visitorStatus, $visitor, $visitorCookie] = $request('POST', '/api/auth/register', [
     'firstName' => 'Visitor', 'lastName' => 'Integration',
     'email' => $cleanup->email('visitor'), 'phone' => '12345678',
     'password' => 'Integration9!pass', 'accountType' => 'VISITOR',
 ]);
-$assert($visitorStatus === 201 && isset($visitor['token']), 'Visitor registration must return a token.');
+$assert(
+    $visitorStatus === 201
+    && is_string($visitorCookie)
+    && str_starts_with($visitorCookie, 'chambre_rose_session=')
+    && !array_key_exists('token', $visitor),
+    'Visitor registration must create an HttpOnly server session without exposing the JWT.'
+);
 
 [$weakPasswordStatus, $weakPasswordBody] = $request('POST', '/api/auth/register', [
     'firstName' => 'Weak', 'lastName' => 'Password',
@@ -186,8 +308,8 @@ $assert(
 $assert($pendingStatus === 403, 'Pending professional login must be blocked.');
 
 if ($adminPassword !== '') {
-    [$adminStatus, $admin] = $request('POST', '/api/auth/login', ['email' => $adminEmail, 'password' => $adminPassword]);
-    $assert($adminStatus === 200, 'Admin login must work.');
+    [$adminStatus, $admin, $adminCookie] = $request('POST', '/api/auth/login', ['email' => $adminEmail, 'password' => $adminPassword]);
+    $assert($adminStatus === 200 && is_string($adminCookie), 'Admin login must create a cookie-backed session.');
     [$productCreateStatus, $testProduct] = $request('POST', '/api/products', [
         'name' => $cleanup->productName(),
         'category' => 'wellness',
@@ -196,13 +318,13 @@ if ($adminPassword !== '') {
         'description' => $cleanup->productDescription(),
         'storeName' => $cleanup->storeName(),
         'active' => true,
-    ], $admin['token']);
+    ], $adminCookie);
     $productId = (int) ($testProduct['id'] ?? 0);
     [$productPurchaseStatus, $purchasedProduct] = $request(
         'POST',
         "/api/products/{$productId}/purchases",
         [],
-        $visitor['token']
+        $visitorCookie
     );
     $assert(
         $productCreateStatus === 201
@@ -212,11 +334,11 @@ if ($adminPassword !== '') {
         && !array_key_exists('rating', $purchasedProduct),
         'A non-VIP visitor must be able to buy a store product and add exactly one star count.'
     );
-    [$usersStatus, $users] = $request('GET', '/api/admin/users', null, $admin['token']);
+    [$usersStatus, $users] = $request('GET', '/api/admin/users', null, $adminCookie);
     $match = array_values(array_filter($users, static fn (array $user): bool => $user['email'] === $cleanup->email('profile')));
     $assert($usersStatus === 200 && count($match) === 1, 'Admin must see the pending account.');
     $id = (int)$match[0]['id'];
-    [$adminProfileStatus, $adminProfile] = $request('GET', "/api/profiles/{$id}", null, $admin['token']);
+    [$adminProfileStatus, $adminProfile] = $request('GET', "/api/profiles/{$id}", null, $adminCookie);
     $mediaId = (int)($adminProfile['media'][0]['id'] ?? 0);
     $assert(
         $adminProfileStatus === 200
@@ -226,7 +348,7 @@ if ($adminPassword !== '') {
     );
     [$privateMediaStatus] = $request('GET', "/api/profiles/{$id}/media/{$mediaId}");
     $assert($privateMediaStatus === 404, 'Pending profile media must not be public.');
-    [$approvalStatus] = $request('PATCH', "/api/admin/users/{$id}/approval", ['status' => 'APPROVED'], $admin['token']);
+    [$approvalStatus] = $request('PATCH', "/api/admin/users/{$id}/approval", ['status' => 'APPROVED'], $adminCookie);
     $assert($approvalStatus === 200, 'Admin approval must work.');
     [$listingStatus, $listing] = $request('GET', "/api/listings/{$id}");
     $assert(
@@ -300,9 +422,9 @@ if ($adminPassword !== '') {
         'PATCH',
         "/api/admin/users/{$id}/role",
         ['role' => 'STORE'],
-        $admin['token']
+        $adminCookie
     );
-    [$storeProfileStatus, $storeProfile] = $request('GET', "/api/profiles/{$id}", null, $admin['token']);
+    [$storeProfileStatus, $storeProfile] = $request('GET', "/api/profiles/{$id}", null, $adminCookie);
     $assert(
         $storeRoleStatus === 200
         && $storeProfileStatus === 200
@@ -313,28 +435,28 @@ if ($adminPassword !== '') {
         'PATCH',
         "/api/admin/users/{$id}/role",
         ['role' => 'ESCORT'],
-        $admin['token']
+        $adminCookie
     );
     [$reapprovalStatus] = $request(
         'PATCH',
         "/api/admin/users/{$id}/approval",
         ['status' => 'APPROVED'],
-        $admin['token']
+        $adminCookie
     );
     $assert(
         $escortRoleStatus === 200 && $reapprovalStatus === 200,
         'The integration professional must return to an approved escort account.'
     );
 
-    [$professionalLoginStatus, $professionalLogin] = $request('POST', '/api/auth/login', [
+    [$professionalLoginStatus, $professionalLogin, $professionalCookie] = $request('POST', '/api/auth/login', [
         'email' => $cleanup->email('profile'), 'password' => 'Integration9!pass',
     ]);
-    $assert($professionalLoginStatus === 200, 'Approved professional login must work.');
+    $assert($professionalLoginStatus === 200 && is_string($professionalCookie), 'Approved professional login must work.');
     [$lockedSelectionStatus, $lockedSelection] = $request(
         'POST',
         "/api/listings/{$id}/purchases",
         ['amount' => null],
-        $visitor['token']
+        $visitorCookie
     );
     $assert(
         $lockedSelectionStatus === 403 && isset($lockedSelection['fields']['vipRequired']),
@@ -344,7 +466,7 @@ if ($adminPassword !== '') {
         'GET',
         "/api/listings/{$id}/contact",
         null,
-        $visitor['token']
+        $visitorCookie
     );
     $assert(
         $lockedContactStatus === 403 && isset($lockedContact['fields']['vipRequired']),
@@ -354,14 +476,14 @@ if ($adminPassword !== '') {
         'POST',
         "/api/listings/{$id}/reviews",
         ['rating' => 5, 'body' => 'This review must wait for a completed selection.'],
-        $visitor['token']
+        $visitorCookie
     );
     $assert($earlyReviewStatus === 403, 'A visitor must not review a companion before a completed selection.');
     [$lockedConversationStatus, $lockedConversation] = $request(
         'POST',
         '/api/conversations',
         ['recipientId' => $id],
-        $visitor['token']
+        $visitorCookie
     );
     $assert(
         $lockedConversationStatus === 403 && isset($lockedConversation['fields']['vipRequired']),
@@ -372,7 +494,7 @@ if ($adminPassword !== '') {
         'PATCH',
         "/api/admin/users/{$visitorId}/vip",
         ['vipActive' => true],
-        $admin['token']
+        $adminCookie
     );
     $assert($visitorId > 0 && $vipStatus === 200, 'An administrator must be able to activate visitor VIP access.');
     $starsBeforeSelection = (int) ($listing['starCount'] ?? 0);
@@ -380,7 +502,7 @@ if ($adminPassword !== '') {
         'POST',
         "/api/listings/{$id}/purchases",
         ['amount' => null],
-        $visitor['token']
+        $visitorCookie
     );
     $assert(
         $selectionStatus === 201
@@ -388,7 +510,7 @@ if ($adminPassword !== '') {
         && !array_key_exists('rating', $selectedProfile),
         'A completed VIP selection must add one star count without exposing a score.'
     );
-    [$contactStatus, $contact] = $request('GET', "/api/listings/{$id}/contact", null, $visitor['token']);
+    [$contactStatus, $contact] = $request('GET', "/api/listings/{$id}/contact", null, $visitorCookie);
     $assert(
         $contactStatus === 200
         && ($contact['email'] ?? null) === "contact-{$runId}@example.com"
@@ -400,13 +522,13 @@ if ($adminPassword !== '') {
         'POST',
         "/api/listings/{$id}/reviews",
         ['rating' => 4, 'body' => 'A respectful and verified integration experience.'],
-        $visitor['token']
+        $visitorCookie
     );
     [$duplicateReviewStatus] = $request(
         'POST',
         "/api/listings/{$id}/reviews",
         ['rating' => 5, 'body' => 'This duplicate review must not be accepted.'],
-        $visitor['token']
+        $visitorCookie
     );
     [$reviewedListingStatus, $reviewedListing] = $request('GET', "/api/listings/{$id}");
     $assert(
@@ -422,7 +544,7 @@ if ($adminPassword !== '') {
         'POST',
         '/api/conversations',
         ['recipientId' => $id],
-        $visitor['token']
+        $visitorCookie
     );
     $conversationId = (int)($conversation['id'] ?? 0);
     $assert($conversationStatus === 201 && $conversationId > 0, 'A VIP visitor must be able to contact an approved companion.');
@@ -430,13 +552,13 @@ if ($adminPassword !== '') {
         'PATCH',
         "/api/admin/users/{$id}/approval",
         ['status' => 'REJECTED', 'reason' => 'Integration moderation check'],
-        $admin['token']
+        $adminCookie
     );
     [$rejectedMessageStatus] = $request(
         'POST',
         "/api/conversations/{$conversationId}/messages",
         ['body' => 'This message must not be accepted.'],
-        $visitor['token']
+        $visitorCookie
     );
     $assert(
         $rejectedStatus === 200 && $rejectedMessageStatus === 403,
@@ -446,22 +568,22 @@ if ($adminPassword !== '') {
         'PATCH',
         "/api/admin/users/{$id}/approval",
         ['status' => 'APPROVED'],
-        $admin['token']
+        $adminCookie
     );
     $assert($approvedAgainStatus === 200, 'The moderated integration account must be restorable.');
-    [$deleteStatus] = $request('DELETE', "/api/conversations/{$conversationId}", null, $visitor['token']);
+    [$deleteStatus] = $request('DELETE', "/api/conversations/{$conversationId}", null, $visitorCookie);
     [$deletedAccessStatus] = $request(
         'GET',
         "/api/conversations/{$conversationId}/messages",
         null,
-        $visitor['token']
+        $visitorCookie
     );
     $assert($deleteStatus === 204 && $deletedAccessStatus === 404, 'A conversation removed from an inbox must not remain accessible by ID.');
     [$participantAccessStatus] = $request(
         'GET',
         "/api/conversations/{$conversationId}/messages",
         null,
-        $professionalLogin['token']
+        $professionalCookie
     );
     $assert($participantAccessStatus === 200, 'Deleting one inbox copy must preserve the other participant copy.');
 }

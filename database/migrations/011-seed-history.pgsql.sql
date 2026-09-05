@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS chambre_rose_seed_history (
+  seed_key VARCHAR(80) PRIMARY KEY,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

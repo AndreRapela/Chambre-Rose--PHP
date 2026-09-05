@@ -1,4 +1,6 @@
 .env
 .git
+.phpstan-cache
 tests
+vendor
 README.md

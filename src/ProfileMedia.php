@@ -71,6 +71,7 @@ final class ProfileMediaRepository
         return (int) $statement->fetchColumn();
     }
 
+    /** @return array<string, mixed> */
     public function insertWithinLimit(
         int $userId,
         string $type,
@@ -109,6 +110,7 @@ final class ProfileMediaRepository
         }
     }
 
+    /** @return array<string, mixed> */
     private function insert(int $userId, string $type, string $name, string $contentType, string $bytes, int $position): array
     {
         if ($this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
@@ -132,6 +134,7 @@ final class ProfileMediaRepository
         return $this->metadata($userId, $id) ?? throw new ApiException(500, 'Unable to store media.');
     }
 
+    /** @return array<string, mixed>|null */
     public function metadata(int $userId, int $mediaId): ?array
     {
         $statement = $this->pdo->prepare('SELECT id,user_id,media_type,file_name,content_type,size_bytes,position,created_at FROM profile_media WHERE user_id=:uid AND id=:id');
@@ -145,14 +148,7 @@ final class ProfileMediaRepository
     {
         $statement = $this->pdo->prepare('SELECT media_data FROM profile_media WHERE user_id=:uid AND id=:id');
         $statement->execute(['uid' => $userId,'id' => $mediaId]);
-        $value = $statement->fetchColumn();
-        if ($value === false) {
-            return null;
-        } if (is_resource($value)) {
-            $value = stream_get_contents($value);
-        }
-
-        return is_string($value) ? $value : null;
+        return self::lobToString($statement->fetchColumn());
     }
 
     public function delete(int $userId, int $mediaId): void
@@ -164,7 +160,10 @@ final class ProfileMediaRepository
         }
     }
 
-    /** @param array<string,mixed> $row @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
     private static function map(array $row, bool $public = false): array
     {
         $media = ['id' => (int)$row['id'],'userId' => (int)$row['user_id'],'type' => (string)$row['media_type'],
@@ -176,5 +175,14 @@ final class ProfileMediaRepository
         }
 
         return $media;
+    }
+
+    private static function lobToString(mixed $value): ?string
+    {
+        if (is_resource($value)) {
+            $value = stream_get_contents($value);
+        }
+
+        return is_string($value) ? $value : null;
     }
 }

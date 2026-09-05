@@ -18,6 +18,7 @@ final class ProductRoutes implements RouteHandler
     {
         $method = $request->method;
         $path = $request->path;
+        $match = [];
 
         if ($method === 'GET' && $path === '/api/products') {
             return ApiResponder::json($this->service->search($request->query));

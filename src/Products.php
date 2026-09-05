@@ -22,7 +22,10 @@ final class ProductRepository
     {
     }
 
-    /** @param array<string,mixed> $filters @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
     public function search(array $filters): array
     {
         $where = ['is_active = TRUE'];
@@ -85,6 +88,7 @@ final class ProductRepository
         ];
     }
 
+    /** @return array<string, mixed>|null */
     public function find(int $id, bool $publicOnly = true): ?array
     {
         $sql = 'SELECT ' . self::COLUMNS . ' FROM products WHERE id=:id';
@@ -105,7 +109,10 @@ final class ProductRepository
         return $product;
     }
 
-    /** @param array<string,mixed> $data */
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
     public function create(array $data): array
     {
         $columns = array_keys(self::databaseValues($data));
@@ -118,7 +125,10 @@ final class ProductRepository
             ?? throw new ApiException(500, 'Unable to create product.');
     }
 
-    /** @param array<string,mixed> $data */
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
     public function update(int $id, array $data): array
     {
         $values = self::databaseValues($data);
@@ -138,6 +148,7 @@ final class ProductRepository
         }
     }
 
+    /** @return array<string, mixed> */
     public function registerPurchase(int $id, int $buyerUserId): array
     {
         $this->pdo->beginTransaction();
@@ -207,7 +218,10 @@ final class ProductRepository
         ], $statement->fetchAll());
     }
 
-    /** @param array<string,mixed> $row @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
     private static function map(array $row): array
     {
         return [
@@ -226,7 +240,10 @@ final class ProductRepository
         ];
     }
 
-    /** @param array<string,mixed> $data @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
     private static function databaseValues(array $data): array
     {
         $map = [
@@ -318,18 +335,25 @@ final class ProductService
     ) {
     }
 
-    /** @param array<string,mixed> $filters */
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
     public function search(array $filters): array
     {
         return $this->products->search($filters);
     }
 
+    /** @return array<string, mixed> */
     public function get(int $id): array
     {
         return $this->products->find($id) ?? throw new ApiException(404, 'Product not found.');
     }
 
-    /** @param array<string,mixed> $input */
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
     public function save(?int $id, int $actorId, string $actorRole, array $input, ?UploadedFile $main, ?UploadedFile $secondary): array
     {
         $existing = $id === null ? null : $this->products->find($id, false);
@@ -366,7 +390,10 @@ final class ProductService
         return $product;
     }
 
-    /** @param array<string,mixed> $input @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
     private function validate(array $input): array
     {
         $errors = [];

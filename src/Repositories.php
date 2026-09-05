@@ -25,6 +25,7 @@ final class UserRepository
         $this->pdo->exec("UPDATE users SET role = 'VISITOR', updated_at = CURRENT_TIMESTAMP WHERE role = 'USER'");
     }
 
+    /** @return array<string, mixed>|null */
     public function findByEmail(string $email): ?array
     {
         $statement = $this->pdo->prepare('SELECT ' . self::SELECT_COLUMNS . ' FROM users WHERE email = :email');
@@ -34,6 +35,7 @@ final class UserRepository
         return is_array($row) ? self::mapUser($row) : null;
     }
 
+    /** @return array<string, mixed>|null */
     public function find(int $id): ?array
     {
         $statement = $this->pdo->prepare('SELECT ' . self::SELECT_COLUMNS . ' FROM users WHERE id = :id');
@@ -57,7 +59,10 @@ final class UserRepository
         return (bool) $statement->fetchColumn();
     }
 
-    /** @param array<string, string> $user */
+    /**
+     * @param array<string, string> $user
+     * @return array<string, mixed>
+     */
     public function create(
         array $user,
         string $passwordHash,
@@ -115,9 +120,7 @@ final class UserRepository
 
             return $created;
         } catch (\Throwable $exception) {
-            if ($ownsTransaction && $this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
+            $this->rollbackOwnedTransaction($ownsTransaction);
 
             throw $exception;
         }
@@ -129,7 +132,10 @@ final class UserRepository
         $statement->execute(['id' => $id]);
     }
 
-    /** @param array<string, string> $user */
+    /**
+     * @param array<string, string> $user
+     * @return array<string, mixed>
+     */
     public function updateProfile(int $id, array $user): array
     {
         $statement = $this->pdo->prepare(<<<'SQL'
@@ -196,6 +202,7 @@ final class UserRepository
         return (int)$this->pdo->query("SELECT COUNT(*) FROM users WHERE role = 'ADMIN'")->fetchColumn();
     }
 
+    /** @return array<string, mixed> */
     public function setVip(int $id, bool $active): array
     {
         $sql = $active
@@ -210,6 +217,7 @@ final class UserRepository
         return $this->find($id) ?? throw new ApiException(404, 'User not found.');
     }
 
+    /** @return array<string, mixed> */
     public function setApproval(int $id, string $status, ?string $reason): array
     {
         $status = strtoupper($status);
@@ -241,6 +249,7 @@ final class UserRepository
         return $this->find($id) ?? throw new ApiException(404, 'User not found.');
     }
 
+    /** @return array<string, mixed> */
     public function setRole(int $id, string $role): array
     {
         $role = strtoupper($role);
@@ -270,7 +279,7 @@ final class UserRepository
             'review_deadline' => $reviewDeadline,
         ]);
 
-        return $this->find($id) ?? throw new ApiException(404, 'User not found.');
+        return $this->requiredUser($id);
     }
 
     public function updatePassword(int $id, string $passwordHash): void
@@ -281,7 +290,10 @@ final class UserRepository
         $statement->execute(['id' => $id, 'hash' => $passwordHash]);
     }
 
-    /** @param array<string, mixed> $row @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
     private static function mapUser(array $row): array
     {
         return [
@@ -323,6 +335,19 @@ final class UserRepository
         return (new DateTimeImmutable((string) $value))
             ->setTimezone(new DateTimeZone('UTC'))
             ->format('Y-m-d\TH:i:s.v\Z');
+    }
+
+    /** @return array<string, mixed> */
+    private function requiredUser(int $id): array
+    {
+        return $this->find($id) ?? throw new ApiException(404, 'User not found.');
+    }
+
+    private function rollbackOwnedTransaction(bool $ownsTransaction): void
+    {
+        if ($ownsTransaction && $this->pdo->inTransaction()) {
+            $this->pdo->rollBack();
+        }
     }
 
     private function isMySql(): bool

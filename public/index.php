@@ -38,7 +38,7 @@ try {
         $exception->getMessage(),
         $request->path,
         $exception->fields
-    )->withHeaders($commonHeaders)->send();
+    )->withHeaders($exception->headers + $commonHeaders)->send();
 } catch (Throwable $exception) {
     error_log(sprintf(
         '[Chambre Rose API] request=%s method=%s path=%s error=%s in %s:%d',

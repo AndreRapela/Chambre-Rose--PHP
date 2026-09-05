@@ -17,10 +17,8 @@ final class App
 
         $pdo = Database::connection();
         if (Config::bool('APP_AUTO_MIGRATE', true)) {
-            $migrated = (new DatabaseMigrator($pdo))->migrate();
-            if ($migrated) {
-                (new Seeder($pdo))->run();
-            }
+            (new DatabaseMigrator($pdo))->migrate();
+            (new Seeder($pdo))->run();
         }
 
         $users = new UserRepository($pdo);
@@ -35,11 +33,13 @@ final class App
         $products = new ProductRepository($pdo);
         $productImages = new ProductImageRepository($pdo);
         $productService = new ProductService($products, $productImages, $users);
-        $guard = new ApiRequestGuard($users, $jwt);
-        $auth = new AuthService($users, $jwt, $profiles, $marketplace, $passwordResets, $mail);
+        $sessionCookie = new AuthSessionCookie($jwt);
+        $rateLimiter = new AuthRateLimiter($pdo);
+        $guard = new ApiRequestGuard($users, $jwt, $sessionCookie);
+        $auth = new AuthService($users, $jwt, $marketplace, $passwordResets, $mail);
 
         $this->router = new ApiRouter([
-            new AuthRoutes($auth, $guard),
+            new AuthRoutes($auth, $guard, $sessionCookie, $rateLimiter),
             new ListingRoutes($marketplace, $profiles, $profileMedia, $favorites, $products, $guard),
             new ProductRoutes($productService, $products, $productImages, $guard),
             new MessagingRoutes($messaging, $users, $guard),
@@ -93,7 +93,7 @@ final class App
         }
         $headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
         $headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Accept, Origin, X-Requested-With';
-        $headers['Access-Control-Expose-Headers'] = 'Cache-Control, Content-Language, Content-Type';
+        $headers['Access-Control-Expose-Headers'] = 'Cache-Control, Content-Language, Content-Type, Retry-After';
         $headers['Access-Control-Max-Age'] = '3600';
 
         return $headers;

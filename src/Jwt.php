@@ -37,6 +37,11 @@ final class Jwt
         return $unsigned . '.' . self::base64UrlEncode($signature);
     }
 
+    public function expirationSeconds(): int
+    {
+        return $this->expirationMinutes * 60;
+    }
+
     /** @return array{sub: string, role: string, iat?: int, exp: int} */
     public function verify(string $token): array
     {

@@ -9,11 +9,15 @@ use RuntimeException;
 
 final class ApiException extends RuntimeException
 {
-    /** @param array<string, string> $fields */
+    /**
+     * @param array<string, string> $fields
+     * @param array<string, string> $headers
+     */
     public function __construct(
         public readonly int $status,
         string $message,
-        public readonly array $fields = []
+        public readonly array $fields = [],
+        public readonly array $headers = []
     ) {
         parent::__construct($message);
     }
@@ -98,6 +102,7 @@ final class Request
     /** @var array{fields: array<string, string>, files: array<string, UploadedFile>}|null */
     private ?array $parsedMultipart = null;
     public readonly string $requestId;
+    public readonly string $clientIp;
 
     /**
      * @param array<string, string> $headers
@@ -108,9 +113,13 @@ final class Request
         public readonly string $path,
         public readonly array $headers,
         public readonly array $query,
-        ?string $requestId = null
+        ?string $requestId = null,
+        ?string $clientIp = null
     ) {
         $this->requestId = $requestId ?? bin2hex(random_bytes(8));
+        $this->clientIp = filter_var($clientIp, FILTER_VALIDATE_IP) !== false
+            ? (string) $clientIp
+            : 'unknown';
     }
 
     public static function fromGlobals(): self
@@ -153,13 +162,60 @@ final class Request
             strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET'),
             $path,
             $headers,
-            $_GET
+            $_GET,
+            null,
+            self::resolveClientIp(
+                is_string($_SERVER['REMOTE_ADDR'] ?? null) ? $_SERVER['REMOTE_ADDR'] : null,
+                $headers['x-forwarded-for'] ?? null,
+                Config::get('APP_TRUSTED_PROXIES', '') ?? ''
+            )
         );
+    }
+
+    public static function resolveClientIp(?string $remoteAddress, ?string $forwardedFor, string $trustedProxies): string
+    {
+        $remoteAddress = filter_var($remoteAddress, FILTER_VALIDATE_IP) !== false
+            ? (string) $remoteAddress
+            : 'unknown';
+        $trusted = array_values(array_filter(array_map('trim', explode(',', $trustedProxies))));
+        if ($remoteAddress === 'unknown' || !self::isTrustedProxy($remoteAddress, $trusted)) {
+            return $remoteAddress;
+        }
+
+        $forwarded = array_values(array_filter(array_map('trim', explode(',', $forwardedFor ?? ''))));
+        for ($index = count($forwarded) - 1; $index >= 0; $index--) {
+            $candidate = $forwarded[$index];
+            if (filter_var($candidate, FILTER_VALIDATE_IP) === false) {
+                continue;
+            }
+            if (!self::isTrustedProxy($candidate, $trusted)) {
+                return $candidate;
+            }
+        }
+
+        return $remoteAddress;
     }
 
     public function header(string $name): ?string
     {
         return $this->headers[strtolower($name)] ?? null;
+    }
+
+    public function cookie(string $name): ?string
+    {
+        $header = $this->header('cookie');
+        if ($header === null || $name === '') {
+            return null;
+        }
+
+        foreach (explode(';', $header) as $cookie) {
+            [$candidate, $value] = array_pad(explode('=', trim($cookie), 2), 2, '');
+            if ($candidate === $name) {
+                return rawurldecode($value);
+            }
+        }
+
+        return null;
     }
 
     public function contentType(): string
@@ -276,6 +332,49 @@ final class Request
             default => (int) $number,
         };
     }
+
+    /** @param list<string> $trusted */
+    private static function isTrustedProxy(string $ip, array $trusted): bool
+    {
+        foreach ($trusted as $network) {
+            if (!str_contains($network, '/')) {
+                if (hash_equals($network, $ip)) {
+                    return true;
+                }
+                continue;
+            }
+
+            [$address, $prefixText] = array_pad(explode('/', $network, 2), 2, '');
+            $packedIp = inet_pton($ip);
+            $packedAddress = inet_pton($address);
+            if ($packedIp === false || $packedAddress === false || strlen($packedIp) !== strlen($packedAddress)) {
+                continue;
+            }
+            $maximumPrefix = strlen($packedIp) * 8;
+            if (filter_var($prefixText, FILTER_VALIDATE_INT) === false) {
+                continue;
+            }
+            $prefix = (int) $prefixText;
+            if ($prefix < 0 || $prefix > $maximumPrefix) {
+                continue;
+            }
+
+            $fullBytes = intdiv($prefix, 8);
+            $remainingBits = $prefix % 8;
+            if (substr($packedIp, 0, $fullBytes) !== substr($packedAddress, 0, $fullBytes)) {
+                continue;
+            }
+            if ($remainingBits === 0) {
+                return true;
+            }
+            $mask = (0xff << (8 - $remainingBits)) & 0xff;
+            if ((ord($packedIp[$fullBytes]) & $mask) === (ord($packedAddress[$fullBytes]) & $mask)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
 
 final class MultipartParser
@@ -351,7 +450,10 @@ final class Response
     ) {
     }
 
-    /** @param mixed $data @param array<string, string> $headers */
+    /**
+     * @param mixed $data
+     * @param array<string, string> $headers
+     */
     public static function json(mixed $data, int $status = 200, array $headers = []): self
     {
         try {
@@ -369,7 +471,7 @@ final class Response
         $reasons = [
             400 => 'Bad Request', 401 => 'Unauthorized', 403 => 'Forbidden',
             404 => 'Not Found', 405 => 'Method Not Allowed', 409 => 'Conflict',
-            413 => 'Payload Too Large', 415 => 'Unsupported Media Type',
+            413 => 'Payload Too Large', 415 => 'Unsupported Media Type', 429 => 'Too Many Requests',
             500 => 'Internal Server Error', 503 => 'Service Unavailable',
         ];
 

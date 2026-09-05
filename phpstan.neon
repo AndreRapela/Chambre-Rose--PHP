@@ -1,0 +1,11 @@
+parameters:
+    level: 6
+    paths:
+        - bin
+        - public
+        - src
+        - bootstrap.php
+    bootstrapFiles:
+        - bootstrap.php
+    tmpDir: .phpstan-cache
+    reportUnmatchedIgnoredErrors: true

@@ -245,6 +245,20 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-10-auth-security',
+                'file' => dirname(__DIR__) . '/database/migrations/010-auth-security.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-11-seed-history',
+                'file' => dirname(__DIR__) . '/database/migrations/011-seed-history.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 
@@ -295,13 +309,15 @@ final class DatabaseMigrator
                                 throw $exception;
                             }
                             $message = strtolower($exception->getMessage());
-                            $expected = match ($code) {
-                                1050 => str_starts_with(strtolower(ltrim($statement)), 'create table'),
-                                1060 => preg_match('/^alter\s+table\s+[a-z0-9_]+\s+add\s+column/i', ltrim($statement)) === 1,
-                                1061 => str_starts_with(strtolower(ltrim($statement)), 'create index'),
-                                1826 => str_contains($message, 'duplicate foreign key constraint'),
-                                default => false,
-                            };
+                            if ($code === 1050) {
+                                $expected = str_starts_with(strtolower(ltrim($statement)), 'create table');
+                            } elseif ($code === 1060) {
+                                $expected = preg_match('/^alter\s+table\s+[a-z0-9_]+\s+add\s+column/i', ltrim($statement)) === 1;
+                            } elseif ($code === 1061) {
+                                $expected = str_starts_with(strtolower(ltrim($statement)), 'create index');
+                            } else {
+                                $expected = str_contains($message, 'duplicate foreign key constraint');
+                            }
                             if (!$expected) {
                                 throw $exception;
                             }

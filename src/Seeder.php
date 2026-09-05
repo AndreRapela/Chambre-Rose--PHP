@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace ChambreRose;
 
 use PDO;
+use PDOException;
 
 final class Seeder
 {
+    private const MVP_CONTENT_SEED = 'mvp-marketplace-content-v1';
+
     private readonly UserRepository $users;
     private readonly ProfessionalProfileRepository $profiles;
 
@@ -20,9 +23,7 @@ final class Seeder
     public function run(): void
     {
         if (Config::bool('SEED_MVP_CONTENT', false)) {
-            $storeId = $this->seedStore();
-            $this->seedProducts($storeId);
-            $this->seedCompanions();
+            $this->seedMvpContentOnce();
         }
         if (!Config::bool('SEED_DEMO_USERS', false)) {
             return;
@@ -41,6 +42,59 @@ final class Seeder
             'Chambre Rose',
             'ADMIN'
         );
+    }
+
+    private function seedMvpContentOnce(): void
+    {
+        if ($this->seedApplied(self::MVP_CONTENT_SEED)) {
+            return;
+        }
+
+        $ownsTransaction = !$this->pdo->inTransaction();
+        if ($ownsTransaction) {
+            $this->pdo->beginTransaction();
+        }
+
+        try {
+            $statement = $this->pdo->prepare(
+                'INSERT INTO chambre_rose_seed_history (seed_key) VALUES (:seed_key)'
+            );
+            try {
+                $statement->execute(['seed_key' => self::MVP_CONTENT_SEED]);
+            } catch (PDOException $exception) {
+                if (!in_array($exception->getCode(), ['23000', '23505'], true)) {
+                    throw $exception;
+                }
+                if ($ownsTransaction) {
+                    $this->pdo->rollBack();
+                }
+
+                return;
+            }
+            $storeId = $this->seedStore();
+            $this->seedProducts($storeId);
+            $this->seedCompanions();
+
+            if ($ownsTransaction) {
+                $this->pdo->commit();
+            }
+        } catch (\Throwable $exception) {
+            if ($ownsTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+
+            throw $exception;
+        }
+    }
+
+    private function seedApplied(string $seedKey): bool
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT 1 FROM chambre_rose_seed_history WHERE seed_key = :seed_key'
+        );
+        $statement->execute(['seed_key' => $seedKey]);
+
+        return (bool) $statement->fetchColumn();
     }
 
     private function seedStore(): int
@@ -69,6 +123,7 @@ final class Seeder
             $this->pdo->prepare('UPDATE professional_profiles SET purchase_count=10,views_count=428,verified=TRUE WHERE user_id=:id')
                 ->execute(['id' => (int) $user['id']]);
         }
+        $this->seedProfilePhotosIfMissing((int) $user['id'], ['carousel-pink-lace-tie.jpeg']);
 
         return (int) $user['id'];
     }
@@ -76,6 +131,10 @@ final class Seeder
     private function seedProducts(int $storeId): void
     {
         if ((int) $this->pdo->query('SELECT COUNT(*) FROM products')->fetchColumn() > 0) {
+            $statement = $this->pdo->prepare(
+                "UPDATE products SET store_user_id=:store WHERE store_name='Maison Rose Intime' AND store_user_id IS NULL"
+            );
+            $statement->execute(['store' => $storeId]);
             $this->fillDemoProductGalleries();
             $this->seedProductReviews();
             return;
@@ -198,6 +257,20 @@ final class Seeder
                 $this->pdo->prepare('UPDATE users SET vip_active=TRUE,vip_since=CURRENT_TIMESTAMP WHERE id=:id')->execute(['id' => $userId]);
             }
         }
+    }
+
+    /** @param list<string> $fileNames */
+    private function seedProfilePhotosIfMissing(int $userId, array $fileNames): void
+    {
+        $statement = $this->pdo->prepare(
+            "SELECT COUNT(*) FROM profile_media WHERE user_id=:user AND media_type='PHOTO'"
+        );
+        $statement->execute(['user' => $userId]);
+        if ((int) $statement->fetchColumn() > 0) {
+            return;
+        }
+
+        $this->seedProfilePhotos($userId, $fileNames);
     }
 
     /** @param list<string> $fileNames */

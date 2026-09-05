@@ -46,9 +46,10 @@ final class Config
     {
         $value = $_ENV[$name] ?? $_SERVER[$name] ?? getenv($name);
 
-        return $value === false || $value === null || $value === '' ? $default : (string) $value;
+        return $value === false || $value === '' ? $default : (string) $value;
     }
 
+    /** @param list<string> $names */
     public static function first(array $names, ?string $default = null): ?string
     {
         foreach ($names as $name) {

@@ -8,18 +8,19 @@ final class ApiRequestGuard
 {
     public function __construct(
         private readonly UserRepository $users,
-        private readonly Jwt $jwt
+        private readonly Jwt $jwt,
+        private readonly AuthSessionCookie $sessionCookie
     ) {
     }
 
     /** @return array{sub: string, role: string, iat?: int, exp: int} */
     public function authenticate(Request $request): array
     {
-        $authorization = $request->header('authorization');
-        if ($authorization === null || !preg_match('/^Bearer\s+(.+)$/i', $authorization, $match)) {
+        $token = $this->bearerToken($request) ?? $this->sessionCookie->token($request);
+        if ($token === null) {
             throw new ApiException(401, 'Authentication is required.');
         }
-        $identity = $this->jwt->verify(trim($match[1]));
+        $identity = $this->jwt->verify($token);
         $user = $this->users->findByEmail(strtolower($identity['sub']));
         if ($user === null) {
             throw new ApiException(401, 'Authentication account no longer exists.');
@@ -58,7 +59,7 @@ final class ApiRequestGuard
     /** @return array<string,mixed>|null */
     public function optionalCurrentUser(Request $request): ?array
     {
-        if ($request->header('authorization') === null) {
+        if ($this->bearerToken($request) === null && !$this->sessionCookie->hasToken($request)) {
             return null;
         }
 
@@ -81,5 +82,17 @@ final class ApiRequestGuard
         if ($request->contentType() !== 'multipart/form-data') {
             throw new ApiException(415, 'Content-Type must be multipart/form-data.');
         }
+    }
+
+    private function bearerToken(Request $request): ?string
+    {
+        $authorization = $request->header('authorization');
+        if ($authorization === null || !preg_match('/^Bearer\s+(.+)$/i', $authorization, $match)) {
+            return null;
+        }
+
+        $token = trim($match[1]);
+
+        return $token !== '' ? $token : null;
     }
 }

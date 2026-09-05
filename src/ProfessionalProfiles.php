@@ -27,7 +27,10 @@ final class ProfessionalProfileRepository
     {
     }
 
-    /** @param array<string, mixed> $profile */
+    /**
+     * @param array<string, mixed> $profile
+     * @return array<string, mixed>
+     */
     public function upsert(int $userId, string $type, array $profile): array
     {
         $params = $this->params($userId, $type, $profile);
@@ -98,6 +101,7 @@ final class ProfessionalProfileRepository
         return $this->findByUser($userId) ?? throw new ApiException(500, 'Unable to save professional profile.');
     }
 
+    /** @return array<string, mixed>|null */
     public function findByUser(int $userId, bool $publicOnly = false): ?array
     {
         $sql = 'SELECT ' . self::COLUMNS . ' FROM professional_profiles p JOIN users u ON u.id=p.user_id WHERE p.user_id=:id';
@@ -197,7 +201,10 @@ final class ProfessionalProfileRepository
         ];
     }
 
-    /** @param array<string, mixed> $filters @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
     public function search(array $filters): array
     {
         if (empty($filters['city']) && !empty($filters['province'])) {
@@ -296,7 +303,10 @@ final class ProfessionalProfileRepository
         ];
     }
 
-    /** @param array<string, mixed> $profile @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $profile
+     * @return array<string, mixed>
+     */
     private function params(int $userId, string $type, array $profile): array
     {
         return [
@@ -320,7 +330,10 @@ final class ProfessionalProfileRepository
         ];
     }
 
-    /** @param array<string, mixed> $row @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
     private static function map(array $row): array
     {
         $birthDate = $row['birth_date'] === null ? null : substr((string) $row['birth_date'], 0, 10);
@@ -371,7 +384,10 @@ final class ProfessionalProfileRepository
         return is_array($decoded) ? array_values(array_filter($decoded, 'is_string')) : [];
     }
 
-    /** @param array<string,mixed> $profile @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $profile
+     * @return array<string, mixed>
+     */
     private static function publicView(array $profile): array
     {
         $profile['hasContactEmail'] = isset($profile['contactEmail']) && $profile['contactEmail'] !== '';

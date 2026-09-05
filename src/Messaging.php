@@ -12,6 +12,7 @@ final class MessagingRepository
     {
     }
 
+    /** @return array<string, mixed> */
     public function conversation(int $userId, int $otherId): array
     {
         if ($userId === $otherId) {
@@ -61,6 +62,7 @@ final class MessagingRepository
         return array_map(fn ($id) => $this->get((int) $id, $userId), $s->fetchAll(PDO::FETCH_COLUMN));
     }
 
+    /** @return array<string, mixed> */
     public function get(int $id, int $userId): array
     {
         $s = $this->pdo->prepare('SELECT c.*,cm.user_id AS member_user_id,cm.archived_at,cm.last_read_at FROM conversations c LEFT JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.user_id=:uid WHERE c.id=:id');
@@ -127,6 +129,7 @@ final class MessagingRepository
 
         return array_map([self::class,'message'], $s->fetchAll());
     }
+    /** @return array<string, mixed> */
     public function send(int $id, int $userId, string $body): array
     {
         $conversation = $this->get($id, $userId);
@@ -199,6 +202,7 @@ final class MessagingRepository
     {
         $this->pdo->prepare('DELETE FROM blocked_users WHERE blocker_id=:uid AND blocked_id=:oid')->execute(['uid' => $userId,'oid' => $otherId]);
     }
+    /** @return array{id: int, status: string} */
     public function report(int $userId, int $otherId, string $reason, ?string $details): array
     {
         if ($userId === $otherId) {
@@ -272,7 +276,10 @@ final class MessagingRepository
         $statement->execute(['cid' => $conversationId, 'uid' => $userId]);
     }
 
-    /** @param array<string,mixed> $row @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
     private static function message(array $row): array
     {
         return [

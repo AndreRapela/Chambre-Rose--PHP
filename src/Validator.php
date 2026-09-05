@@ -6,7 +6,10 @@ namespace ChambreRose;
 
 final class Validator
 {
-    /** @param array<string, mixed> $data @return array<string, string> */
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, string>
+     */
     public static function login(array $data): array
     {
         $errors = [];
@@ -18,7 +21,10 @@ final class Validator
         return ['email' => trim((string) $data['email']), 'password' => (string) $data['password']];
     }
 
-    /** @param array<string, mixed> $data @return array<string, string> */
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, string>
+     */
     public static function register(array $data, bool $includePassword = true): array
     {
         $errors = [];
@@ -47,6 +53,7 @@ final class Validator
         return $result;
     }
 
+    /** @param array<string, mixed> $data */
     public static function accountType(array $data): string
     {
         $value = strtoupper(trim((string) ($data['accountType'] ?? $data['role'] ?? 'VISITOR')));
@@ -62,6 +69,7 @@ final class Validator
         return $value;
     }
 
+    /** @param array<string, mixed> $data */
     public static function locale(array $data): string
     {
         $locale = strtolower(substr(trim((string) ($data['locale'] ?? 'fr')), 0, 2));
@@ -69,7 +77,7 @@ final class Validator
         return in_array($locale, ['fr', 'en', 'pt'], true) ? $locale : 'fr';
     }
 
-    /** @param array<string, mixed> $data @return array<string, mixed> */
+    /** @param array<string, mixed> $data */
     public static function vipActive(array $data): bool
     {
         if (!array_key_exists('vipActive', $data)) {
@@ -108,7 +116,10 @@ final class Validator
         return $password;
     }
 
-    /** @param array<string, mixed> $data @param array<string, string> $errors */
+    /**
+     * @param array<string, mixed> $data
+     * @param array<string, string> $errors
+     */
     private static function requiredString(array $data, string $field, int $min, int $max, array &$errors): void
     {
         if (!isset($data[$field]) || !is_string($data[$field]) || trim($data[$field]) === '') {
@@ -127,7 +138,10 @@ final class Validator
         }
     }
 
-    /** @param array<string, mixed> $data @param array<string, string> $errors */
+    /**
+     * @param array<string, mixed> $data
+     * @param array<string, string> $errors
+     */
     private static function optionalString(array $data, string $field, int $max, array &$errors): void
     {
         if (!array_key_exists($field, $data) || $data[$field] === null || $data[$field] === '') {
@@ -138,50 +152,14 @@ final class Validator
         }
     }
 
-    /** @param array<string, mixed> $data @param array<string, string> $errors */
+    /**
+     * @param array<string, mixed> $data
+     * @param array<string, string> $errors
+     */
     private static function email(array $data, string $field, array &$errors): void
     {
         if (isset($data[$field]) && is_string($data[$field]) && filter_var(trim($data[$field]), FILTER_VALIDATE_EMAIL) === false) {
             $errors[$field] = 'must be a well-formed email address';
-        }
-    }
-
-    /** @param array<string, mixed> $data @param array<string, string> $errors */
-    private static function number(
-        array $data,
-        string $field,
-        bool $required,
-        float $min,
-        float $max,
-        array &$errors
-    ): void {
-        $value = $data[$field] ?? null;
-        if ($value === null || $value === '') {
-            if ($required) {
-                $errors[$field] = 'must not be null';
-            }
-
-            return;
-        }
-        if (!is_numeric($value) || !is_finite((float) $value) || (float) $value < $min || (float) $value > $max) {
-            $errors[$field] = "must be between {$min} and {$max}";
-        }
-    }
-
-    /** @param array<string, mixed> $data @param array<string, string> $errors */
-    private static function integer(array $data, string $field, bool $required, int $min, ?int $max, array &$errors): void
-    {
-        $value = $data[$field] ?? null;
-        if ($value === null || $value === '') {
-            if ($required) {
-                $errors[$field] = 'must not be null';
-            }
-
-            return;
-        }
-        $valid = filter_var($value, FILTER_VALIDATE_INT);
-        if ($valid === false || $valid < $min || ($max !== null && $valid > $max)) {
-            $errors[$field] = $max === null ? "must be greater than or equal to {$min}" : "must be between {$min} and {$max}";
         }
     }
 
@@ -203,13 +181,4 @@ final class Validator
         return !function_exists('mb_check_encoding') || mb_check_encoding($value, 'UTF-8');
     }
 
-    private static function nullableFloat(mixed $value): ?float
-    {
-        return $value === null || $value === '' ? null : (float) $value;
-    }
-
-    private static function nullableInt(mixed $value): ?int
-    {
-        return $value === null || $value === '' ? null : (int) $value;
-    }
 }

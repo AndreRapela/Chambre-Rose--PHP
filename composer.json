@@ -1,12 +1,16 @@
 {
   "name": "chambre-rose/backend-php",
   "description": "API PHP da loja Chambre Rose, compativel com o frontend Angular existente.",
+  "license": "proprietary",
   "type": "project",
   "require": {
     "php": "^8.2",
     "ext-fileinfo": "*",
     "ext-json": "*",
     "ext-pdo": "*"
+  },
+  "require-dev": {
+    "phpstan/phpstan": "^2.2.13"
   },
   "suggest": {
     "ext-pdo_mysql": "Necessaria para usar o MySQL da EasyHost.",
@@ -15,6 +19,7 @@
   "scripts": {
     "serve": "php -S localhost:8080 -t public public/router.php",
     "setup": "php bin/setup.php",
+    "analyse": "phpstan analyse --configuration=phpstan.neon --no-progress",
     "test": "php tests/run.php",
     "test:integration": "php tests/integration.php",
     "test:cleanup": "php tests/cleanup-integration-data.php"

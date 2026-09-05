@@ -18,7 +18,10 @@ final class MarketplaceService
     ) {
     }
 
-    /** @param array<string,mixed> $input */
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
     public function saveProfile(int $userId, array $input): array
     {
         $user = $this->users->find($userId) ?? throw new ApiException(404, 'User not found.');
@@ -31,12 +34,16 @@ final class MarketplaceService
         return $this->withMedia($this->profiles->upsert($userId, $user['role'], $data));
     }
 
-    /** @param array<string,mixed> $input @param array<string,mixed> $user */
+    /**
+     * @param array<string, mixed> $input
+     * @param array<string, mixed> $user
+     */
     public function validateProfileInput(string $type, array $input, array $user): void
     {
         $this->validateProfile($type, $input, $user);
     }
 
+    /** @return array<string, mixed> */
     public function ownProfile(int $userId): array
     {
         $profile = $this->profiles->findByUser($userId) ?? throw new ApiException(404, 'Professional profile not found.');
@@ -44,6 +51,7 @@ final class MarketplaceService
         return $this->withMedia($profile);
     }
 
+    /** @return array<string, mixed> */
     public function publicProfile(int $userId): array
     {
         $this->profiles->incrementViews($userId);
@@ -53,7 +61,10 @@ final class MarketplaceService
         return $this->withMedia($profile, true);
     }
 
-    /** @param array<string,mixed> $requester @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $requester
+     * @return array<string, mixed>
+     */
     public function contactDetails(int $profileUserId, array $requester): array
     {
         $profile = $this->profiles->findByUser($profileUserId)
@@ -75,7 +86,11 @@ final class MarketplaceService
         ];
     }
 
-    /** @param array<string,mixed> $reviewer @param array<string,mixed> $input @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $reviewer
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
     public function submitReview(int $profileUserId, array $reviewer, array $input): array
     {
         $profile = $this->profiles->findByUser($profileUserId, true)
@@ -109,7 +124,10 @@ final class MarketplaceService
         );
     }
 
-    /** @param array<string,mixed> $filters @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
     public function listings(array $filters): array
     {
         $result = $this->profiles->search($filters);
@@ -130,6 +148,7 @@ final class MarketplaceService
         return $result;
     }
 
+    /** @return array<string, mixed> */
     public function upload(int $userId, UploadedFile $file, int $position = 0): array
     {
         $this->ownProfile($userId);
@@ -167,7 +186,11 @@ final class MarketplaceService
         );
     }
 
-    /** @param array<string,mixed> $input @param array<string,mixed> $user @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $input
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
     private function validateProfile(string $type, array $input, array $user): array
     {
         $aliases = ['description' => 'bio','serviceArea' => 'location','businessSegment' => 'segment'];
@@ -287,7 +310,10 @@ final class MarketplaceService
 
         return $data;
     }
-    /** @param array<string,mixed> $profile @return array<string,mixed> */
+    /**
+     * @param array<string, mixed> $profile
+     * @return array<string, mixed>
+     */
     private function withMedia(array $profile, bool $public = false): array
     {
         $profile['media'] = $this->media->listFor((int) $profile['userId'], $public);

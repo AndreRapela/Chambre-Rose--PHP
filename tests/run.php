@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 putenv('JWT_SECRET=test-secret-with-more-than-thirty-two-bytes-123456');
 putenv('JWT_EXPIRATION_MINUTES=5');
+putenv('APP_ENV=production');
 
 require dirname(__DIR__) . '/bootstrap.php';
 
 use ChambreRose\ApiException;
 use ChambreRose\App;
+use ChambreRose\AuthSessionCookie;
 use ChambreRose\Jwt;
 use ChambreRose\MultipartParser;
 use ChambreRose\Request;
@@ -30,6 +32,20 @@ $token = $jwt->generate('admin@example.com', 'ADMIN');
 $claims = $jwt->verify($token);
 $assert($claims['sub'] === 'admin@example.com', 'JWT must preserve the subject.');
 $assert($claims['role'] === 'ADMIN', 'JWT must preserve the role.');
+$sessionCookie = new AuthSessionCookie($jwt);
+$cookieHeader = $sessionCookie->issue($token);
+$assert(
+    str_contains($cookieHeader, 'HttpOnly')
+    && str_contains($cookieHeader, 'SameSite=Strict')
+    && str_contains($cookieHeader, 'Secure')
+    && str_contains($cookieHeader, 'Path=/api'),
+    'Authentication cookies must use the production security attributes.'
+);
+$cookieRequest = new Request('GET', '/api/auth/me', [
+    'cookie' => 'preference=fr; chambre_rose_session=' . rawurlencode($token),
+], []);
+$assert($sessionCookie->token($cookieRequest) === $token, 'Authentication cookies must be read without exposing them in JSON.');
+$assert(str_contains($sessionCookie->clear(), 'Max-Age=0'), 'Signing out must expire the authentication cookie.');
 
 $tampered = substr($token, 0, -1) . (str_ends_with($token, 'a') ? 'b' : 'a');
 
@@ -101,6 +117,14 @@ $request = new Request('GET', '/api/test', [], [], '0123456789abcdef');
 $assert($request->requestId === '0123456789abcdef', 'Request IDs must remain stable during a request.');
 $headers = App::commonHeaders($request);
 $assert(($headers['X-Request-ID'] ?? null) === $request->requestId, 'Responses must expose the request ID.');
+$assert(
+    Request::resolveClientIp('172.20.0.3', '203.0.113.20, 172.20.0.2', '172.16.0.0/12') === '203.0.113.20',
+    'Trusted reverse proxies must preserve the original client IP for rate limiting.'
+);
+$assert(
+    Request::resolveClientIp('198.51.100.9', '203.0.113.20', '172.16.0.0/12') === '198.51.100.9',
+    'Untrusted clients must not be able to spoof a forwarded IP address.'
+);
 
 $error = Response::error(400, 'Invalid request data.', '/api/test');
 $decoded = json_decode($error->body, true, 16, JSON_THROW_ON_ERROR);

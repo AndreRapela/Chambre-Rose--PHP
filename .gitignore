@@ -1,5 +1,6 @@
 /.env
 /vendor/
+/.phpstan-cache/
 /storage/establishment-photos/*
 !/storage/establishment-photos/.gitkeep
 /.idea/

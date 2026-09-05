@@ -115,7 +115,10 @@ final class MailService
             error_log('[Chambre Rose API] Email queued in development: ' . $template . ' to ' . self::mask($recipient) . '.');
         }
     }
-    /** @param array<string,string> $v @return array{string,string} */
+    /**
+     * @param array<string, string> $v
+     * @return array{string, string}
+     */
     private function render(string $template, string $locale, array $v): array
     {
         $name = $v['name'] ?? '';
