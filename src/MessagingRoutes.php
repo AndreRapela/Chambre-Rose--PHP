@@ -9,7 +9,8 @@ final class MessagingRoutes implements RouteHandler
     public function __construct(
         private readonly MessagingRepository $messaging,
         private readonly UserRepository $users,
-        private readonly ApiRequestGuard $guard
+        private readonly ApiRequestGuard $guard,
+        private readonly UserNotificationService $notifications
     ) {
     }
 
@@ -29,23 +30,40 @@ final class MessagingRoutes implements RouteHandler
         if ($method === 'GET' && preg_match('#^/api/conversations/(\d+)/messages$#', $path, $match)) {
             $user = $this->guard->currentUser($request);
 
-            return ApiResponder::json([
-                'items' => $this->messaging->messages((int) $match[1], (int) $user['id']),
-            ]);
+            return ApiResponder::json($this->messaging->messages(
+                (int) $match[1],
+                (int) $user['id'],
+                self::queryId($request, 'after'),
+                self::queryId($request, 'before'),
+                self::queryLimit($request)
+            ));
         }
         if ($method === 'POST' && preg_match('#^/api/conversations/(\d+)/messages$#', $path, $match)) {
             $user = $this->guard->currentUser($request);
             $this->guard->requireJson($request);
             $body = $request->json();
-
-            return ApiResponder::json(
-                $this->messaging->send((int) $match[1], (int) $user['id'], (string) ($body['body'] ?? '')),
-                201
+            $conversationId = (int) $match[1];
+            $conversation = $this->messaging->get($conversationId, (int) $user['id']);
+            $message = $this->messaging->send($conversationId, (int) $user['id'], (string) ($body['body'] ?? ''));
+            $senderName = trim((string) ($user['firstName'] ?? '') . ' ' . (string) ($user['lastName'] ?? ''));
+            $this->notifications->notify(
+                (int) $conversation['otherUser']['id'],
+                UserNotificationService::DIRECT_MESSAGE,
+                'MESSAGE_RECEIVED',
+                'New private message',
+                'You received a private message from ' . ($senderName === '' ? 'a member' : $senderName) . '.',
+                '/mensagens/' . $conversationId,
+                'message:' . (int) $message['id']
             );
+
+            return ApiResponder::json($message, 201);
         }
         if ($method === 'PATCH' && preg_match('#^/api/conversations/(\d+)/read$#', $path, $match)) {
             $user = $this->guard->currentUser($request);
-            $this->messaging->read((int) $match[1], (int) $user['id']);
+            $conversationId = (int) $match[1];
+            $userId = (int) $user['id'];
+            $this->messaging->read($conversationId, $userId);
+            $this->notifications->markConversationRead($userId, $conversationId);
 
             return ApiResponder::empty();
         }
@@ -129,5 +147,23 @@ final class MessagingRoutes implements RouteHandler
             (string) ($body['reason'] ?? ''),
             isset($body['details']) ? (string) $body['details'] : null
         ), 201);
+    }
+
+    private static function queryId(Request $request, string $name): ?int
+    {
+        $value = $request->query[$name] ?? null;
+
+        return is_scalar($value) && filter_var($value, FILTER_VALIDATE_INT) !== false && (int) $value > 0
+            ? (int) $value
+            : null;
+    }
+
+    private static function queryLimit(Request $request): int
+    {
+        $value = $request->query['limit'] ?? null;
+
+        return is_scalar($value) && filter_var($value, FILTER_VALIDATE_INT) !== false
+            ? min(100, max(1, (int) $value))
+            : 50;
     }
 }

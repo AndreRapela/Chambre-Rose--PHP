@@ -12,7 +12,8 @@ final class ListingRoutes implements RouteHandler
         private readonly ProfileMediaRepository $media,
         private readonly FavoritesRepository $favorites,
         private readonly ProductRepository $products,
-        private readonly ApiRequestGuard $guard
+        private readonly ApiRequestGuard $guard,
+        private readonly UserNotificationService $notifications
     ) {
     }
 
@@ -35,11 +36,19 @@ final class ListingRoutes implements RouteHandler
         if ($method === 'POST' && preg_match('#^/api/listings/(\d+)/reviews$#', $path, $match)) {
             $user = $this->guard->currentUser($request);
             $this->guard->requireJson($request);
-
-            return ApiResponder::json(
-                $this->marketplace->submitReview((int) $match[1], $user, $request->json()),
-                201
+            $target = (int) $match[1];
+            $review = $this->marketplace->submitReview($target, $user, $request->json());
+            $this->notifications->notify(
+                $target,
+                UserNotificationService::MARKETPLACE,
+                'PROFILE_REVIEWED',
+                'New profile review',
+                'A member left a new review on your profile.',
+                '/catalogue/perfil/' . $target,
+                'profile-review:' . (int) ($review['id'] ?? 0)
             );
+
+            return ApiResponder::json($review, 201);
         }
         if ($method === 'POST' && preg_match('#^/api/listings/(\d+)/purchases$#', $path, $match)) {
             return $this->registerSelection($request, (int) $match[1]);
@@ -117,6 +126,16 @@ final class ListingRoutes implements RouteHandler
             ? max(0, (float) $body['amount'])
             : null;
         $this->products->registerProfilePurchase($profileId, (int) $user['id'], $amount);
+        $buyerName = trim((string) ($user['firstName'] ?? '') . ' ' . (string) ($user['lastName'] ?? ''));
+        $this->notifications->notify(
+            $profileId,
+            UserNotificationService::MARKETPLACE,
+            'PROFILE_SELECTED',
+            'New profile selection',
+            ($buyerName === '' ? 'A member' : $buyerName) . ' selected an option from your profile.',
+            '/catalogue/perfil/' . $profileId,
+            null
+        );
 
         return ApiResponder::json($this->marketplace->publicProfile($profileId), 201);
     }
@@ -188,6 +207,15 @@ final class ListingRoutes implements RouteHandler
             $target = (int) $match[1];
             $this->marketplace->publicProfile($target);
             $this->favorites->add((int) $user['id'], $target);
+            $this->notifications->notify(
+                $target,
+                UserNotificationService::MARKETPLACE,
+                'PROFILE_FAVORITED',
+                'New favorite',
+                'A member added your profile to favorites.',
+                '/catalogue/perfil/' . $target,
+                'favorite:' . (int) $user['id'] . ':' . $target
+            );
 
             return ApiResponder::json(['favorited' => true, 'profileId' => $target], 201);
         }

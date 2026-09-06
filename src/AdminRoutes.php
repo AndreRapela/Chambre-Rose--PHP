@@ -8,7 +8,8 @@ final class AdminRoutes implements RouteHandler
 {
     public function __construct(
         private readonly AdminUserService $service,
-        private readonly ApiRequestGuard $guard
+        private readonly ApiRequestGuard $guard,
+        private readonly UserNotificationService $notifications
     ) {
     }
 
@@ -31,10 +32,22 @@ final class AdminRoutes implements RouteHandler
         if ($method === 'PATCH' && preg_match('#^/api/admin/users/(\d+)/vip$#', $path, $match)) {
             $this->guard->requireAdmin($request);
             $this->guard->requireJson($request);
-
-            return ApiResponder::json(
-                $this->service->updateVip((int) $match[1], Validator::vipActive($request->json()))
+            $userId = (int) $match[1];
+            $active = Validator::vipActive($request->json());
+            $updated = $this->service->updateVip($userId, $active);
+            $this->notifications->notify(
+                $userId,
+                UserNotificationService::ACCOUNT,
+                $active ? 'VIP_ACTIVATED' : 'VIP_DEACTIVATED',
+                $active ? 'VIP access activated' : 'VIP access changed',
+                $active
+                    ? 'Your VIP access is now active. Private conversations are available.'
+                    : 'Your VIP access is no longer active.',
+                '/espace-prive',
+                null
             );
+
+            return ApiResponder::json($updated);
         }
         if ($method === 'PATCH' && preg_match('#^/api/admin/users/(\d+)/approval$#', $path, $match)) {
             return $this->updateApproval($request, (int) $match[1]);
@@ -42,10 +55,19 @@ final class AdminRoutes implements RouteHandler
         if ($method === 'PATCH' && preg_match('#^/api/admin/users/(\d+)/role$#', $path, $match)) {
             $this->guard->requireAdmin($request);
             $this->guard->requireJson($request);
-
-            return ApiResponder::json(
-                $this->service->updateRole((int) $match[1], (string) ($request->json()['role'] ?? ''))
+            $userId = (int) $match[1];
+            $updated = $this->service->updateRole($userId, (string) ($request->json()['role'] ?? ''));
+            $this->notifications->notify(
+                $userId,
+                UserNotificationService::ACCOUNT,
+                'ROLE_CHANGED',
+                'Account role updated',
+                'Your account role is now ' . (string) $updated['role'] . '.',
+                '/espace-prive',
+                null
             );
+
+            return ApiResponder::json($updated);
         }
 
         return null;
@@ -62,7 +84,21 @@ final class AdminRoutes implements RouteHandler
             throw new ApiException(400, 'Approval reason cannot exceed 500 characters.');
         }
 
-        return ApiResponder::json($this->service->updateApproval($userId, $status, $reason));
+        $updated = $this->service->updateApproval($userId, $status, $reason);
+        $approved = $status === 'APPROVED';
+        $this->notifications->notify(
+            $userId,
+            UserNotificationService::ACCOUNT,
+            $approved ? 'ACCOUNT_APPROVED' : 'ACCOUNT_REJECTED',
+            $approved ? 'Account approved' : 'Account review completed',
+            $approved
+                ? 'Your professional account was approved and is now visible.'
+                : 'Your professional account was not approved. Open your account for details.',
+            '/espace-prive',
+            null
+        );
+
+        return ApiResponder::json($updated);
     }
 
     private static function queryString(Request $request, string $name): ?string

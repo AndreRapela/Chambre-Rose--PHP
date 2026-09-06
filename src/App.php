@@ -27,6 +27,9 @@ final class App
         $profileMedia = new ProfileMediaRepository($pdo);
         $favorites = new FavoritesRepository($pdo);
         $messaging = new MessagingRepository($pdo);
+        $notificationRepository = new NotificationRepository($pdo);
+        $pushNotifications = new PushNotificationService($notificationRepository);
+        $userNotifications = new UserNotificationService($notificationRepository, $pushNotifications);
         $passwordResets = new PasswordResetRepository($pdo);
         $mail = new MailService($pdo);
         $marketplace = new MarketplaceService($users, $profiles, $profileMedia);
@@ -36,14 +39,15 @@ final class App
         $sessionCookie = new AuthSessionCookie($jwt);
         $rateLimiter = new AuthRateLimiter($pdo);
         $guard = new ApiRequestGuard($users, $jwt, $sessionCookie);
-        $auth = new AuthService($users, $jwt, $marketplace, $passwordResets, $mail);
+        $auth = new AuthService($users, $jwt, $marketplace, $passwordResets, $mail, $userNotifications);
 
         $this->router = new ApiRouter([
-            new AuthRoutes($auth, $guard, $sessionCookie, $rateLimiter),
-            new ListingRoutes($marketplace, $profiles, $profileMedia, $favorites, $products, $guard),
-            new ProductRoutes($productService, $products, $productImages, $guard),
-            new MessagingRoutes($messaging, $users, $guard),
-            new AdminRoutes(new AdminUserService($users, $mail, $profiles), $guard),
+            new AuthRoutes($auth, $guard, $sessionCookie, $rateLimiter, $userNotifications),
+            new ListingRoutes($marketplace, $profiles, $profileMedia, $favorites, $products, $guard, $userNotifications),
+            new ProductRoutes($productService, $products, $productImages, $guard, $userNotifications),
+            new MessagingRoutes($messaging, $users, $guard, $userNotifications),
+            new NotificationRoutes($notificationRepository, $userNotifications, $guard),
+            new AdminRoutes(new AdminUserService($users, $mail, $profiles), $guard, $userNotifications),
         ]);
         $this->booted = true;
     }

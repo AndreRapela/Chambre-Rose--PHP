@@ -10,7 +10,8 @@ final class ProductRoutes implements RouteHandler
         private readonly ProductService $service,
         private readonly ProductRepository $products,
         private readonly ProductImageRepository $images,
-        private readonly ApiRequestGuard $guard
+        private readonly ApiRequestGuard $guard,
+        private readonly UserNotificationService $notifications
     ) {
     }
 
@@ -31,8 +32,22 @@ final class ProductRoutes implements RouteHandler
         }
         if ($method === 'POST' && preg_match('#^/api/products/(\d+)/purchases$#', $path, $match)) {
             $user = $this->guard->currentUser($request);
+            $productId = (int) $match[1];
+            $product = $this->products->registerPurchase($productId, (int) $user['id']);
+            $storeUserId = (int) ($product['storeUserId'] ?? 0);
+            if ($storeUserId > 0 && $storeUserId !== (int) $user['id']) {
+                $this->notifications->notify(
+                    $storeUserId,
+                    UserNotificationService::MARKETPLACE,
+                    'PRODUCT_PURCHASED',
+                    'New product purchase',
+                    'A member purchased ' . (string) ($product['name'] ?? 'one of your products') . '.',
+                    '/catalogue/produto/' . $productId,
+                    null
+                );
+            }
 
-            return ApiResponder::json($this->products->registerPurchase((int) $match[1], (int) $user['id']), 201);
+            return ApiResponder::json($product, 201);
         }
         if (($method === 'POST' && $path === '/api/products')
             || ($method === 'PUT' && preg_match('#^/api/products/(\d+)$#', $path, $match))) {

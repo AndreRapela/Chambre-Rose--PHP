@@ -16,7 +16,8 @@ final class AuthService
         private readonly Jwt $jwt,
         private readonly MarketplaceService $marketplace,
         private readonly PasswordResetRepository $passwordResets,
-        private readonly MailService $mail
+        private readonly MailService $mail,
+        private readonly ?UserNotificationService $notifications = null
     ) {
     }
 
@@ -163,6 +164,16 @@ final class AuthService
             throw $exception;
         }
 
+        $this->notifications?->notify(
+            (int) $updated['id'],
+            UserNotificationService::ACCOUNT,
+            'PROFILE_UPDATED',
+            'Account details updated',
+            'Your Chambre Rose account details were updated successfully.',
+            '/espace-prive/perfil',
+            null
+        );
+
         return $this->authenticationResponse($updated);
     }
 
@@ -232,6 +243,15 @@ final class AuthService
                     'name' => $user['firstName'],
                     'url' => $base . '/auth/reset-password?token=' . rawurlencode($token),
                 ]);
+                $this->notifications?->notify(
+                    (int) $user['id'],
+                    UserNotificationService::SECURITY,
+                    'PASSWORD_RESET_REQUESTED',
+                    'Password reset requested',
+                    'Password reset instructions were requested for your account. Contact support if this was not you.',
+                    '/contenu/contact',
+                    null
+                );
             }
         }
 
@@ -255,6 +275,15 @@ final class AuthService
             throw new ApiException(400, 'Invalid or expired password reset request.');
         }
         $this->users->updatePassword($userId, password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]));
+        $this->notifications?->notify(
+            $userId,
+            UserNotificationService::SECURITY,
+            'PASSWORD_CHANGED',
+            'Password changed',
+            'Your Chambre Rose password was changed. Contact support if this was not you.',
+            '/contenu/contact',
+            null
+        );
 
         return ['message' => 'Password updated successfully.'];
     }

@@ -87,9 +87,13 @@ $request = static function (
         }
     }
 
+    $decoded = is_string($raw) && $raw !== ''
+        ? json_decode($raw, true, 512, JSON_THROW_ON_ERROR)
+        : null;
+
     return [
         (int)($match[1] ?? 0),
-        is_string($raw) && $raw !== '' ? json_decode($raw, true) : null,
+        $decoded,
         $responseCookie,
         $responseHeaders,
     ];
@@ -548,6 +552,81 @@ if ($adminPassword !== '') {
     );
     $conversationId = (int)($conversation['id'] ?? 0);
     $assert($conversationStatus === 201 && $conversationId > 0, 'A VIP visitor must be able to contact an approved companion.');
+    [$preferenceStatus, $defaultPreferences] = $request('GET', '/api/notification-preferences', null, $professionalCookie);
+    [$savedPreferenceStatus, $savedPreferences] = $request('PUT', '/api/notification-preferences', [
+        'directMessages' => true,
+        'accountUpdates' => true,
+        'marketplaceUpdates' => false,
+        'securityUpdates' => true,
+    ], $professionalCookie);
+    $assert(
+        $preferenceStatus === 200
+        && ($defaultPreferences['directMessages'] ?? false) === true
+        && $savedPreferenceStatus === 200
+        && ($savedPreferences['marketplaceUpdates'] ?? true) === false,
+        'Notification preferences must load with safe defaults and persist per account.'
+    );
+    $fakePushEndpoint = 'https://push.example.invalid/' . rawurlencode($runId);
+    [$subscribeStatus] = $request('POST', '/api/push-subscriptions', [
+        'endpoint' => $fakePushEndpoint,
+        'keys' => ['p256dh' => 'integration-public-key', 'auth' => 'integration-auth-token'],
+        'contentEncoding' => 'aes128gcm',
+    ], $professionalCookie);
+    [$messageStatus, $sentMessage] = $request(
+        'POST',
+        "/api/conversations/{$conversationId}/messages",
+        ['body' => 'Fast incremental integration message.'],
+        $visitorCookie
+    );
+    $messageId = (int) ($sentMessage['id'] ?? 0);
+    [$messagePageStatus, $messagePage] = $request(
+        'GET',
+        "/api/conversations/{$conversationId}/messages?before=" . ($messageId + 1) . '&limit=25',
+        null,
+        $professionalCookie
+    );
+    [$incrementalStatus, $incrementalPage] = $request(
+        'GET',
+        "/api/conversations/{$conversationId}/messages?after={$messageId}&limit=25",
+        null,
+        $professionalCookie
+    );
+    [$notificationStatus, $notificationFeed] = $request('GET', '/api/notifications', null, $professionalCookie);
+    [$markConversationReadStatus] = $request(
+        'PATCH',
+        "/api/conversations/{$conversationId}/read",
+        [],
+        $professionalCookie
+    );
+    [$readNotificationStatus, $readNotificationFeed] = $request(
+        'GET',
+        '/api/notifications',
+        null,
+        $professionalCookie
+    );
+    [$unsubscribeStatus] = $request(
+        'DELETE',
+        '/api/push-subscriptions',
+        ['endpoint' => $fakePushEndpoint],
+        $professionalCookie
+    );
+    $assert(
+        $subscribeStatus === 201
+        && $messageStatus === 201
+        && $messageId > 0
+        && $messagePageStatus === 200
+        && count($messagePage['items'] ?? []) === 1
+        && array_key_exists('peerReadAt', $messagePage ?? [])
+        && $incrementalStatus === 200
+        && count($incrementalPage['items'] ?? []) === 0
+        && $notificationStatus === 200
+        && ($notificationFeed['unreadByCategory']['DIRECT_MESSAGE'] ?? 0) >= 1
+        && $markConversationReadStatus === 204
+        && $readNotificationStatus === 200
+        && ($readNotificationFeed['unreadByCategory']['DIRECT_MESSAGE'] ?? 0) === 0
+        && $unsubscribeStatus === 204,
+        'Messages must use incremental pages and create a private device-ready notification for the recipient.'
+    );
     [$rejectedStatus] = $request(
         'PATCH',
         "/api/admin/users/{$id}/approval",

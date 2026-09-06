@@ -462,7 +462,10 @@ final class Response
             throw new ApiException(500, 'Unable to encode API response.');
         }
 
-        return new self($status, $body, ['Content-Type' => 'application/json; charset=utf-8'] + $headers);
+        return new self($status, $body, [
+            'Content-Type' => 'application/json; charset=utf-8',
+            'Content-Length' => (string) strlen($body),
+        ] + $headers);
     }
 
     /** @param array<string, string> $fields */

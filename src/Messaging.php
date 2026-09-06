@@ -56,78 +56,75 @@ final class MessagingRepository
     /** @return list<array<string,mixed>> */
     public function list(int $userId): array
     {
-        $s = $this->pdo->prepare('SELECT c.id FROM conversations c JOIN conversation_members cm ON cm.conversation_id=c.id WHERE cm.user_id=:uid ORDER BY c.updated_at DESC');
-        $s->execute(['uid' => $userId]);
-
-        return array_map(fn ($id) => $this->get((int) $id, $userId), $s->fetchAll(PDO::FETCH_COLUMN));
+        return $this->summaries($userId);
     }
 
     /** @return array<string, mixed> */
     public function get(int $id, int $userId): array
     {
-        $s = $this->pdo->prepare('SELECT c.*,cm.user_id AS member_user_id,cm.archived_at,cm.last_read_at FROM conversations c LEFT JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.user_id=:uid WHERE c.id=:id');
-        $s->execute(['uid' => $userId,'id' => $id]);
-        $r = $s->fetch();
-        if (!is_array($r)
-            || $r['member_user_id'] === null
-            || ((int)$r['participant_one_id'] !== $userId && (int)$r['participant_two_id'] !== $userId)
-        ) {
+        $items = $this->summaries($userId, $id);
+        if ($items === []) {
             throw new ApiException(404, 'Conversation not found.');
         }
-        $other = (int)$r['participant_one_id'] === $userId ? (int)$r['participant_two_id'] : (int)$r['participant_one_id'];
-        $u = $this->pdo->prepare("SELECT u.id,u.first_name,u.last_name,u.role,u.approval_status,COALESCE(p.display_name,CONCAT(u.first_name,' ',u.last_name)) display_name FROM users u LEFT JOIN professional_profiles p ON p.user_id=u.id WHERE u.id=:id");
-        $u->execute(['id' => $other]);
-        $otherUser = $u->fetch();
-        $last = $this->pdo->prepare('SELECT id,conversation_id,sender_id,body,created_at FROM messages WHERE conversation_id=:id ORDER BY id DESC LIMIT 1');
-        $last->execute(['id' => $id]);
-        $lastRow = $last->fetch();
-        $unread = $this->pdo->prepare('SELECT COUNT(*) FROM messages WHERE conversation_id=:id AND sender_id<>:uid AND (:read_null IS NULL OR created_at>:read_after)');
-        $unread->execute([
-            'id' => $id,
-            'uid' => $userId,
-            'read_null' => $r['last_read_at'],
-            'read_after' => $r['last_read_at'],
-        ]);
-        $blockedByMe = false;
-        $avatarUrl = null;
-        if ($otherUser) {
-            $b = $this->pdo->prepare('SELECT 1 FROM blocked_users WHERE blocker_id=:uid AND blocked_id=:oid');
-            $b->execute(['uid' => $userId,'oid' => $other]);
-            $blockedByMe = (bool)$b->fetchColumn();
-            $avatar = $this->pdo->prepare("SELECT id FROM profile_media WHERE user_id=:uid AND media_type='PHOTO' ORDER BY position,id LIMIT 1");
-            $avatar->execute(['uid' => $other]);
-            $avatarId = $avatar->fetchColumn();
-            if ($avatarId !== false) {
-                $avatarUrl = '/api/profiles/' . $other . '/media/' . (int)$avatarId;
+
+        return $items[0];
+    }
+
+    /** @return array{items: list<array<string,mixed>>, hasMore: bool, peerReadAt: string|null} */
+    public function messages(
+        int $id,
+        int $userId,
+        ?int $afterId = null,
+        ?int $beforeId = null,
+        int $limit = 50
+    ): array
+    {
+        $conversation = $this->get($id, $userId);
+        if ($afterId !== null && $beforeId !== null) {
+            throw new ApiException(400, 'Use either after or before, not both.');
+        }
+        $limit = min(100, max(1, $limit));
+        $sql = <<<'SQL'
+            SELECT m.id,m.conversation_id,m.sender_id,m.body,m.created_at,
+              CASE WHEN other_member.last_read_at>=m.created_at THEN other_member.last_read_at ELSE NULL END AS read_at
+            FROM messages m
+            LEFT JOIN conversation_members other_member
+              ON other_member.conversation_id=m.conversation_id AND other_member.user_id<>:user_id
+            WHERE m.conversation_id=:conversation_id
+            SQL;
+        $descending = $afterId === null;
+        $params = ['user_id' => $userId, 'conversation_id' => $id];
+        if ($afterId !== null) {
+            $sql .= ' AND m.id>:after_id ORDER BY m.id ASC';
+            $params['after_id'] = $afterId;
+        } else {
+            if ($beforeId !== null) {
+                $sql .= ' AND m.id<:before_id';
+                $params['before_id'] = $beforeId;
             }
+            $sql .= ' ORDER BY m.id DESC';
+        }
+        $sql .= ' LIMIT :limit';
+        $statement = $this->pdo->prepare($sql);
+        foreach ($params as $key => $value) {
+            $statement->bindValue(':' . $key, $value, PDO::PARAM_INT);
+        }
+        $statement->bindValue(':limit', $limit + 1, PDO::PARAM_INT);
+        $statement->execute();
+        $rows = $statement->fetchAll();
+        $hasMore = count($rows) > $limit;
+        if ($hasMore) {
+            array_pop($rows);
+        }
+        if ($descending) {
+            $rows = array_reverse($rows);
         }
 
         return [
-            'id' => $id,
-            'otherUser' => $otherUser ? [
-                'id' => (int) $otherUser['id'],
-                'displayName' => (string) $otherUser['display_name'],
-                'role' => (string) $otherUser['role'],
-                'approvalStatus' => (string) $otherUser['approval_status'],
-                'blocked' => $blockedByMe,
-                'avatarUrl' => $avatarUrl,
-                'profileImageUrl' => $avatarUrl,
-            ] : null,
-            'archived' => $r['archived_at'] !== null,
-            'unreadCount' => (int) $unread->fetchColumn(),
-            'lastMessage' => is_array($lastRow) ? self::message($lastRow) : null,
-            'updatedAt' => (string) $r['updated_at'],
+            'items' => array_map([self::class, 'message'], $rows),
+            'hasMore' => $hasMore,
+            'peerReadAt' => $conversation['peerReadAt'],
         ];
-    }
-
-    /** @return list<array<string,mixed>> */
-    public function messages(int $id, int $userId): array
-    {
-        $this->get($id, $userId);
-        $s = $this->pdo->prepare('SELECT id,conversation_id,sender_id,body,created_at FROM (SELECT * FROM messages WHERE conversation_id=:id ORDER BY id DESC LIMIT 200) recent ORDER BY id ASC');
-        $s->execute(['id' => $id]);
-
-        return array_map([self::class,'message'], $s->fetchAll());
     }
     /** @return array<string, mixed> */
     public function send(int $id, int $userId, string $body): array
@@ -288,7 +285,85 @@ final class MessagingRepository
             'senderId' => (int) $row['sender_id'],
             'body' => (string) $row['body'],
             'createdAt' => (string) $row['created_at'],
+            'readAt' => ($row['read_at'] ?? null) === null ? null : (string) $row['read_at'],
         ];
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function summaries(int $userId, ?int $conversationId = null): array
+    {
+        $sql = <<<'SQL'
+            SELECT c.id,c.updated_at,cm.archived_at,
+              other_user.id AS other_id,other_user.role AS other_role,
+              other_user.approval_status AS other_approval_status,other_member.last_read_at AS peer_read_at,
+              COALESCE(profile.display_name,CONCAT(other_user.first_name,' ',other_user.last_name)) AS display_name,
+              blocked.blocked_id AS blocked_id,
+              (SELECT media.id FROM profile_media media
+                WHERE media.user_id=other_user.id AND media.media_type='PHOTO'
+                ORDER BY media.position,media.id LIMIT 1) AS avatar_id,
+              last_message.id AS last_id,last_message.sender_id AS last_sender_id,
+              last_message.body AS last_body,last_message.created_at AS last_created_at,
+              (SELECT COUNT(*) FROM messages unread
+                WHERE unread.conversation_id=c.id AND unread.sender_id<>:unread_user_id
+                  AND (cm.last_read_at IS NULL OR unread.created_at>cm.last_read_at)) AS unread_count
+            FROM conversations c
+            JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.user_id=:member_user_id
+            JOIN users other_user ON other_user.id=CASE
+              WHEN c.participant_one_id=:participant_user_id THEN c.participant_two_id
+              ELSE c.participant_one_id END
+            LEFT JOIN conversation_members other_member
+              ON other_member.conversation_id=c.id AND other_member.user_id=other_user.id
+            LEFT JOIN professional_profiles profile ON profile.user_id=other_user.id
+            LEFT JOIN blocked_users blocked ON blocked.blocker_id=:blocker_user_id AND blocked.blocked_id=other_user.id
+            LEFT JOIN messages last_message ON last_message.id=(
+              SELECT MAX(latest.id) FROM messages latest WHERE latest.conversation_id=c.id
+            )
+            SQL;
+        $params = [
+            'unread_user_id' => $userId,
+            'member_user_id' => $userId,
+            'participant_user_id' => $userId,
+            'blocker_user_id' => $userId,
+        ];
+        if ($conversationId !== null) {
+            $sql .= ' WHERE c.id=:conversation_id';
+            $params['conversation_id'] = $conversationId;
+        }
+        $sql .= ' ORDER BY c.updated_at DESC,c.id DESC';
+        $statement = $this->pdo->prepare($sql);
+        $statement->execute($params);
+
+        return array_map(static function (array $row): array {
+            $avatarUrl = $row['avatar_id'] === null
+                ? null
+                : '/api/profiles/' . (int) $row['other_id'] . '/media/' . (int) $row['avatar_id'];
+            $lastMessage = $row['last_id'] === null ? null : self::message([
+                'id' => $row['last_id'],
+                'conversation_id' => $row['id'],
+                'sender_id' => $row['last_sender_id'],
+                'body' => $row['last_body'],
+                'created_at' => $row['last_created_at'],
+                'read_at' => null,
+            ]);
+
+            return [
+                'id' => (int) $row['id'],
+                'otherUser' => [
+                    'id' => (int) $row['other_id'],
+                    'displayName' => trim((string) $row['display_name']),
+                    'role' => (string) $row['other_role'],
+                    'approvalStatus' => (string) $row['other_approval_status'],
+                    'blocked' => $row['blocked_id'] !== null,
+                    'avatarUrl' => $avatarUrl,
+                    'profileImageUrl' => $avatarUrl,
+                ],
+                'archived' => $row['archived_at'] !== null,
+                'unreadCount' => (int) $row['unread_count'],
+                'lastMessage' => $lastMessage,
+                'peerReadAt' => $row['peer_read_at'] === null ? null : (string) $row['peer_read_at'],
+                'updatedAt' => (string) $row['updated_at'],
+            ];
+        }, $statement->fetchAll());
     }
 
     private static function length(string $value): int

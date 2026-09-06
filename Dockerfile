@@ -1,10 +1,12 @@
 FROM php:8.3-apache
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq-dev \
-    && docker-php-ext-install pdo_pgsql pdo_mysql \
+    && apt-get install -y --no-install-recommends libpq-dev unzip \
+    && docker-php-ext-install bcmath pdo_pgsql pdo_mysql \
     && a2enmod rewrite headers \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 
 ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
 
@@ -20,6 +22,8 @@ RUN sed -ri 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-avail
       > /usr/local/etc/php/conf.d/chambre-rose.ini
 
 WORKDIR /var/www/html
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader
 COPY . .
 
 RUN chown -R www-data:www-data /var/www/html

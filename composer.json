@@ -7,12 +7,14 @@
     "php": "^8.2",
     "ext-fileinfo": "*",
     "ext-json": "*",
-    "ext-pdo": "*"
+    "ext-pdo": "*",
+    "minishlink/web-push": "^10.1"
   },
   "require-dev": {
     "phpstan/phpstan": "^2.2.13"
   },
   "suggest": {
+    "ext-bcmath": "Recomendada para criptografia Web Push mais rápida.",
     "ext-pdo_mysql": "Necessaria para usar o MySQL da EasyHost.",
     "ext-pdo_pgsql": "Necessaria somente para desenvolvimento com PostgreSQL."
   },
