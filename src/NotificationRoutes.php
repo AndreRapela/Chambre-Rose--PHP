@@ -9,7 +9,8 @@ final class NotificationRoutes implements RouteHandler
     public function __construct(
         private readonly NotificationRepository $notifications,
         private readonly UserNotificationService $service,
-        private readonly ApiRequestGuard $guard
+        private readonly ApiRequestGuard $guard,
+        private readonly PushDeviceCookie $pushDeviceCookie
     ) {
     }
 
@@ -52,7 +53,7 @@ final class NotificationRoutes implements RouteHandler
                 $this->notifications->deleteSubscription((int) $user['id'], $endpoint);
             }
 
-            return ApiResponder::empty();
+            return ApiResponder::empty()->withHeaders(['Set-Cookie' => $this->pushDeviceCookie->clear()]);
         }
         if ($method === 'PATCH' && $path === '/api/notifications/read') {
             $user = $this->guard->currentUser($request);
@@ -115,7 +116,8 @@ final class NotificationRoutes implements RouteHandler
             $userAgent === null ? null : substr($userAgent, 0, 255)
         );
 
-        return ApiResponder::json(['subscribed' => true], 201);
+        return ApiResponder::json(['subscribed' => true], 201)
+            ->withHeaders(['Set-Cookie' => $this->pushDeviceCookie->issue($endpoint)]);
     }
 
     private static function queryInt(Request $request, string $name, int $fallback): int

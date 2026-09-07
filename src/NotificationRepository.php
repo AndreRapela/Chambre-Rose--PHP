@@ -223,15 +223,14 @@ final class NotificationRepository
 
     public function deleteSubscription(int $userId, string $endpoint): void
     {
-        $this->pdo->prepare(
-            'DELETE FROM push_subscriptions WHERE user_id=:user_id AND endpoint_hash=:endpoint_hash'
-        )->execute(['user_id' => $userId, 'endpoint_hash' => hash('sha256', $endpoint)]);
+        $this->deleteSubscriptionByHash($userId, hash('sha256', $endpoint));
     }
 
-    public function deleteSubscriptions(int $userId): void
+    public function deleteSubscriptionByHash(int $userId, string $endpointHash): void
     {
-        $this->pdo->prepare('DELETE FROM push_subscriptions WHERE user_id=:user_id')
-            ->execute(['user_id' => $userId]);
+        $this->pdo->prepare(
+            'DELETE FROM push_subscriptions WHERE user_id=:user_id AND endpoint_hash=:endpoint_hash'
+        )->execute(['user_id' => $userId, 'endpoint_hash' => $endpointHash]);
     }
 
     /** @return list<array<string, mixed>> */

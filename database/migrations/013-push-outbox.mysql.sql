@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS push_notification_outbox (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  notification_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  attempts INT UNSIGNED NOT NULL DEFAULT 0,
+  max_attempts INT UNSIGNED NOT NULL DEFAULT 8,
+  available_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  locked_at TIMESTAMP(3) NULL,
+  locked_by VARCHAR(190) NULL,
+  last_error VARCHAR(1000) NULL,
+  delivered_at TIMESTAMP(3) NULL,
+  failed_at TIMESTAMP(3) NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_push_notification_outbox_notification (notification_id),
+  KEY idx_push_notification_outbox_dispatch (status, available_at, id),
+  KEY idx_push_notification_outbox_user (user_id, created_at),
+  CONSTRAINT fk_push_notification_outbox_notification FOREIGN KEY (notification_id) REFERENCES account_notifications(id) ON DELETE CASCADE,
+  CONSTRAINT fk_push_notification_outbox_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);

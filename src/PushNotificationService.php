@@ -7,9 +7,10 @@ namespace ChambreRose;
 use Minishlink\WebPush\Subscription;
 use Minishlink\WebPush\WebPush;
 use Psr\Log\AbstractLogger;
+use RuntimeException;
 use Throwable;
 
-final class PushNotificationService
+final class PushNotificationService implements PushNotificationSender
 {
     public function __construct(private readonly NotificationRepository $notifications)
     {
@@ -23,18 +24,18 @@ final class PushNotificationService
     }
 
     /** @param array<string, mixed> $notification */
-    public function send(int $userId, array $notification): void
+    public function send(int $userId, array $notification): string
     {
+        $subscriptions = $this->notifications->subscriptions($userId);
+        if ($subscriptions === []) {
+            return self::SKIPPED;
+        }
+
         $publicKey = $this->publicKey();
         $privateKey = trim(Config::get('VAPID_PRIVATE_KEY', '') ?? '');
         $subject = trim(Config::get('VAPID_SUBJECT', '') ?? '');
         if ($publicKey === null || $privateKey === '' || $subject === '' || !class_exists(WebPush::class)) {
-            return;
-        }
-
-        $subscriptions = $this->notifications->subscriptions($userId);
-        if ($subscriptions === []) {
-            return;
+            throw new RuntimeException('Web Push is not configured on this server.');
         }
 
         try {
@@ -83,6 +84,7 @@ final class PushNotificationService
             ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
             $subscriptionIds = [];
+            $deliveryErrors = [];
             foreach ($subscriptions as $stored) {
                 try {
                     $subscription = Subscription::create([
@@ -95,22 +97,38 @@ final class PushNotificationService
                     $webPush->queueNotification($subscription, $payload, ['topic' => $notificationTopic]);
                 } catch (Throwable $exception) {
                     $this->notifications->recordSubscriptionResult((int) $stored['id'], false);
-                    error_log('[Chambre Rose Push] Delivery failed: ' . $exception->getMessage());
+                    $deliveryErrors[] = $exception->getMessage();
                 }
             }
+            $delivered = 0;
             foreach ($webPush->flush() as $report) {
                 $subscriptionId = $subscriptionIds[hash('sha256', $report->getEndpoint())] ?? null;
                 if ($subscriptionId === null) {
                     continue;
                 }
+                $success = $report->isSuccess();
+                $subscriptionExpired = $report->isSubscriptionExpired();
                 $this->notifications->recordSubscriptionResult(
                     $subscriptionId,
-                    $report->isSuccess(),
-                    $report->isSubscriptionExpired()
+                    $success,
+                    $subscriptionExpired
                 );
+                if ($success) {
+                    $delivered++;
+                } elseif (!$subscriptionExpired) {
+                    $reason = method_exists($report, 'getReason') ? trim((string) $report->getReason()) : '';
+                    $deliveryErrors[] = $reason === '' ? 'Push provider rejected the delivery.' : $reason;
+                }
             }
+
+            if ($deliveryErrors !== []) {
+                throw new RuntimeException(implode(' | ', array_unique($deliveryErrors)));
+            }
+
+            return $delivered > 0 ? self::DELIVERED : self::SKIPPED;
         } catch (Throwable $exception) {
-            error_log('[Chambre Rose Push] Configuration failed: ' . $exception->getMessage());
+            error_log('[Chambre Rose Push] Dispatch attempt failed: ' . $exception->getMessage());
+            throw $exception;
         }
     }
 }

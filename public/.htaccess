@@ -2,6 +2,11 @@ Options -Indexes
 
 RewriteEngine On
 
+# Evita compressao/buffering do canal Server-Sent Events.
+<IfModule mod_setenvif.c>
+  SetEnvIf Request_URI "^/api/events$" no-gzip=1
+</IfModule>
+
 # Preserva o Bearer token em hospedagens Apache/FastCGI.
 RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 

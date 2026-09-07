@@ -266,6 +266,20 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-13-push-outbox',
+                'file' => dirname(__DIR__) . '/database/migrations/013-push-outbox.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-14-realtime-events',
+                'file' => dirname(__DIR__) . '/database/migrations/014-realtime-events.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 

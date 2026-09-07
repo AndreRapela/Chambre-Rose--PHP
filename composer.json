@@ -24,7 +24,8 @@
     "analyse": "phpstan analyse --configuration=phpstan.neon --no-progress",
     "test": "php tests/run.php",
     "test:integration": "php tests/integration.php",
-    "test:cleanup": "php tests/cleanup-integration-data.php"
+    "test:cleanup": "php tests/cleanup-integration-data.php",
+    "notifications:work": "php bin/process-notification-outbox.php --watch"
   },
   "config": {
     "sort-packages": true

@@ -592,6 +592,22 @@ if ($adminPassword !== '') {
         $professionalCookie
     );
     [$notificationStatus, $notificationFeed] = $request('GET', '/api/notifications', null, $professionalCookie);
+    $outboxStatement = Database::connection()->prepare(
+        'SELECT outbox.status FROM push_notification_outbox outbox '
+        . 'INNER JOIN account_notifications notification ON notification.id=outbox.notification_id '
+        . 'WHERE notification.user_id=:user_id AND notification.dedupe_key=:dedupe_key'
+    );
+    $outboxStatement->execute(['user_id' => $id, 'dedupe_key' => 'message:' . $messageId]);
+    $outboxStatus = $outboxStatement->fetchColumn();
+    $realtimeStatement = Database::connection()->prepare(
+        'SELECT user_id FROM realtime_events '
+        . 'WHERE event_type=:event_type AND resource_id=:conversation_id ORDER BY user_id'
+    );
+    $realtimeStatement->execute([
+        'event_type' => 'MESSAGE_CREATED',
+        'conversation_id' => $conversationId,
+    ]);
+    $realtimeRecipients = array_map('intval', $realtimeStatement->fetchAll(PDO::FETCH_COLUMN));
     [$markConversationReadStatus] = $request(
         'PATCH',
         "/api/conversations/{$conversationId}/read",
@@ -621,11 +637,15 @@ if ($adminPassword !== '') {
         && count($incrementalPage['items'] ?? []) === 0
         && $notificationStatus === 200
         && ($notificationFeed['unreadByCategory']['DIRECT_MESSAGE'] ?? 0) >= 1
+        && is_string($outboxStatus)
+        && in_array($outboxStatus, ['PENDING', 'PROCESSING', 'RETRY', 'DELIVERED', 'FAILED'], true)
+        && in_array($visitorId, $realtimeRecipients, true)
+        && in_array($id, $realtimeRecipients, true)
         && $markConversationReadStatus === 204
         && $readNotificationStatus === 200
         && ($readNotificationFeed['unreadByCategory']['DIRECT_MESSAGE'] ?? 0) === 0
         && $unsubscribeStatus === 204,
-        'Messages must use incremental pages and create a private device-ready notification for the recipient.'
+        'Messages must use incremental pages and notify both participants through persistent realtime events.'
     );
     [$rejectedStatus] = $request(
         'PATCH',
@@ -665,6 +685,39 @@ if ($adminPassword !== '') {
         $professionalCookie
     );
     $assert($participantAccessStatus === 200, 'Deleting one inbox copy must preserve the other participant copy.');
+    $currentDeviceEndpoint = 'https://push.example.invalid/current-' . rawurlencode($runId);
+    $otherDeviceEndpoint = 'https://push.example.invalid/other-' . rawurlencode($runId);
+    [$currentDeviceStatus, , $currentDeviceCookie] = $request('POST', '/api/push-subscriptions', [
+        'endpoint' => $currentDeviceEndpoint,
+        'keys' => ['p256dh' => 'current-device-key', 'auth' => 'current-device-auth'],
+        'contentEncoding' => 'aes128gcm',
+    ], $professionalCookie);
+    [$otherDeviceStatus] = $request('POST', '/api/push-subscriptions', [
+        'endpoint' => $otherDeviceEndpoint,
+        'keys' => ['p256dh' => 'other-device-key', 'auth' => 'other-device-auth'],
+        'contentEncoding' => 'aes128gcm',
+    ], $professionalCookie);
+    [$logoutStatus] = $request(
+        'POST',
+        '/api/auth/logout',
+        [],
+        $professionalCookie . '; ' . $currentDeviceCookie
+    );
+    $remainingPushStatement = Database::connection()->prepare(
+        'SELECT endpoint FROM push_subscriptions WHERE user_id=:user_id ORDER BY endpoint'
+    );
+    $remainingPushStatement->execute(['user_id' => $id]);
+    $remainingPushEndpoints = $remainingPushStatement->fetchAll(PDO::FETCH_COLUMN);
+    $assert(
+        $currentDeviceStatus === 201
+        && is_string($currentDeviceCookie)
+        && str_starts_with($currentDeviceCookie, 'chambre_rose_push_device=')
+        && $otherDeviceStatus === 201
+        && $logoutStatus === 204
+        && !in_array($currentDeviceEndpoint, $remainingPushEndpoints, true)
+        && in_array($otherDeviceEndpoint, $remainingPushEndpoints, true),
+        'Logout must revoke only the current browser Push subscription and preserve other devices.'
+    );
 }
 
 $cleanupFixtures();

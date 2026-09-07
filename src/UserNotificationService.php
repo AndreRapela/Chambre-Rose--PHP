@@ -13,7 +13,9 @@ final class UserNotificationService
 
     public function __construct(
         private readonly NotificationRepository $notifications,
-        private readonly PushNotificationService $push
+        private readonly NotificationOutboxStore $outbox,
+        private readonly PushNotificationSender $push,
+        private readonly RealtimeEventRepository $realtimeEvents
     ) {
     }
 
@@ -27,15 +29,6 @@ final class UserNotificationService
         string $targetUrl,
         ?string $dedupeKey = null
     ): array {
-        $notification = $this->notifications->create(
-            $userId,
-            $category,
-            $eventType,
-            $title,
-            $body,
-            $targetUrl,
-            $dedupeKey
-        );
         $preferences = $this->notifications->preferences($userId);
         $preference = match ($category) {
             self::DIRECT_MESSAGE => 'directMessages',
@@ -43,13 +36,47 @@ final class UserNotificationService
             self::SECURITY => 'securityUpdates',
             default => 'accountUpdates',
         };
-        if ($preferences[$preference] ?? true) {
-            register_shutdown_function(function () use ($userId, $notification): void {
-                $this->push->send($userId, $notification);
-            });
-        }
+        $pushEnabled = $preferences[$preference] ?? true;
 
-        return $notification;
+        return $this->outbox->transaction(function () use (
+            $userId,
+            $category,
+            $eventType,
+            $title,
+            $body,
+            $targetUrl,
+            $dedupeKey,
+            $pushEnabled
+        ): array {
+            $notification = $this->notifications->create(
+                $userId,
+                $category,
+                $eventType,
+                $title,
+                $body,
+                $targetUrl,
+                $dedupeKey
+            );
+            if ($pushEnabled) {
+                $this->outbox->enqueue(
+                    (int) $notification['id'],
+                    $userId,
+                    Config::int('PUSH_OUTBOX_MAX_ATTEMPTS', 8)
+                );
+            }
+            $this->realtimeEvents->publish(
+                $userId,
+                RealtimeEventType::NOTIFICATION_CREATED,
+                (int) $notification['id'],
+                [
+                    'category' => $category,
+                    'eventType' => $eventType,
+                    'targetUrl' => $targetUrl,
+                ]
+            );
+
+            return $notification;
+        });
     }
 
     public function publicKey(): ?string
@@ -66,8 +93,8 @@ final class UserNotificationService
         );
     }
 
-    public function revokeDevices(int $userId): void
+    public function revokeDevice(int $userId, string $endpointHash): void
     {
-        $this->notifications->deleteSubscriptions($userId);
+        $this->notifications->deleteSubscriptionByHash($userId, $endpointHash);
     }
 }

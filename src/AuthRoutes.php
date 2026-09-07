@@ -10,6 +10,7 @@ final class AuthRoutes implements RouteHandler
         private readonly AuthService $auth,
         private readonly ApiRequestGuard $guard,
         private readonly AuthSessionCookie $sessionCookie,
+        private readonly PushDeviceCookie $pushDeviceCookie,
         private readonly AuthRateLimiter $rateLimiter,
         private readonly UserNotificationService $notifications
     ) {
@@ -73,8 +74,9 @@ final class AuthRoutes implements RouteHandler
         }
         if ($method === 'POST' && $path === '/api/auth/logout') {
             $user = $this->guard->optionalCurrentUser($request);
-            if ($user !== null) {
-                $this->notifications->revokeDevices((int) $user['id']);
+            $endpointHash = $this->pushDeviceCookie->endpointHash($request);
+            if ($user !== null && $endpointHash !== null) {
+                $this->notifications->revokeDevice((int) $user['id'], $endpointHash);
             }
 
             return ApiResponder::empty()->withHeaders(['Set-Cookie' => $this->sessionCookie->clear()]);

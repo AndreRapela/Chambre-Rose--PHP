@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ChambreRose;
 
+use Closure;
 use JsonException;
 use RuntimeException;
 
@@ -442,12 +443,25 @@ final class MultipartParser
 
 final class Response
 {
-    /** @param array<string, string> $headers */
+    /**
+     * @param array<string, string> $headers
+     * @param Closure(): void|null $stream
+     */
     public function __construct(
         public readonly int $status,
         public readonly string $body = '',
-        public readonly array $headers = []
+        public readonly array $headers = [],
+        private readonly ?Closure $stream = null
     ) {
+    }
+
+    /**
+     * @param Closure(): void $stream
+     * @param array<string, string> $headers
+     */
+    public static function stream(Closure $stream, array $headers = []): self
+    {
+        return new self(200, '', $headers, $stream);
     }
 
     /**
@@ -491,7 +505,7 @@ final class Response
     /** @param array<string, string> $headers */
     public function withHeaders(array $headers): self
     {
-        return new self($this->status, $this->body, $headers + $this->headers);
+        return new self($this->status, $this->body, $headers + $this->headers, $this->stream);
     }
 
     public function send(): void
@@ -499,6 +513,11 @@ final class Response
         http_response_code($this->status);
         foreach ($this->headers as $name => $value) {
             header($name . ': ' . $value);
+        }
+        if ($this->stream !== null) {
+            ($this->stream)();
+
+            return;
         }
         if (!in_array($this->status, [204, 304], true)) {
             echo $this->body;

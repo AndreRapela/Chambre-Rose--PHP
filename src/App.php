@@ -28,8 +28,15 @@ final class App
         $favorites = new FavoritesRepository($pdo);
         $messaging = new MessagingRepository($pdo);
         $notificationRepository = new NotificationRepository($pdo);
+        $notificationOutbox = new NotificationOutboxRepository($pdo);
+        $realtimeEvents = new RealtimeEventRepository($pdo);
         $pushNotifications = new PushNotificationService($notificationRepository);
-        $userNotifications = new UserNotificationService($notificationRepository, $pushNotifications);
+        $userNotifications = new UserNotificationService(
+            $notificationRepository,
+            $notificationOutbox,
+            $pushNotifications,
+            $realtimeEvents
+        );
         $passwordResets = new PasswordResetRepository($pdo);
         $mail = new MailService($pdo);
         $marketplace = new MarketplaceService($users, $profiles, $profileMedia);
@@ -37,17 +44,19 @@ final class App
         $productImages = new ProductImageRepository($pdo);
         $productService = new ProductService($products, $productImages, $users);
         $sessionCookie = new AuthSessionCookie($jwt);
+        $pushDeviceCookie = new PushDeviceCookie();
         $rateLimiter = new AuthRateLimiter($pdo);
         $guard = new ApiRequestGuard($users, $jwt, $sessionCookie);
         $auth = new AuthService($users, $jwt, $marketplace, $passwordResets, $mail, $userNotifications);
 
         $this->router = new ApiRouter([
-            new AuthRoutes($auth, $guard, $sessionCookie, $rateLimiter, $userNotifications),
+            new AuthRoutes($auth, $guard, $sessionCookie, $pushDeviceCookie, $rateLimiter, $userNotifications),
             new ListingRoutes($marketplace, $profiles, $profileMedia, $favorites, $products, $guard, $userNotifications),
             new ProductRoutes($productService, $products, $productImages, $guard, $userNotifications),
-            new MessagingRoutes($messaging, $users, $guard, $userNotifications),
-            new NotificationRoutes($notificationRepository, $userNotifications, $guard),
+            new MessagingRoutes($messaging, $users, $guard, $userNotifications, $realtimeEvents),
+            new NotificationRoutes($notificationRepository, $userNotifications, $guard, $pushDeviceCookie),
             new AdminRoutes(new AdminUserService($users, $mail, $profiles), $guard, $userNotifications),
+            new RealtimeRoutes($realtimeEvents, $guard),
         ]);
         $this->booted = true;
     }
@@ -96,7 +105,7 @@ final class App
             $headers['Access-Control-Allow-Credentials'] = 'true';
         }
         $headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
-        $headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Accept, Origin, X-Requested-With';
+        $headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Accept, Origin, X-Requested-With, Last-Event-ID';
         $headers['Access-Control-Expose-Headers'] = 'Cache-Control, Content-Language, Content-Type, Retry-After';
         $headers['Access-Control-Max-Age'] = '3600';
 

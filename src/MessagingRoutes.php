@@ -10,7 +10,8 @@ final class MessagingRoutes implements RouteHandler
         private readonly MessagingRepository $messaging,
         private readonly UserRepository $users,
         private readonly ApiRequestGuard $guard,
-        private readonly UserNotificationService $notifications
+        private readonly UserNotificationService $notifications,
+        private readonly RealtimeEventRepository $realtimeEvents
     ) {
     }
 
@@ -43,18 +44,35 @@ final class MessagingRoutes implements RouteHandler
             $this->guard->requireJson($request);
             $body = $request->json();
             $conversationId = (int) $match[1];
-            $conversation = $this->messaging->get($conversationId, (int) $user['id']);
-            $message = $this->messaging->send($conversationId, (int) $user['id'], (string) ($body['body'] ?? ''));
-            $senderName = trim((string) ($user['firstName'] ?? '') . ' ' . (string) ($user['lastName'] ?? ''));
-            $this->notifications->notify(
-                (int) $conversation['otherUser']['id'],
-                UserNotificationService::DIRECT_MESSAGE,
-                'MESSAGE_RECEIVED',
-                'New private message',
-                'You received a private message from ' . ($senderName === '' ? 'a member' : $senderName) . '.',
-                '/mensagens/' . $conversationId,
-                'message:' . (int) $message['id']
-            );
+            $userId = (int) $user['id'];
+            $message = $this->realtimeEvents->transaction(function () use (
+                $conversationId,
+                $userId,
+                $user,
+                $body
+            ): array {
+                $conversation = $this->messaging->get($conversationId, $userId);
+                $recipientId = (int) $conversation['otherUser']['id'];
+                $message = $this->messaging->send($conversationId, $userId, (string) ($body['body'] ?? ''));
+                $senderName = trim((string) ($user['firstName'] ?? '') . ' ' . (string) ($user['lastName'] ?? ''));
+                $this->notifications->notify(
+                    $recipientId,
+                    UserNotificationService::DIRECT_MESSAGE,
+                    'MESSAGE_RECEIVED',
+                    'New private message',
+                    'You received a private message from ' . ($senderName === '' ? 'a member' : $senderName) . '.',
+                    '/mensagens/' . $conversationId,
+                    'message:' . (int) $message['id']
+                );
+                $this->realtimeEvents->publishForUsers(
+                    [$userId, $recipientId],
+                    RealtimeEventType::MESSAGE_CREATED,
+                    $conversationId,
+                    ['messageId' => (int) $message['id']]
+                );
+
+                return $message;
+            });
 
             return ApiResponder::json($message, 201);
         }
@@ -62,8 +80,16 @@ final class MessagingRoutes implements RouteHandler
             $user = $this->guard->currentUser($request);
             $conversationId = (int) $match[1];
             $userId = (int) $user['id'];
-            $this->messaging->read($conversationId, $userId);
-            $this->notifications->markConversationRead($userId, $conversationId);
+            $this->realtimeEvents->transaction(function () use ($conversationId, $userId): void {
+                $conversation = $this->messaging->get($conversationId, $userId);
+                $this->messaging->read($conversationId, $userId);
+                $this->notifications->markConversationRead($userId, $conversationId);
+                $this->realtimeEvents->publishForUsers(
+                    [$userId, (int) $conversation['otherUser']['id']],
+                    RealtimeEventType::CONVERSATION_READ,
+                    $conversationId
+                );
+            });
 
             return ApiResponder::empty();
         }
@@ -72,7 +98,16 @@ final class MessagingRoutes implements RouteHandler
         }
         if ($method === 'DELETE' && preg_match('#^/api/conversations/(\d+)$#', $path, $match)) {
             $user = $this->guard->currentUser($request);
-            $this->messaging->deleteForUser((int) $match[1], (int) $user['id']);
+            $conversationId = (int) $match[1];
+            $userId = (int) $user['id'];
+            $this->realtimeEvents->transaction(function () use ($conversationId, $userId): void {
+                $this->messaging->deleteForUser($conversationId, $userId);
+                $this->realtimeEvents->publish(
+                    $userId,
+                    RealtimeEventType::INBOX_UPDATED,
+                    $conversationId
+                );
+            });
 
             return ApiResponder::empty();
         }
@@ -81,7 +116,15 @@ final class MessagingRoutes implements RouteHandler
         }
         if ($method === 'DELETE' && preg_match('#^/api/users/(\d+)/block$#', $path, $match)) {
             $user = $this->guard->currentUser($request);
-            $this->messaging->unblock((int) $user['id'], (int) $match[1]);
+            $userId = (int) $user['id'];
+            $targetId = (int) $match[1];
+            $this->realtimeEvents->transaction(function () use ($userId, $targetId): void {
+                $this->messaging->unblock($userId, $targetId);
+                $this->realtimeEvents->publishForUsers(
+                    [$userId, $targetId],
+                    RealtimeEventType::INBOX_UPDATED
+                );
+            });
 
             return ApiResponder::empty();
         }
@@ -102,10 +145,19 @@ final class MessagingRoutes implements RouteHandler
             throw new ApiException(404, 'Recipient not found.');
         }
 
-        return ApiResponder::json(
-            $this->messaging->conversation((int) $user['id'], $recipient),
-            201
-        );
+        $userId = (int) $user['id'];
+        $conversation = $this->realtimeEvents->transaction(function () use ($userId, $recipient): array {
+            $conversation = $this->messaging->conversation($userId, $recipient);
+            $this->realtimeEvents->publishForUsers(
+                [$userId, $recipient],
+                RealtimeEventType::INBOX_UPDATED,
+                (int) $conversation['id']
+            );
+
+            return $conversation;
+        });
+
+        return ApiResponder::json($conversation, 201);
     }
 
     private function archive(Request $request, int $conversationId): Response
@@ -116,7 +168,15 @@ final class MessagingRoutes implements RouteHandler
         if (!isset($body['archived']) || !is_bool($body['archived'])) {
             throw new ApiException(400, 'archived must be boolean.');
         }
-        $this->messaging->archive($conversationId, (int) $user['id'], $body['archived']);
+        $userId = (int) $user['id'];
+        $this->realtimeEvents->transaction(function () use ($conversationId, $userId, $body): void {
+            $this->messaging->archive($conversationId, $userId, $body['archived']);
+            $this->realtimeEvents->publish(
+                $userId,
+                RealtimeEventType::INBOX_UPDATED,
+                $conversationId
+            );
+        });
 
         return ApiResponder::empty();
     }
@@ -127,7 +187,14 @@ final class MessagingRoutes implements RouteHandler
         if ($this->users->find($target) === null) {
             throw new ApiException(404, 'User not found.');
         }
-        $this->messaging->block((int) $user['id'], $target);
+        $userId = (int) $user['id'];
+        $this->realtimeEvents->transaction(function () use ($userId, $target): void {
+            $this->messaging->block($userId, $target);
+            $this->realtimeEvents->publishForUsers(
+                [$userId, $target],
+                RealtimeEventType::INBOX_UPDATED
+            );
+        });
 
         return ApiResponder::empty();
     }

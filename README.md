@@ -12,7 +12,8 @@ Backend PHP 8.2+ do marketplace Chambre Rose. Ele suporta MySQL na EasyHost e Po
 - ativacao e desativacao de VIP no painel administrativo;
 - listagem e filtros de usuarios;
 - listagens publicas profissionais com filtros e paginacao;
-- favoritos, conversas, mensagens, bloqueio, arquivamento e denuncia;
+- favoritos, conversas, mensagens em tempo real por SSE com polling de contingencia, bloqueio, arquivamento e denuncia;
+- notificacoes Web Push por outbox persistente, com trava concorrente, tentativas exponenciais e registro de falhas;
 - recuperacao de senha por token de uso unico e limites persistentes de tentativas de login e recuperacao;
 - CORS, headers de seguranca, respostas padronizadas de erro;
 - migrations incrementais e contas de acesso opcionais, sem perfis ou midias ficticios;
@@ -72,6 +73,10 @@ o cabecalho Bearer para integracoes existentes. Login e recuperacao devolvem HTT
 e `Retry-After` quando os limites configurados em `.env.example` forem excedidos.
 Se a API estiver atras de proxy reverso, `APP_TRUSTED_PROXIES` deve listar somente
 enderecos ou redes CIDR controladas; cabecalhos encaminhados de outros clientes sao ignorados.
+Cada assinatura Push recebe uma identidade assinada em cookie HttpOnly. No logout,
+somente a assinatura ligada ao navegador atual e removida; celulares e outros
+computadores permanecem ativos. `PUSH_DEVICE_COOKIE_SECRET` pode definir um segredo
+dedicado ou, quando vazio, a assinatura usa `JWT_SECRET`.
 
 ## Rodar localmente
 
@@ -122,13 +127,14 @@ Invoke-RestMethod http://localhost:8080/api/health
 ### Contas, perfis profissionais e mensagens
 
 - `POST /api/auth/register`: cria `VISITOR`, `ESCORT` ou `STORE`. Contas profissionais ficam `PENDING` para revisao em ate 24 horas.
-- `POST /api/auth/login` e `POST /api/auth/logout`: criam e encerram a sessao em cookie HttpOnly.
+- `POST /api/auth/login` e `POST /api/auth/logout`: criam e encerram a sessao em cookie HttpOnly; o logout revoga somente o Push do navegador atual.
 - `POST /api/auth/forgot-password` e `POST /api/auth/reset-password`: recuperacao por token de uso unico, valido por uma hora.
 - `GET|PUT /api/profiles/me`: consulta e edita o proprio perfil profissional.
 - `GET|PUT /api/profiles/{userId}`: consulta ou edita qualquer perfil como administrador.
 - `GET /api/listings` e `GET /api/listings/{userId}`: busca publica paginada de acompanhantes e lojas aprovadas.
 - `POST /api/profiles/me/media`: upload real multipart no campo `media`; limite de 15 fotos e 3 videos por perfil.
 - `GET|POST /api/conversations` e `GET|POST /api/conversations/{id}/messages`: mensagens internas autenticadas.
+- `GET /api/events`: canal SSE autenticado para mensagens e atualizacoes da conta, com cursor de reconexao.
 - `PATCH /api/conversations/{id}/read|archive` e `DELETE /api/conversations/{id}`: leitura, arquivamento e remocao do proprio inbox.
 - `POST|DELETE /api/users/{userId}/block` e `POST /api/users/{userId}/reports`: bloqueio e denuncia.
 - `GET /api/favorites` e `POST|DELETE /api/favorites/{profileId}`: favoritos por usuario autenticado.
@@ -139,6 +145,43 @@ Fotos aceitam JPG, PNG e WebP ate 8 MB. Videos aceitam MP4 e WebM ate 25 MB. Par
 Por privacidade, nomes originais nunca aparecem no catalogo nem no cabecalho de download e toda midia usa `Cache-Control: private, no-store`. O frontend oficial redimensiona e reencoda fotos em canvas antes do envio, removendo metadados EXIF/GPS. Integracoes que enviarem arquivos diretamente para a API tambem devem reencodar as imagens antes do upload; o backend PHP sem GD/Imagick valida tipo e tamanho, mas armazena os bytes recebidos.
 
 Os e-mails usam `MAIL_TRANSPORT=log`, `mail` ou `smtp`. No modo `log`, nenhum envio e fingido: a API devolve resposta neutra e registra somente metadados mascarados, mantendo o conteudo no `email_outbox` para diagnostico. Em producao, configure SMTP pelas variaveis documentadas em `.env.example`.
+
+## Worker de notificacoes
+
+O Web Push nunca e disparado depois da resposta HTTP. A notificacao da conta e o
+item da tabela `push_notification_outbox` sao gravados na mesma transacao. O worker
+usa uma trava com prazo, aceita execucao concorrente com `SKIP LOCKED` e repete
+falhas com espera exponencial. Depois do limite, o item permanece como `FAILED`,
+com `attempts`, `failed_at` e `last_error` disponiveis para diagnostico.
+
+No Docker, o servico `notification-worker` ja acompanha o backend. Sem Docker, use:
+
+```powershell
+php bin/process-notification-outbox.php --watch
+```
+
+Na EasyHost, crie uma tarefa agendada a cada minuto (ajuste o caminho da conta):
+
+```text
+/usr/bin/php /home/SEU_USUARIO/chambre-rose-api/bin/process-notification-outbox.php --once --batch=50
+```
+
+O comando devolve um resumo JSON com itens reivindicados, entregues, ignorados,
+reagendados e encerrados por excesso de tentativas. Para acompanhar a fila no MySQL:
+
+```sql
+SELECT status, COUNT(*) AS total, MAX(updated_at) AS ultima_atualizacao
+FROM push_notification_outbox
+GROUP BY status;
+```
+
+O mesmo processo remove eventos SSE expirados. `REALTIME_EVENT_RETENTION_DAYS`
+define a janela de reconexao (sete dias por padrao); os eventos contem apenas IDs e
+metadados, nunca o texto privado das mensagens. O frontend usa o canal SSE como fonte
+principal e volta automaticamente ao polling quando SSE ou a rede ficam indisponiveis.
+O servidor embutido `php -S` atende uma requisicao por vez e, por isso, devolve o
+frontend ao polling; use Docker/Apache para testar SSE localmente. Nao habilite
+`REALTIME_ALLOW_CLI_SERVER` sem configurar workers concorrentes.
 
 ```text
 POST   /api/auth/login
