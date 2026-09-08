@@ -459,9 +459,9 @@ final class Response
      * @param Closure(): void $stream
      * @param array<string, string> $headers
      */
-    public static function stream(Closure $stream, array $headers = []): self
+    public static function stream(Closure $stream, array $headers = [], int $status = 200): self
     {
-        return new self(200, '', $headers, $stream);
+        return new self($status, '', $headers, $stream);
     }
 
     /**
@@ -488,7 +488,8 @@ final class Response
         $reasons = [
             400 => 'Bad Request', 401 => 'Unauthorized', 403 => 'Forbidden',
             404 => 'Not Found', 405 => 'Method Not Allowed', 409 => 'Conflict',
-            413 => 'Payload Too Large', 415 => 'Unsupported Media Type', 429 => 'Too Many Requests',
+            413 => 'Payload Too Large', 415 => 'Unsupported Media Type',
+            416 => 'Range Not Satisfiable', 429 => 'Too Many Requests',
             500 => 'Internal Server Error', 503 => 'Service Unavailable',
         ];
 

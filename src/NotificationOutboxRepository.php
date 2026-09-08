@@ -42,26 +42,29 @@ final class NotificationOutboxRepository implements NotificationOutboxStore
         }
     }
 
-    public function enqueue(int $notificationId, int $userId, int $maxAttempts): void
+    public function enqueue(int $notificationId, int $userId, int $maxAttempts, ?string $availableAt = null): void
     {
         $params = [
             'notification_id' => $notificationId,
             'user_id' => $userId,
             'max_attempts' => max(1, $maxAttempts),
+            'available_at' => $availableAt,
         ];
         $sql = $this->isMySql()
             ? <<<'SQL'
                 INSERT INTO push_notification_outbox (
                   notification_id,user_id,status,attempts,max_attempts,available_at,created_at,updated_at
                 ) VALUES (
-                  :notification_id,:user_id,'PENDING',0,:max_attempts,CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3)
+                  :notification_id,:user_id,'PENDING',0,:max_attempts,
+                  COALESCE(:available_at,CURRENT_TIMESTAMP(3)),CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3)
                 ) ON DUPLICATE KEY UPDATE notification_id=VALUES(notification_id)
                 SQL
             : <<<'SQL'
                 INSERT INTO push_notification_outbox (
                   notification_id,user_id,status,attempts,max_attempts,available_at,created_at,updated_at
                 ) VALUES (
-                  :notification_id,:user_id,'PENDING',0,:max_attempts,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+                  :notification_id,:user_id,'PENDING',0,:max_attempts,
+                  COALESCE(:available_at,CURRENT_TIMESTAMP),CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
                 ) ON CONFLICT (notification_id) DO NOTHING
                 SQL;
         $this->pdo->prepare($sql)->execute($params);
@@ -82,9 +85,11 @@ final class NotificationOutboxRepository implements NotificationOutboxStore
             $statement = $this->pdo->prepare(
                 'SELECT outbox.id,outbox.notification_id,outbox.user_id,outbox.attempts,outbox.max_attempts,'
                 . 'notification.category,notification.event_type,notification.title,notification.body,'
-                . 'notification.target_url,notification.created_at '
+                . 'notification.message_params,notification.target_url,notification.created_at,'
+                . 'recipient.locale AS recipient_locale '
                 . 'FROM push_notification_outbox outbox '
                 . 'INNER JOIN account_notifications notification ON notification.id=outbox.notification_id '
+                . 'INNER JOIN users recipient ON recipient.id=outbox.user_id '
                 . "WHERE outbox.status IN ('PENDING','RETRY') "
                 . 'AND outbox.available_at<=CURRENT_TIMESTAMP AND outbox.attempts<outbox.max_attempts '
                 . 'ORDER BY outbox.id ASC LIMIT :limit' . $lockClause

@@ -6,6 +6,7 @@
   "require": {
     "php": "^8.2",
     "ext-fileinfo": "*",
+    "ext-gd": "*",
     "ext-json": "*",
     "ext-pdo": "*",
     "minishlink/web-push": "^10.1"

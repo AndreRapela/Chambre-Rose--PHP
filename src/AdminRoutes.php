@@ -39,10 +39,6 @@ final class AdminRoutes implements RouteHandler
                 $userId,
                 UserNotificationService::ACCOUNT,
                 $active ? 'VIP_ACTIVATED' : 'VIP_DEACTIVATED',
-                $active ? 'VIP access activated' : 'VIP access changed',
-                $active
-                    ? 'Your VIP access is now active. Private conversations are available.'
-                    : 'Your VIP access is no longer active.',
                 '/espace-prive',
                 null
             );
@@ -61,10 +57,9 @@ final class AdminRoutes implements RouteHandler
                 $userId,
                 UserNotificationService::ACCOUNT,
                 'ROLE_CHANGED',
-                'Account role updated',
-                'Your account role is now ' . (string) $updated['role'] . '.',
                 '/espace-prive',
-                null
+                null,
+                ['role' => (string) $updated['role']]
             );
 
             return ApiResponder::json($updated);
@@ -90,10 +85,6 @@ final class AdminRoutes implements RouteHandler
             $userId,
             UserNotificationService::ACCOUNT,
             $approved ? 'ACCOUNT_APPROVED' : 'ACCOUNT_REJECTED',
-            $approved ? 'Account approved' : 'Account review completed',
-            $approved
-                ? 'Your professional account was approved and is now visible.'
-                : 'Your professional account was not approved. Open your account for details.',
             '/espace-prive',
             null
         );

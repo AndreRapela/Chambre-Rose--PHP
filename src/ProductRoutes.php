@@ -30,6 +30,9 @@ final class ProductRoutes implements RouteHandler
         if ($method === 'GET' && preg_match('#^/api/products/(\d+)/images/(main|secondary)$#', $path, $match)) {
             return $this->image($request, (int) $match[1], strtoupper($match[2]));
         }
+        if ($method === 'GET' && preg_match('#^/api/products/(\d+)/images/(main|secondary)/(320|640|960|1280)\.webp$#', $path, $match)) {
+            return $this->responsiveImage($request, (int) $match[1], strtoupper($match[2]), (int) $match[3]);
+        }
         if ($method === 'POST' && preg_match('#^/api/products/(\d+)/purchases$#', $path, $match)) {
             $user = $this->guard->currentUser($request);
             $productId = (int) $match[1];
@@ -40,10 +43,9 @@ final class ProductRoutes implements RouteHandler
                     $storeUserId,
                     UserNotificationService::MARKETPLACE,
                     'PRODUCT_PURCHASED',
-                    'New product purchase',
-                    'A member purchased ' . (string) ($product['name'] ?? 'one of your products') . '.',
                     '/catalogue/produto/' . $productId,
-                    null
+                    null,
+                    ['productName' => (string) ($product['name'] ?? '')]
                 );
             }
 
@@ -119,6 +121,25 @@ final class ProductRoutes implements RouteHandler
             'Content-Type' => (string) $image['content_type'],
             'Content-Length' => (string) $image['size_bytes'],
             'Content-Disposition' => 'inline',
+            'Cache-Control' => $cache,
+            'ETag' => $etag,
+        ]);
+    }
+
+    private function responsiveImage(Request $request, int $productId, string $role, int $width): Response
+    {
+        $this->service->get($productId);
+        $image = $this->images->responsive($productId, $role, $width);
+        $etag = ApiResponder::etag($productId . '|' . $role . '|' . $image['sourceHash'] . '|' . $width);
+        $cache = 'public, max-age=86400, must-revalidate';
+        if (ApiResponder::etagMatches($request, $etag)) {
+            return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
+        }
+
+        return new Response(200, $image['bytes'], [
+            'Content-Type' => $image['contentType'],
+            'Content-Length' => (string) $image['size'],
+            'Content-Disposition' => 'inline; filename="product-' . strtolower($role) . '-' . $width . '.webp"',
             'Cache-Control' => $cache,
             'ETag' => $etag,
         ]);

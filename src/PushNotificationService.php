@@ -26,6 +26,14 @@ final class PushNotificationService implements PushNotificationSender
     /** @param array<string, mixed> $notification */
     public function send(int $userId, array $notification): string
     {
+        if (!$this->notifications->browserDeliveryAllowed(
+            $userId,
+            (string) ($notification['category'] ?? ''),
+            (string) ($notification['eventType'] ?? '')
+        )) {
+            return self::SKIPPED;
+        }
+
         $subscriptions = $this->notifications->subscriptions($userId);
         if ($subscriptions === []) {
             return self::SKIPPED;
@@ -37,6 +45,17 @@ final class PushNotificationService implements PushNotificationSender
         if ($publicKey === null || $privateKey === '' || $subject === '' || !class_exists(WebPush::class)) {
             throw new RuntimeException('Web Push is not configured on this server.');
         }
+
+        $parameters = self::messageParameters(
+            $notification['params'] ?? $notification['message_params'] ?? null
+        );
+        $localized = NotificationMessageCatalog::render(
+            (string) ($notification['eventType'] ?? $notification['event_type'] ?? ''),
+            $parameters,
+            (string) ($notification['recipientLocale'] ?? 'fr'),
+            (string) ($notification['title'] ?? 'Chambre Rose'),
+            (string) ($notification['body'] ?? '')
+        );
 
         try {
             $logger = new class extends AbstractLogger {
@@ -65,8 +84,8 @@ final class PushNotificationService implements PushNotificationSender
             ), 0, 32);
             $payload = json_encode([
                 'notification' => [
-                    'title' => (string) ($notification['title'] ?? 'Chambre Rose'),
-                    'body' => (string) ($notification['body'] ?? ''),
+                    'title' => $localized['title'],
+                    'body' => $localized['body'],
                     'icon' => '/assets/pwa-icon-192.png',
                     'badge' => '/assets/pwa-icon-192.png',
                     'tag' => 'chambre-rose-' . substr($notificationTopic, 0, 24),
@@ -130,5 +149,23 @@ final class PushNotificationService implements PushNotificationSender
             error_log('[Chambre Rose Push] Dispatch attempt failed: ' . $exception->getMessage());
             throw $exception;
         }
+    }
+
+    /** @return array<string, scalar|null> */
+    private static function messageParameters(mixed $value): array
+    {
+        $decoded = is_string($value) ? json_decode($value, true) : $value;
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $parameters = [];
+        foreach ($decoded as $name => $parameter) {
+            if (is_string($name) && (is_scalar($parameter) || $parameter === null)) {
+                $parameters[$name] = $parameter;
+            }
+        }
+
+        return $parameters;
     }
 }

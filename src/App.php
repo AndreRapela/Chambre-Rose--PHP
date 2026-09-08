@@ -24,6 +24,10 @@ final class App
         $users = new UserRepository($pdo);
         $jwt = new Jwt();
         $profiles = new ProfessionalProfileRepository($pdo);
+        $responsiveImages = new ResponsiveImageService(
+            new ResponsiveImageProcessor(),
+            new ResponsiveImageVariantRepository($pdo)
+        );
         $profileMedia = new ProfileMediaRepository($pdo);
         $favorites = new FavoritesRepository($pdo);
         $messaging = new MessagingRepository($pdo);
@@ -39,9 +43,9 @@ final class App
         );
         $passwordResets = new PasswordResetRepository($pdo);
         $mail = new MailService($pdo);
-        $marketplace = new MarketplaceService($users, $profiles, $profileMedia);
+        $marketplace = new MarketplaceService($users, $profiles, $profileMedia, $responsiveImages);
         $products = new ProductRepository($pdo);
-        $productImages = new ProductImageRepository($pdo);
+        $productImages = new ProductImageRepository($pdo, $responsiveImages);
         $productService = new ProductService($products, $productImages, $users);
         $sessionCookie = new AuthSessionCookie($jwt);
         $pushDeviceCookie = new PushDeviceCookie();
@@ -104,9 +108,9 @@ final class App
             $headers['Access-Control-Allow-Origin'] = $origin;
             $headers['Access-Control-Allow-Credentials'] = 'true';
         }
-        $headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
-        $headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Accept, Origin, X-Requested-With, Last-Event-ID';
-        $headers['Access-Control-Expose-Headers'] = 'Cache-Control, Content-Language, Content-Type, Retry-After';
+        $headers['Access-Control-Allow-Methods'] = 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS';
+        $headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Accept, Origin, X-Requested-With, Last-Event-ID, Range, If-Range';
+        $headers['Access-Control-Expose-Headers'] = 'Accept-Ranges, Cache-Control, Content-Language, Content-Length, Content-Range, Content-Type, ETag, Retry-After';
         $headers['Access-Control-Max-Age'] = '3600';
 
         return $headers;

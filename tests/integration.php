@@ -99,6 +99,26 @@ $request = static function (
     ];
 };
 
+$binaryRequest = static function (string $method, string $path, array $headers = []) use ($base): array {
+    $context = stream_context_create(['http' => [
+        'method' => $method,
+        'header' => implode("\r\n", $headers),
+        'ignore_errors' => true,
+    ]]);
+    $raw = file_get_contents($base . $path, false, $context);
+    $responseHeaders = $http_response_header ?? [];
+    preg_match('/\s(\d{3})\s/', $responseHeaders[0] ?? '', $statusMatch);
+    $headerMap = [];
+    foreach ($responseHeaders as $header) {
+        if (str_contains($header, ':')) {
+            [$headerName, $headerValue] = explode(':', $header, 2);
+            $headerMap[strtolower(trim($headerName))] = trim($headerValue);
+        }
+    }
+
+    return [(int) ($statusMatch[1] ?? 0), is_string($raw) ? $raw : '', $headerMap];
+};
+
 putenv('AUTH_LOGIN_ACCOUNT_ATTEMPTS=3');
 putenv('AUTH_LOGIN_IP_ATTEMPTS=50');
 putenv('AUTH_RECOVERY_ACCOUNT_ATTEMPTS=2');
@@ -324,6 +344,52 @@ if ($adminPassword !== '') {
         'active' => true,
     ], $adminCookie);
     $productId = (int) ($testProduct['id'] ?? 0);
+    $productBoundary = 'responsive-product-' . bin2hex(random_bytes(12));
+    $productFields = [
+        'name' => $cleanup->productName(),
+        'category' => 'wellness',
+        'price' => '29.9',
+        'description' => $cleanup->productDescription(),
+        'storeName' => $cleanup->storeName(),
+        'active' => 'true',
+    ];
+    $productParts = [];
+    foreach ($productFields as $name => $value) {
+        $productParts[] = "--{$productBoundary}\r\nContent-Disposition: form-data; name=\"{$name}\"\r\n\r\n{$value}\r\n";
+    }
+    $productParts[] = "--{$productBoundary}\r\nContent-Disposition: form-data; name=\"mainImage\"; filename=\"product.png\"\r\nContent-Type: image/png\r\n\r\n" . file_get_contents($fixture) . "\r\n";
+    $productParts[] = "--{$productBoundary}--\r\n";
+    $productMultipart = implode('', $productParts);
+    $productContext = stream_context_create(['http' => [
+        'method' => 'PUT',
+        'header' => "Content-Type: multipart/form-data; boundary={$productBoundary}\r\n"
+            . 'Content-Length: ' . strlen($productMultipart) . "\r\n"
+            . 'Cookie: ' . $adminCookie,
+        'content' => $productMultipart,
+        'ignore_errors' => true,
+    ]]);
+    $productUpdateRaw = file_get_contents($base . "/api/products/{$productId}", false, $productContext);
+    preg_match('/\s(\d{3})\s/', $http_response_header[0] ?? '', $productUpdateStatusMatch);
+    $responsiveProduct = json_decode((string) $productUpdateRaw, true);
+    $productVariant = file_get_contents(
+        $base . "/api/products/{$productId}/images/main/320.webp",
+        false,
+        stream_context_create(['http' => ['method' => 'GET', 'ignore_errors' => true]])
+    );
+    preg_match('/\s(\d{3})\s/', $http_response_header[0] ?? '', $productVariantStatusMatch);
+    $productVariantDimensions = is_string($productVariant) ? getimagesizefromstring($productVariant) : false;
+    $assert(
+        (int) ($productUpdateStatusMatch[1] ?? 0) === 200
+        && ($responsiveProduct['imageUrl'] ?? '') === "/api/products/{$productId}/images/main"
+        && str_contains((string) ($responsiveProduct['imageSrcSet'] ?? ''), "/api/products/{$productId}/images/main/1280.webp 1280w")
+        && (int) ($productVariantStatusMatch[1] ?? 0) === 200
+        && is_string($productVariant)
+        && str_starts_with($productVariant, 'RIFF')
+        && substr($productVariant, 8, 4) === 'WEBP'
+        && is_array($productVariantDimensions)
+        && (int) $productVariantDimensions[0] === 320,
+        'Uploaded product photos must expose and serve responsive WebP variants.'
+    );
     [$productPurchaseStatus, $purchasedProduct] = $request(
         'POST',
         "/api/products/{$productId}/purchases",
@@ -347,11 +413,16 @@ if ($adminPassword !== '') {
     $assert(
         $adminProfileStatus === 200
         && $mediaId > 0
+        && str_contains((string) ($adminProfile['media'][0]['srcSet'] ?? ''), "/api/profiles/{$id}/media/{$mediaId}/320.webp 320w")
         && ($adminProfile['birthDate'] ?? null) === '1995-05-12',
-        'Admin must see complete profile data and stored media while reviewing a pending account.'
+        'Admin must see complete profile data and responsive media while reviewing a pending account.'
     );
     [$privateMediaStatus] = $request('GET', "/api/profiles/{$id}/media/{$mediaId}");
-    $assert($privateMediaStatus === 404, 'Pending profile media must not be public.');
+    [$privateVariantStatus] = $request('GET', "/api/profiles/{$id}/media/{$mediaId}/320.webp");
+    $assert(
+        $privateMediaStatus === 404 && $privateVariantStatus === 404,
+        'Pending profile media and its responsive variants must not be public.'
+    );
     [$approvalStatus] = $request('PATCH', "/api/admin/users/{$id}/approval", ['status' => 'APPROVED'], $adminCookie);
     $assert($approvalStatus === 200, 'Admin approval must work.');
     [$listingStatus, $listing] = $request('GET', "/api/listings/{$id}");
@@ -363,8 +434,9 @@ if ($adminPassword !== '') {
         && !array_key_exists('businessAddress', $listing)
         && !array_key_exists('contactEmail', $listing)
         && ($listing['hasContactEmail'] ?? false) === true
+        && str_contains((string) ($listing['media'][0]['srcSet'] ?? ''), "/api/profiles/{$id}/media/{$mediaId}/1280.webp 1280w")
         && !array_key_exists('fileName', $listing['media'][0] ?? []),
-        'Approved listings must expose media and contact availability while withholding private fields.'
+        'Approved listings must expose responsive media and contact availability while withholding private fields.'
     );
     [$listingsStatus, $listings] = $request(
         'GET',
@@ -413,6 +485,123 @@ if ($adminPassword !== '') {
         'Profile media must avoid caches and original file names.'
     );
 
+    $variantContext = stream_context_create(['http' => [
+        'method' => 'GET',
+        'header' => 'Accept: image/webp',
+        'ignore_errors' => true,
+    ]]);
+    $responsiveMedia = file_get_contents(
+        $base . "/api/profiles/{$id}/media/{$mediaId}/320.webp",
+        false,
+        $variantContext
+    );
+    $responsiveHeaders = $http_response_header ?? [];
+    preg_match('/\s(\d{3})\s/', $responsiveHeaders[0] ?? '', $responsiveStatusMatch);
+    $responsiveHeaderMap = [];
+    foreach ($responsiveHeaders as $header) {
+        if (str_contains($header, ':')) {
+            [$headerName, $headerValue] = explode(':', $header, 2);
+            $responsiveHeaderMap[strtolower(trim($headerName))] = strtolower(trim($headerValue));
+        }
+    }
+    $responsiveDimensions = is_string($responsiveMedia) ? getimagesizefromstring($responsiveMedia) : false;
+    $storedVariantStatement = Database::connection()->prepare(
+        'SELECT COUNT(*) FROM responsive_image_variants WHERE profile_media_id=:media'
+    );
+    $storedVariantStatement->execute(['media' => $mediaId]);
+    $assert(
+        (int) ($responsiveStatusMatch[1] ?? 0) === 200
+        && is_string($responsiveMedia)
+        && str_starts_with($responsiveMedia, 'RIFF')
+        && substr($responsiveMedia, 8, 4) === 'WEBP'
+        && is_array($responsiveDimensions)
+        && (int) $responsiveDimensions[0] === 320
+        && ($responsiveHeaderMap['content-type'] ?? '') === 'image/webp'
+        && ($responsiveHeaderMap['cache-control'] ?? '') === 'public, max-age=86400, must-revalidate'
+        && (int) $storedVariantStatement->fetchColumn() === 4,
+        'Approved profile photos must serve cached WebP variants at the requested width.'
+    );
+
+    $videoFixture = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    $database = Database::connection();
+    $driver = (string) $database->getAttribute(PDO::ATTR_DRIVER_NAME);
+    if ($driver === 'mysql') {
+        $insertVideo = $database->prepare(
+            'INSERT INTO profile_media '
+            . '(user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) '
+            . "VALUES (:user,'VIDEO','integration.webm','video/webm',:size,:data,1,CURRENT_TIMESTAMP(3))"
+        );
+        $insertVideo->bindValue(':user', $id, PDO::PARAM_INT);
+        $insertVideo->bindValue(':size', strlen($videoFixture), PDO::PARAM_INT);
+        $insertVideo->bindValue(':data', $videoFixture, PDO::PARAM_LOB);
+        $insertVideo->execute();
+        $videoId = (int) $database->lastInsertId();
+    } else {
+        $insertVideo = $database->prepare(
+            'INSERT INTO profile_media '
+            . '(user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) '
+            . "VALUES (:user,'VIDEO','integration.webm','video/webm',:size,decode(:data,'base64'),1,CURRENT_TIMESTAMP) "
+            . 'RETURNING id'
+        );
+        $insertVideo->execute([
+            'user' => $id,
+            'size' => strlen($videoFixture),
+            'data' => base64_encode($videoFixture),
+        ]);
+        $videoId = (int) $insertVideo->fetchColumn();
+    }
+
+    [$rangeStatus, $rangeBody, $rangeHeaders] = $binaryRequest(
+        'GET',
+        "/api/profiles/{$id}/media/{$videoId}",
+        ['Range: bytes=5-12']
+    );
+    $assert(
+        $videoId > 0
+        && $rangeStatus === 206
+        && $rangeBody === substr($videoFixture, 5, 8)
+        && ($rangeHeaders['accept-ranges'] ?? null) === 'bytes'
+        && ($rangeHeaders['content-range'] ?? null) === 'bytes 5-12/' . strlen($videoFixture)
+        && ($rangeHeaders['content-length'] ?? null) === '8',
+        'Video requests must return only the requested bytes with complete 206 metadata.'
+    );
+    [$headStatus, $headBody, $headHeaders] = $binaryRequest(
+        'HEAD',
+        "/api/profiles/{$id}/media/{$videoId}",
+        ['Range: bytes=-4']
+    );
+    $expectedSuffixContentRange = 'bytes ' . (strlen($videoFixture) - 4) . '-'
+        . (strlen($videoFixture) - 1) . '/' . strlen($videoFixture);
+    $assert(
+        $headStatus === 206
+        && $headBody === ''
+        && ($headHeaders['content-range'] ?? null) === $expectedSuffixContentRange
+        && ($headHeaders['content-length'] ?? null) === '4',
+        'HEAD video requests must expose suffix range metadata without reading a response body.'
+    );
+    [$ifRangeStatus, $ifRangeBody, $ifRangeHeaders] = $binaryRequest(
+        'GET',
+        "/api/profiles/{$id}/media/{$videoId}",
+        ['Range: bytes=0-3', 'If-Range: "outdated-representation"']
+    );
+    $assert(
+        $ifRangeStatus === 200
+        && $ifRangeBody === $videoFixture
+        && !isset($ifRangeHeaders['content-range']),
+        'A stale If-Range validator must safely fall back to the complete video representation.'
+    );
+    [$invalidRangeStatus, , $invalidRangeHeaders] = $binaryRequest(
+        'GET',
+        "/api/profiles/{$id}/media/{$videoId}",
+        ['Range: bytes=' . strlen($videoFixture) . '-']
+    );
+    $assert(
+        $invalidRangeStatus === 416
+        && ($invalidRangeHeaders['accept-ranges'] ?? null) === 'bytes'
+        && ($invalidRangeHeaders['content-range'] ?? null) === 'bytes */' . strlen($videoFixture),
+        'Unsatisfiable video ranges must return 416 and advertise the current representation size.'
+    );
+
     $manyServices = implode(',', array_fill(0, 15, str_repeat('s', 90)));
     [$boundedFiltersStatus] = $request(
         'GET',
@@ -456,6 +645,16 @@ if ($adminPassword !== '') {
         'email' => $cleanup->email('profile'), 'password' => 'Integration9!pass',
     ]);
     $assert($professionalLoginStatus === 200 && is_string($professionalCookie), 'Approved professional login must work.');
+    [$localeStatus, $localizedProfile] = $request(
+        'PATCH',
+        '/api/auth/locale',
+        ['locale' => 'fr'],
+        $professionalCookie
+    );
+    $assert(
+        $localeStatus === 200 && ($localizedProfile['locale'] ?? null) === 'fr',
+        'Changing the interface language must persist the recipient locale for future Push delivery.'
+    );
     [$lockedSelectionStatus, $lockedSelection] = $request(
         'POST',
         "/api/listings/{$id}/purchases",
@@ -558,12 +757,23 @@ if ($adminPassword !== '') {
         'accountUpdates' => true,
         'marketplaceUpdates' => false,
         'securityUpdates' => true,
+        'browserNotifications' => true,
+        'inAppNotifications' => true,
+        'onlyDirectMessages' => false,
+        'dailyDigest' => false,
+        'dailyDigestTime' => '09:00',
+        'quietHoursEnabled' => true,
+        'quietHoursStart' => '22:00',
+        'quietHoursEnd' => '08:00',
+        'timezone' => 'Europe/Brussels',
     ], $professionalCookie);
     $assert(
         $preferenceStatus === 200
         && ($defaultPreferences['directMessages'] ?? false) === true
         && $savedPreferenceStatus === 200
-        && ($savedPreferences['marketplaceUpdates'] ?? true) === false,
+        && ($savedPreferences['marketplaceUpdates'] ?? true) === false
+        && ($savedPreferences['quietHoursEnabled'] ?? false) === true
+        && ($savedPreferences['timezone'] ?? '') === 'Europe/Brussels',
         'Notification preferences must load with safe defaults and persist per account.'
     );
     $fakePushEndpoint = 'https://push.example.invalid/' . rawurlencode($runId);
@@ -592,6 +802,10 @@ if ($adminPassword !== '') {
         $professionalCookie
     );
     [$notificationStatus, $notificationFeed] = $request('GET', '/api/notifications', null, $professionalCookie);
+    $messageNotification = array_values(array_filter(
+        $notificationFeed['items'] ?? [],
+        static fn (array $item): bool => ($item['eventType'] ?? null) === 'MESSAGE_RECEIVED'
+    ))[0] ?? null;
     $outboxStatement = Database::connection()->prepare(
         'SELECT outbox.status FROM push_notification_outbox outbox '
         . 'INNER JOIN account_notifications notification ON notification.id=outbox.notification_id '
@@ -637,6 +851,7 @@ if ($adminPassword !== '') {
         && count($incrementalPage['items'] ?? []) === 0
         && $notificationStatus === 200
         && ($notificationFeed['unreadByCategory']['DIRECT_MESSAGE'] ?? 0) >= 1
+        && ($messageNotification['params']['senderName'] ?? '') !== ''
         && is_string($outboxStatus)
         && in_array($outboxStatus, ['PENDING', 'PROCESSING', 'RETRY', 'DELIVERED', 'FAILED'], true)
         && in_array($visitorId, $realtimeRecipients, true)

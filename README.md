@@ -167,13 +167,35 @@ Na EasyHost, crie uma tarefa agendada a cada minuto (ajuste o caminho da conta):
 ```
 
 O comando devolve um resumo JSON com itens reivindicados, entregues, ignorados,
-reagendados e encerrados por excesso de tentativas. Para acompanhar a fila no MySQL:
+reagendados, encerrados por excesso de tentativas e notificacoes expiradas. Para acompanhar a fila no MySQL:
 
 ```sql
 SELECT status, COUNT(*) AS total, MAX(updated_at) AS ultima_atualizacao
 FROM push_notification_outbox
 GROUP BY status;
 ```
+
+O worker tambem aplica a politica de retencao do historico em lotes pequenos. Por
+padrao, notificacoes lidas sao removidas depois de 90 dias e nao lidas depois de
+365 dias. Itens com Push `PENDING`, `PROCESSING` ou `RETRY` nunca sao removidos.
+As janelas, o tamanho do lote e o intervalo sao configurados por
+`NOTIFICATION_READ_RETENTION_DAYS`, `NOTIFICATION_UNREAD_RETENTION_DAYS`,
+`NOTIFICATION_RETENTION_BATCH_SIZE` e `NOTIFICATION_RETENTION_INTERVAL_SECONDS`.
+A migration 015 adiciona indices para retencao, contagem por categoria, leitura por
+destino e selecao de assinaturas Push ativas.
+
+A migration 016 separa os canais de notificacao no navegador e dentro do aplicativo.
+Cada conta tambem pode limitar alertas a mensagens diretas, definir horario silencioso
+com fuso horario IANA e agrupar atualizacoes rotineiras da conta e do marketplace em
+um resumo diario. O horario selecionado e persistido no servidor; notificacoes Push
+adiadas ou agrupadas permanecem na outbox ate o worker processa-las, enquanto itens
+com o canal interno desativado nao aparecem no feed da conta.
+
+A migration 017 passa a armazenar o tipo do evento e apenas os parametros variaveis
+da mensagem. O frontend traduz o historico no momento da exibicao, inclusive depois
+de uma troca de idioma. O worker tambem monta o texto do Push somente no envio, usando
+o idioma atual persistido na conta; as colunas antigas de titulo e corpo permanecem
+como fallback para notificacoes legadas ou tipos ainda desconhecidos.
 
 O mesmo processo remove eventos SSE expirados. `REALTIME_EVENT_RETENTION_DAYS`
 define a janela de reconexao (sete dias por padrao); os eventos contem apenas IDs e

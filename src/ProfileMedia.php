@@ -151,6 +151,38 @@ final class ProfileMediaRepository
         return self::lobToString($statement->fetchColumn());
     }
 
+    /** @return \Generator<int, string, void, void> */
+    public function chunks(
+        int $userId,
+        int $mediaId,
+        int $start,
+        int $length,
+        int $chunkSize = 1_048_576
+    ): \Generator {
+        if ($start < 0 || $length <= 0 || $chunkSize <= 0) {
+            throw new \InvalidArgumentException('Media byte ranges must contain positive lengths and offsets.');
+        }
+
+        $chunkSize = min($chunkSize, 1_048_576);
+        $offset = $start;
+        $remaining = $length;
+        while ($remaining > 0) {
+            $requested = min($chunkSize, $remaining);
+            $bytes = $this->dataRange($userId, $mediaId, $offset, $requested);
+            if ($bytes === null || $bytes === '') {
+                return;
+            }
+
+            yield $bytes;
+            $read = strlen($bytes);
+            $offset += $read;
+            $remaining -= $read;
+            if ($read < $requested) {
+                return;
+            }
+        }
+    }
+
     public function delete(int $userId, int $mediaId): void
     {
         $statement = $this->pdo->prepare('DELETE FROM profile_media WHERE user_id=:uid AND id=:id');
@@ -166,10 +198,14 @@ final class ProfileMediaRepository
      */
     private static function map(array $row, bool $public = false): array
     {
+        $url = '/api/profiles/' . (int) $row['user_id'] . '/media/' . (int) $row['id'];
         $media = ['id' => (int)$row['id'],'userId' => (int)$row['user_id'],'type' => (string)$row['media_type'],
             'fileName' => (string)$row['file_name'],'contentType' => (string)$row['content_type'],'size' => (int)$row['size_bytes'],
-            'position' => (int)$row['position'],'url' => '/api/profiles/' . (int)$row['user_id'] . '/media/' . (int)$row['id'],
+            'position' => (int)$row['position'],'url' => $url,
             'createdAt' => (string)$row['created_at']];
+        if ($media['type'] === 'PHOTO') {
+            $media['srcSet'] = ResponsiveImageService::srcSet($url);
+        }
         if ($public) {
             unset($media['fileName']);
         }
@@ -184,5 +220,24 @@ final class ProfileMediaRepository
         }
 
         return is_string($value) ? $value : null;
+    }
+
+    private function dataRange(int $userId, int $mediaId, int $offset, int $length): ?string
+    {
+        $driver = (string) $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $sql = match ($driver) {
+            'mysql' => 'SELECT SUBSTRING(media_data, :position, :length) FROM profile_media WHERE user_id=:uid AND id=:id',
+            'pgsql' => 'SELECT SUBSTRING(media_data FROM :position FOR :length) FROM profile_media WHERE user_id=:uid AND id=:id',
+            'sqlite' => 'SELECT SUBSTR(media_data, :position, :length) FROM profile_media WHERE user_id=:uid AND id=:id',
+            default => throw new \RuntimeException('Unsupported database driver for ranged media streaming.'),
+        };
+        $statement = $this->pdo->prepare($sql);
+        $statement->bindValue(':position', $offset + 1, PDO::PARAM_INT);
+        $statement->bindValue(':length', $length, PDO::PARAM_INT);
+        $statement->bindValue(':uid', $userId, PDO::PARAM_INT);
+        $statement->bindValue(':id', $mediaId, PDO::PARAM_INT);
+        $statement->execute();
+
+        return self::lobToString($statement->fetchColumn());
     }
 }

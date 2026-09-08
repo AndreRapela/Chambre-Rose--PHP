@@ -280,6 +280,34 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-15-notification-retention',
+                'file' => dirname(__DIR__) . '/database/migrations/015-notification-retention.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-16-notification-preferences',
+                'file' => dirname(__DIR__) . '/database/migrations/016-notification-preferences.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-17-localized-notifications',
+                'file' => dirname(__DIR__) . '/database/migrations/017-localized-notifications.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-18-responsive-images',
+                'file' => dirname(__DIR__) . '/database/migrations/018-responsive-images.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 

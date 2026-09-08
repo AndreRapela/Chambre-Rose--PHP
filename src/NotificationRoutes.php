@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ChambreRose;
 
+use DateTimeZone;
+
 final class NotificationRoutes implements RouteHandler
 {
     public function __construct(
@@ -76,18 +78,71 @@ final class NotificationRoutes implements RouteHandler
         $user = $this->guard->currentUser($request);
         $this->guard->requireJson($request);
         $input = $request->json();
-        $preferences = [];
-        foreach (['directMessages', 'accountUpdates', 'marketplaceUpdates', 'securityUpdates'] as $field) {
-            if (!array_key_exists($field, $input) || !is_bool($input[$field])) {
-                throw new ApiException(400, 'All notification preferences must be boolean.', [
-                    $field => 'must be boolean',
-                ]);
-            }
-            $preferences[$field] = $input[$field];
+        $current = $this->notifications->preferences((int) $user['id']);
+        $preferences = [
+            'directMessages' => self::booleanPreference($input, $current, 'directMessages'),
+            'accountUpdates' => self::booleanPreference($input, $current, 'accountUpdates'),
+            'marketplaceUpdates' => self::booleanPreference($input, $current, 'marketplaceUpdates'),
+            'securityUpdates' => self::booleanPreference($input, $current, 'securityUpdates'),
+            'browserNotifications' => self::booleanPreference($input, $current, 'browserNotifications'),
+            'inAppNotifications' => self::booleanPreference($input, $current, 'inAppNotifications'),
+            'onlyDirectMessages' => self::booleanPreference($input, $current, 'onlyDirectMessages'),
+            'dailyDigest' => self::booleanPreference($input, $current, 'dailyDigest'),
+            'dailyDigestTime' => self::timePreference($input, $current, 'dailyDigestTime'),
+            'quietHoursEnabled' => self::booleanPreference($input, $current, 'quietHoursEnabled'),
+            'quietHoursStart' => self::timePreference($input, $current, 'quietHoursStart'),
+            'quietHoursEnd' => self::timePreference($input, $current, 'quietHoursEnd'),
+            'timezone' => self::timezonePreference($input, $current),
+        ];
+
+        return ApiResponder::json($this->notifications->savePreferences((int) $user['id'], $preferences));
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @param array<string, bool|string> $current
+     */
+    private static function booleanPreference(array $input, array $current, string $field): bool
+    {
+        if (!array_key_exists($field, $input)) {
+            return $current[$field] === true;
+        }
+        if (!is_bool($input[$field])) {
+            throw new ApiException(400, 'Invalid notification preference.', [$field => 'must be boolean']);
         }
 
-        /** @var array{directMessages: bool, accountUpdates: bool, marketplaceUpdates: bool, securityUpdates: bool} $preferences */
-        return ApiResponder::json($this->notifications->savePreferences((int) $user['id'], $preferences));
+        return $input[$field];
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @param array<string, bool|string> $current
+     */
+    private static function timePreference(array $input, array $current, string $field): string
+    {
+        $value = array_key_exists($field, $input) ? $input[$field] : $current[$field];
+        if (!is_string($value) || preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $value) !== 1) {
+            throw new ApiException(400, 'Invalid notification preference.', [$field => 'must use HH:MM']);
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @param array<string, bool|string> $current
+     */
+    private static function timezonePreference(array $input, array $current): string
+    {
+        $value = array_key_exists('timezone', $input) ? $input['timezone'] : $current['timezone'];
+        $identifiers = DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC);
+        if (!is_string($value) || strlen($value) > 64 || !in_array($value, $identifiers, true)) {
+            throw new ApiException(400, 'Invalid notification preference.', [
+                'timezone' => 'must be a valid IANA time zone',
+            ]);
+        }
+
+        return $value;
     }
 
     private function subscribe(Request $request): Response

@@ -11,17 +11,29 @@ require dirname(__DIR__) . '/bootstrap.php';
 use ChambreRose\ApiException;
 use ChambreRose\App;
 use ChambreRose\AuthSessionCookie;
+use ChambreRose\HttpByteRange;
 use ChambreRose\Jwt;
 use ChambreRose\MultipartParser;
 use ChambreRose\NotificationRepository;
 use ChambreRose\NotificationOutboxStore;
+use ChambreRose\NotificationOutboxRepository;
+use ChambreRose\NotificationDeliverySchedule;
+use ChambreRose\NotificationMessageCatalog;
+use ChambreRose\NotificationRetentionService;
 use ChambreRose\PushNotificationSender;
 use ChambreRose\PushNotificationWorker;
 use ChambreRose\PushDeviceCookie;
+use ChambreRose\ProductImageRepository;
+use ChambreRose\ProfileMediaRepository;
+use ChambreRose\RealtimeEventRepository;
 use ChambreRose\RealtimeRoutes;
+use ChambreRose\ResponsiveImageProcessor;
+use ChambreRose\ResponsiveImageService;
+use ChambreRose\ResponsiveImageVariantRepository;
 use ChambreRose\Request;
 use ChambreRose\Response;
 use ChambreRose\UploadedFile;
+use ChambreRose\UserNotificationService;
 use ChambreRose\Validator;
 
 final class MemoryNotificationOutbox implements NotificationOutboxStore
@@ -53,7 +65,7 @@ final class MemoryNotificationOutbox implements NotificationOutboxStore
         return $operation();
     }
 
-    public function enqueue(int $notificationId, int $userId, int $maxAttempts): void
+    public function enqueue(int $notificationId, int $userId, int $maxAttempts, ?string $availableAt = null): void
     {
     }
 
@@ -148,6 +160,60 @@ $assert(
     && PushNotificationWorker::retryDelaySeconds(20, 15, 3600) === 3600,
     'Push retry delays must grow exponentially and respect the configured cap.'
 );
+$quietEnd = NotificationDeliverySchedule::afterQuietHours(
+    true,
+    '22:00',
+    '08:00',
+    'Europe/Brussels',
+    new DateTimeImmutable('2026-03-28 22:30:00', new DateTimeZone('UTC'))
+);
+$assert(
+    $quietEnd === '2026-03-29 06:00:00.000000',
+    'Quiet hours must respect overnight windows and daylight-saving time.'
+);
+$assert(
+    NotificationDeliverySchedule::afterQuietHours(
+        true,
+        '13:00',
+        '15:00',
+        'UTC',
+        new DateTimeImmutable('2026-09-07 14:00:00', new DateTimeZone('UTC'))
+    ) === '2026-09-07 15:00:00.000000',
+    'Quiet hours must support same-day windows.'
+);
+$assert(
+    NotificationDeliverySchedule::afterQuietHours(
+        true,
+        '22:00',
+        '08:00',
+        'UTC',
+        new DateTimeImmutable('2026-09-07 12:00:00', new DateTimeZone('UTC'))
+    ) === null,
+    'Browser delivery must remain immediate outside quiet hours.'
+);
+$assert(
+    NotificationDeliverySchedule::nextDailyDigest(
+        '09:00',
+        'UTC',
+        new DateTimeImmutable('2026-09-07 10:00:00', new DateTimeZone('UTC'))
+    ) === '2026-09-08 09:00:00.000000',
+    'Daily summaries must be scheduled for the next selected local time.'
+);
+$frenchNotification = NotificationMessageCatalog::render(
+    'MESSAGE_RECEIVED',
+    ['senderName' => 'Alex'],
+    'fr'
+);
+$assert(
+    $frenchNotification['title'] === 'Nouveau message privé'
+    && $frenchNotification['body'] === 'Vous avez reçu un message privé de Alex.',
+    'Notification templates must be localized at presentation time with their stored parameters.'
+);
+$localizedRole = NotificationMessageCatalog::render('ROLE_CHANGED', ['role' => 'STORE'], 'pt');
+$assert(
+    $localizedRole['body'] === 'A função da sua conta agora é loja.',
+    'Notification parameters with domain values must also be localized.'
+);
 
 $jwt = new Jwt();
 $token = $jwt->generate('admin@example.com', 'ADMIN');
@@ -219,6 +285,196 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         $remainingDevice === 'https://push.example.test/mobile-device',
         'Revoking the current Push device must preserve the account subscription on another device.'
     );
+
+    $retentionDatabase = new PDO('sqlite::memory:');
+    $retentionDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $retentionDatabase->exec('PRAGMA foreign_keys=ON');
+    $retentionDatabase->exec(
+        'CREATE TABLE account_notifications ('
+        . 'id INTEGER PRIMARY KEY,read_at TEXT NULL,created_at TEXT NOT NULL)'
+    );
+    $retentionDatabase->exec(
+        'CREATE TABLE push_notification_outbox ('
+        . 'id INTEGER PRIMARY KEY,notification_id INTEGER NOT NULL,status TEXT NOT NULL,'
+        . 'FOREIGN KEY (notification_id) REFERENCES account_notifications(id) ON DELETE CASCADE)'
+    );
+    $retentionInsert = $retentionDatabase->prepare(
+        'INSERT INTO account_notifications (id,read_at,created_at) VALUES (:id,:read_at,:created_at)'
+    );
+    $retentionDates = [
+        1 => ['read_at' => '-100 days', 'created_at' => '-120 days'],
+        2 => ['read_at' => null, 'created_at' => '-400 days'],
+        3 => ['read_at' => '-5 days', 'created_at' => '-10 days'],
+        4 => ['read_at' => null, 'created_at' => '-120 days'],
+        5 => ['read_at' => '-100 days', 'created_at' => '-120 days'],
+        6 => ['read_at' => '-100 days', 'created_at' => '-120 days'],
+        7 => ['read_at' => '-100 days', 'created_at' => '-120 days'],
+        8 => ['read_at' => '-100 days', 'created_at' => '-120 days'],
+        9 => ['read_at' => '-100 days', 'created_at' => '-120 days'],
+    ];
+    foreach ($retentionDates as $id => $dates) {
+        $retentionInsert->execute([
+            'id' => $id,
+            'read_at' => $dates['read_at'] === null ? null : gmdate('Y-m-d H:i:s', strtotime($dates['read_at'])),
+            'created_at' => gmdate('Y-m-d H:i:s', strtotime($dates['created_at'])),
+        ]);
+    }
+    $retentionDatabase->exec(
+        "INSERT INTO push_notification_outbox (id,notification_id,status) VALUES "
+        . "(1,5,'PENDING'),(2,6,'DELIVERED'),(3,7,'RETRY'),(4,8,'PROCESSING'),(5,9,'FAILED')"
+    );
+    $retention = new NotificationRetentionService($retentionDatabase);
+    $firstRetentionBatch = $retention->purgeBatch(90, 365, 2);
+    $secondRetentionBatch = $retention->purgeBatch(90, 365, 2);
+    $remainingNotifications = $retentionDatabase
+        ->query('SELECT id FROM account_notifications ORDER BY id')
+        ->fetchAll(PDO::FETCH_COLUMN);
+    $assert($firstRetentionBatch === 2, 'Notification retention must respect its configured batch size.');
+    $assert($secondRetentionBatch === 2, 'Notification retention must continue draining eligible history.');
+    $assert(
+        $remainingNotifications === [3, 4, 5, 7, 8],
+        'Retention must keep recent, unread-within-policy, and actively queued notifications.'
+    );
+    $assert(
+        (int) $retentionDatabase->query('SELECT COUNT(*) FROM push_notification_outbox')->fetchColumn() === 3,
+        'Deleting notification history must cascade terminal outbox entries while preserving pending delivery.'
+    );
+
+    $preferenceDatabase = new PDO('sqlite::memory:');
+    $preferenceDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $preferenceDatabase->exec(<<<'SQL'
+        CREATE TABLE notification_preferences (
+          user_id INTEGER PRIMARY KEY,direct_messages INTEGER NOT NULL,account_updates INTEGER NOT NULL,
+          marketplace_updates INTEGER NOT NULL,security_updates INTEGER NOT NULL,browser_notifications INTEGER NOT NULL,
+          in_app_notifications INTEGER NOT NULL,only_direct_messages INTEGER NOT NULL,daily_digest INTEGER NOT NULL,
+          daily_digest_time TEXT NOT NULL,quiet_hours_enabled INTEGER NOT NULL,quiet_hours_start TEXT NOT NULL,
+          quiet_hours_end TEXT NOT NULL,timezone TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE account_notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,category TEXT NOT NULL,event_type TEXT NOT NULL,
+          title TEXT NULL,body TEXT NULL,message_params TEXT NULL,target_url TEXT NOT NULL,dedupe_key TEXT NULL,
+          visible_in_app INTEGER NOT NULL DEFAULT 1,read_at TEXT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(user_id,dedupe_key)
+        );
+        CREATE TABLE push_notification_outbox (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,notification_id INTEGER NOT NULL UNIQUE,user_id INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'PENDING',attempts INTEGER NOT NULL DEFAULT 0,max_attempts INTEGER NOT NULL,
+          available_at TEXT NOT NULL,locked_at TEXT NULL,locked_by TEXT NULL,last_error TEXT NULL,delivered_at TEXT NULL,
+          failed_at TEXT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE realtime_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,event_type TEXT NOT NULL,
+          resource_id INTEGER NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        SQL);
+    $preferenceRepository = new NotificationRepository($preferenceDatabase);
+    $notificationPreferences = [
+        'directMessages' => true,
+        'accountUpdates' => true,
+        'marketplaceUpdates' => true,
+        'securityUpdates' => true,
+        'browserNotifications' => true,
+        'inAppNotifications' => true,
+        'onlyDirectMessages' => false,
+        'dailyDigest' => true,
+        'dailyDigestTime' => gmdate('H:i', time() + 3600),
+        'quietHoursEnabled' => false,
+        'quietHoursStart' => '22:00',
+        'quietHoursEnd' => '08:00',
+        'timezone' => 'UTC',
+    ];
+    $preferenceRepository->savePreferences(91, $notificationPreferences);
+    $notificationService = new UserNotificationService(
+        $preferenceRepository,
+        new NotificationOutboxRepository($preferenceDatabase),
+        new ControlledPushSender(),
+        new RealtimeEventRepository($preferenceDatabase)
+    );
+    $notificationService->notify(
+        91,
+        UserNotificationService::ACCOUNT,
+        'PROFILE_UPDATED',
+        '/espace-prive/perfil',
+        'preferences:account'
+    );
+    $digestFeed = $preferenceRepository->feed(91);
+    $assert(
+        count($digestFeed['items']) === 1
+        && (int) $preferenceDatabase->query('SELECT COUNT(*) FROM account_notifications')->fetchColumn() === 2
+        && (int) $preferenceDatabase->query('SELECT COUNT(*) FROM push_notification_outbox')->fetchColumn() === 1,
+        'Daily summary mode must keep the in-app event but enqueue only one hidden browser digest.'
+    );
+
+    $notificationPreferences['onlyDirectMessages'] = true;
+    $preferenceRepository->savePreferences(91, $notificationPreferences);
+    $suppressed = $notificationService->notify(
+        91,
+        UserNotificationService::MARKETPLACE,
+        'PROFILE_FAVORITED',
+        '/favoritos',
+        'preferences:suppressed'
+    );
+    $assert(
+        ($suppressed['suppressed'] ?? false) === true
+        && (int) $preferenceDatabase->query('SELECT COUNT(*) FROM account_notifications')->fetchColumn() === 2,
+        'Direct-messages-only mode must suppress every other notification category.'
+    );
+
+    $notificationPreferences['onlyDirectMessages'] = false;
+    $notificationPreferences['dailyDigest'] = false;
+    $notificationPreferences['browserNotifications'] = false;
+    $preferenceRepository->savePreferences(91, $notificationPreferences);
+    $notificationService->notify(
+        91,
+        UserNotificationService::DIRECT_MESSAGE,
+        'MESSAGE_RECEIVED',
+        '/mensagens/10',
+        'preferences:in-app',
+        ['senderName' => 'Camille']
+    );
+    $inAppFeed = $preferenceRepository->feed(91);
+    $assert(
+        count($inAppFeed['items']) === 2
+        && ($inAppFeed['items'][0]['params']['senderName'] ?? null) === 'Camille'
+        && (int) $preferenceDatabase->query('SELECT COUNT(*) FROM push_notification_outbox')->fetchColumn() === 1,
+        'In-app-only mode must expose structured message parameters without enqueueing browser Push.'
+    );
+
+    $notificationPreferences['browserNotifications'] = true;
+    $notificationPreferences['inAppNotifications'] = false;
+    $preferenceRepository->savePreferences(91, $notificationPreferences);
+    $notificationService->notify(
+        91,
+        UserNotificationService::DIRECT_MESSAGE,
+        'MESSAGE_RECEIVED',
+        '/mensagens/11',
+        'preferences:browser',
+        ['senderName' => 'Morgan']
+    );
+    $assert(
+        count($preferenceRepository->feed(91)['items']) === 2
+        && (int) $preferenceDatabase->query('SELECT COUNT(*) FROM push_notification_outbox')->fetchColumn() === 2,
+        'Browser-only mode must enqueue Push without exposing the event in the in-app feed.'
+    );
+
+    $productImageDatabase = new PDO('sqlite::memory:');
+    $productImageDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $productImageDatabase->exec(
+        'CREATE TABLE product_images ('
+        . 'id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL,role TEXT NOT NULL,'
+        . 'content_type TEXT NOT NULL,size_bytes INTEGER NOT NULL,image_data BLOB NOT NULL,updated_at TEXT NOT NULL)'
+    );
+    $productImageDatabase->exec(
+        "INSERT INTO product_images (id,product_id,role,content_type,size_bytes,image_data,updated_at) "
+        . "VALUES (1,1,'MAIN','image/svg+xml',6,'<svg/>','2026-09-07 00:00:00')"
+    );
+    $legacyImage = (new ProductImageRepository($productImageDatabase))->get(1, 'MAIN');
+    $assert(
+        ($legacyImage['content_type'] ?? null) === 'image/jpeg'
+        && (int) ($legacyImage['size_bytes'] ?? 0) > 10_000
+        && str_starts_with((string) ($legacyImage['image_data'] ?? ''), "\xFF\xD8\xFF"),
+        'Legacy SVG product placeholders must be served as real JPEG catalog photos.'
+    );
 }
 
 $tampered = substr($token, 0, -1) . (str_ends_with($token, 'a') ? 'b' : 'a');
@@ -277,6 +533,123 @@ $image = new UploadedFile('pixel.png', 'text/plain', strlen($png), null, $png);
 $assert($image->detectedContentType() === 'image/png', 'Uploaded image type must come from its bytes.');
 $assert($image->actualSize() === strlen($png), 'Uploaded image size must come from its bytes.');
 
+$imageProcessor = new ResponsiveImageProcessor();
+$responsiveVariants = $imageProcessor->generate($png);
+$assert(
+    array_column($responsiveVariants, 'width') === [320, 640, 960, 1280]
+    && array_reduce(
+        $responsiveVariants,
+        static fn (bool $valid, array $variant): bool => $valid
+            && $variant['contentType'] === 'image/webp'
+            && str_starts_with($variant['bytes'], 'RIFF')
+            && substr($variant['bytes'], 8, 4) === 'WEBP',
+        true
+    ),
+    'Uploaded photos must produce valid 320, 640, 960 and 1280 pixel WebP variants.'
+);
+$assert(
+    ResponsiveImageService::srcSet('/api/profiles/9/media/2')
+        === '/api/profiles/9/media/2/320.webp 320w, /api/profiles/9/media/2/640.webp 640w, /api/profiles/9/media/2/960.webp 960w, /api/profiles/9/media/2/1280.webp 1280w',
+    'Responsive image metadata must expose standards-compliant width descriptors.'
+);
+
+$closedRange = HttpByteRange::parse('bytes=2-5', 10);
+$assert(
+    $closedRange?->start === 2 && $closedRange->end === 5 && $closedRange->length() === 4,
+    'Closed HTTP byte ranges must preserve their inclusive boundaries.'
+);
+$openRange = HttpByteRange::parse('bytes=7-', 10);
+$assert(
+    $openRange?->start === 7 && $openRange->end === 9,
+    'Open HTTP byte ranges must extend to the final representation byte.'
+);
+$suffixRange = HttpByteRange::parse('bytes=-3', 10);
+$assert(
+    $suffixRange?->start === 7 && $suffixRange->end === 9,
+    'Suffix HTTP byte ranges must select bytes from the end of the representation.'
+);
+$clampedRange = HttpByteRange::parse('bytes=8-99', 10);
+$assert(
+    $clampedRange?->start === 8 && $clampedRange->end === 9,
+    'HTTP byte range ends beyond the representation must be clamped.'
+);
+$assert(HttpByteRange::parse(null, 10) === null, 'Requests without Range must select the full representation.');
+try {
+    HttpByteRange::parse('bytes=10-', 10);
+    $assert(false, 'Unsatisfiable HTTP byte ranges must be rejected.');
+} catch (ApiException $exception) {
+    $assert(
+        $exception->status === 416
+        && ($exception->headers['Accept-Ranges'] ?? null) === 'bytes'
+        && ($exception->headers['Content-Range'] ?? null) === 'bytes */10',
+        'Unsatisfiable HTTP byte ranges must return the representation size with status 416.'
+    );
+}
+try {
+    HttpByteRange::parse('bytes=0-1,4-5', 10);
+    $assert(false, 'Multiple ranges must be rejected until multipart responses are supported.');
+} catch (ApiException $exception) {
+    $assert($exception->status === 416, 'Unsupported multiple HTTP ranges must return 416.');
+}
+
+if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    $responsiveImageDatabase = new PDO('sqlite::memory:');
+    $responsiveImageDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $responsiveImageDatabase->exec(
+        'CREATE TABLE product_images ('
+        . 'id INTEGER PRIMARY KEY AUTOINCREMENT,product_id INTEGER NOT NULL,role TEXT NOT NULL,'
+        . 'file_name TEXT NOT NULL,content_type TEXT NOT NULL,size_bytes INTEGER NOT NULL,image_data BLOB NOT NULL,'
+        . 'created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(product_id,role))'
+    );
+    $responsiveImageDatabase->exec(
+        'CREATE TABLE responsive_image_variants ('
+        . 'id INTEGER PRIMARY KEY AUTOINCREMENT,profile_media_id INTEGER,product_image_id INTEGER,'
+        . 'width INTEGER NOT NULL,height INTEGER NOT NULL,content_type TEXT NOT NULL,size_bytes INTEGER NOT NULL,'
+        . 'image_data BLOB NOT NULL,source_hash TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,'
+        . 'UNIQUE(profile_media_id,width),UNIQUE(product_image_id,width))'
+    );
+    $responsiveImageService = new ResponsiveImageService(
+        $imageProcessor,
+        new ResponsiveImageVariantRepository($responsiveImageDatabase)
+    );
+    $responsiveProductImages = new ProductImageRepository($responsiveImageDatabase, $responsiveImageService);
+    $responsiveProductImages->put(44, 'MAIN', $image);
+    $storedProductVariant = $responsiveProductImages->responsive(44, 'MAIN', 320);
+    $assert(
+        $storedProductVariant['width'] === 320
+        && $storedProductVariant['contentType'] === 'image/webp'
+        && str_starts_with($storedProductVariant['bytes'], 'RIFF')
+        && (int) $responsiveImageDatabase->query('SELECT COUNT(*) FROM responsive_image_variants')->fetchColumn() === 4,
+        'Product uploads must atomically persist all responsive WebP variants.'
+    );
+
+    $mediaDatabase = new PDO('sqlite::memory:');
+    $mediaDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $mediaDatabase->exec(
+        'CREATE TABLE profile_media ('
+        . 'id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,media_type TEXT NOT NULL,file_name TEXT NOT NULL,'
+        . 'content_type TEXT NOT NULL,size_bytes INTEGER NOT NULL,media_data BLOB NOT NULL,'
+        . 'position INTEGER NOT NULL,created_at TEXT NOT NULL)'
+    );
+    $videoFixture = '0123456789abcdefghijklmnopqrstuvwxyz';
+    $insertMedia = $mediaDatabase->prepare(
+        'INSERT INTO profile_media '
+        . '(id,user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) '
+        . "VALUES (3,7,'VIDEO','fixture.webm','video/webm',:size,:data,0,'2026-09-08 00:00:00')"
+    );
+    $insertMedia->bindValue(':size', strlen($videoFixture), PDO::PARAM_INT);
+    $insertMedia->bindValue(':data', $videoFixture, PDO::PARAM_LOB);
+    $insertMedia->execute();
+    $mediaChunks = iterator_to_array(
+        (new ProfileMediaRepository($mediaDatabase))->chunks(7, 3, 2, 7, 3),
+        false
+    );
+    $assert(
+        $mediaChunks === ['234', '567', '8'] && implode('', $mediaChunks) === '2345678',
+        'Ranged media reads must fetch only the requested BLOB section in bounded chunks.'
+    );
+}
+
 $failedUpload = new UploadedFile('large.png', 'image/png', 0, null, null, UPLOAD_ERR_INI_SIZE);
 $assert(!$failedUpload->isEmpty(), 'A rejected upload must not be mistaken for an empty file.');
 
@@ -294,6 +667,11 @@ $assert(($headers['X-Request-ID'] ?? null) === $request->requestId, 'Responses m
 $assert(
     str_contains($headers['Access-Control-Allow-Headers'] ?? '', 'Last-Event-ID'),
     'CORS must allow the SSE reconnection cursor header.'
+);
+$assert(
+    str_contains($headers['Access-Control-Allow-Headers'] ?? '', 'Range')
+    && str_contains($headers['Access-Control-Expose-Headers'] ?? '', 'Content-Range'),
+    'CORS must allow byte-range requests and expose ranged response metadata.'
 );
 $assert(
     Request::resolveClientIp('172.20.0.3', '203.0.113.20, 172.20.0.2', '172.16.0.0/12') === '203.0.113.20',

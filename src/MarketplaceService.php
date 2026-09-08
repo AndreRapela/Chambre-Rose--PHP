@@ -14,7 +14,8 @@ final class MarketplaceService
     public function __construct(
         private readonly UserRepository $users,
         private readonly ProfessionalProfileRepository $profiles,
-        private readonly ProfileMediaRepository $media
+        private readonly ProfileMediaRepository $media,
+        private readonly ResponsiveImageService $responsiveImages
     ) {
     }
 
@@ -175,15 +176,46 @@ final class MarketplaceService
         }
         $name = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', basename(str_replace('\\', '/', $file->name))) ?? '') ?: strtolower($type);
 
-        return $this->media->insertWithinLimit(
+        $bytes = $file->bytes();
+        $prepared = $type === 'PHOTO' ? $this->responsiveImages->prepare($bytes) : [];
+        $media = $this->media->insertWithinLimit(
             $userId,
             $type,
             $name,
             $mime,
-            $file->bytes(),
+            $bytes,
             max(0, min(32767, $position)),
             $limit
         );
+        if ($type === 'PHOTO') {
+            try {
+                $this->responsiveImages->storePrepared('PROFILE', (int) $media['id'], $bytes, $prepared);
+            } catch (\Throwable $exception) {
+                $this->media->delete($userId, (int) $media['id']);
+                throw $exception;
+            }
+        }
+
+        return $media;
+    }
+
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string} */
+    public function responsivePhoto(int $userId, int $mediaId, int $width): array
+    {
+        $meta = $this->media->metadata($userId, $mediaId);
+        if ($meta === null || $meta['type'] !== 'PHOTO') {
+            throw new ApiException(404, 'Profile photo not found.');
+        }
+        $cached = $this->responsiveImages->cachedVariant('PROFILE', $mediaId, $width);
+        if ($cached !== null) {
+            return $cached;
+        }
+        $bytes = $this->media->data($userId, $mediaId);
+        if ($bytes === null) {
+            throw new ApiException(404, 'Profile photo not found.');
+        }
+
+        return $this->responsiveImages->variant('PROFILE', $mediaId, $bytes, $width);
     }
 
     /**

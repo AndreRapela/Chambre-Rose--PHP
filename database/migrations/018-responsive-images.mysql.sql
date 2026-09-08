@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS responsive_image_variants (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  profile_media_id BIGINT UNSIGNED NULL,
+  product_image_id BIGINT UNSIGNED NULL,
+  width SMALLINT UNSIGNED NOT NULL,
+  height SMALLINT UNSIGNED NOT NULL,
+  content_type VARCHAR(40) NOT NULL,
+  size_bytes BIGINT UNSIGNED NOT NULL,
+  image_data LONGBLOB NOT NULL,
+  source_hash CHAR(64) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_responsive_profile_width (profile_media_id, width),
+  UNIQUE KEY uk_responsive_product_width (product_image_id, width),
+  KEY idx_responsive_source_hash (source_hash),
+  CONSTRAINT fk_responsive_profile_media FOREIGN KEY (profile_media_id) REFERENCES profile_media(id) ON DELETE CASCADE,
+  CONSTRAINT fk_responsive_product_image FOREIGN KEY (product_image_id) REFERENCES product_images(id) ON DELETE CASCADE,
+  CONSTRAINT chk_responsive_owner CHECK ((profile_media_id IS NULL) <> (product_image_id IS NULL))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

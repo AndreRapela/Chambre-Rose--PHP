@@ -42,8 +42,6 @@ final class ListingRoutes implements RouteHandler
                 $target,
                 UserNotificationService::MARKETPLACE,
                 'PROFILE_REVIEWED',
-                'New profile review',
-                'A member left a new review on your profile.',
                 '/catalogue/perfil/' . $target,
                 'profile-review:' . (int) ($review['id'] ?? 0)
             );
@@ -88,7 +86,12 @@ final class ListingRoutes implements RouteHandler
         if ($method === 'POST' && $path === '/api/profiles/me/media') {
             return $this->upload($request);
         }
-        if ($method === 'GET' && preg_match('#^/api/profiles/(\d+)/media/(\d+)$#', $path, $match)) {
+        if ($method === 'GET' && preg_match('#^/api/profiles/(\d+)/media/(\d+)/(320|640|960|1280)\.webp$#', $path, $match)) {
+            return $this->profileMediaVariant($request, (int) $match[1], (int) $match[2], (int) $match[3]);
+        }
+        if (($method === 'GET' || $method === 'HEAD')
+            && preg_match('#^/api/profiles/(\d+)/media/(\d+)$#', $path, $match)
+        ) {
             return $this->profileMedia($request, (int) $match[1], (int) $match[2]);
         }
         if ($method === 'DELETE' && preg_match('#^/api/profiles/(\d+)/media/(\d+)$#', $path, $match)) {
@@ -131,10 +134,9 @@ final class ListingRoutes implements RouteHandler
             $profileId,
             UserNotificationService::MARKETPLACE,
             'PROFILE_SELECTED',
-            'New profile selection',
-            ($buyerName === '' ? 'A member' : $buyerName) . ' selected an option from your profile.',
             '/catalogue/perfil/' . $profileId,
-            null
+            null,
+            ['memberName' => $buyerName]
         );
 
         return ApiResponder::json($this->marketplace->publicProfile($profileId), 201);
@@ -211,8 +213,6 @@ final class ListingRoutes implements RouteHandler
                 $target,
                 UserNotificationService::MARKETPLACE,
                 'PROFILE_FAVORITED',
-                'New favorite',
-                'A member added your profile to favorites.',
                 '/catalogue/perfil/' . $target,
                 'favorite:' . (int) $user['id'] . ':' . $target
             );
@@ -230,30 +230,13 @@ final class ListingRoutes implements RouteHandler
 
     private function profileMedia(Request $request, int $userId, int $mediaId): Response
     {
-        try {
-            $this->marketplace->publicProfile($userId);
-        } catch (ApiException $exception) {
-            if ($exception->status !== 404) {
-                throw $exception;
-            }
-            $viewer = $this->guard->optionalCurrentUser($request);
-            if ($viewer === null || ((int) $viewer['id'] !== $userId && $viewer['role'] !== 'ADMIN')) {
-                throw new ApiException(404, 'Media not found.');
-            }
-        }
+        $this->authorizeProfileMedia($request, $userId);
         $meta = $this->media->metadata($userId, $mediaId);
         if ($meta === null) {
             throw new ApiException(404, 'Media not found.');
         }
         $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $meta['size'] . '|' . $meta['createdAt']);
         $cache = 'private, no-store';
-        if (ApiResponder::etagMatches($request, $etag)) {
-            return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
-        }
-        $bytes = $this->media->data($userId, $mediaId);
-        if ($bytes === null) {
-            throw new ApiException(404, 'Media not found.');
-        }
         $extension = match ($meta['contentType']) {
             'image/jpeg' => 'jpg',
             'image/png' => 'png',
@@ -263,13 +246,121 @@ final class ListingRoutes implements RouteHandler
             default => 'bin',
         };
         $kind = $meta['type'] === 'PHOTO' ? 'photo' : 'video';
-
-        return new Response(200, $bytes, [
-            'Content-Type' => $meta['contentType'],
-            'Content-Length' => (string) strlen($bytes),
+        $headers = [
+            'Content-Type' => (string) $meta['contentType'],
             'Content-Disposition' => 'inline; filename="profile-' . $kind . '-' . $mediaId . '.' . $extension . '"',
             'Cache-Control' => $cache,
             'ETag' => $etag,
+        ];
+        $isVideo = $meta['type'] === 'VIDEO';
+        if ($isVideo) {
+            $headers['Accept-Ranges'] = 'bytes';
+            $headers['X-Accel-Buffering'] = 'no';
+        }
+
+        if (ApiResponder::etagMatches($request, $etag)) {
+            return new Response(304, '', $headers);
+        }
+
+        if ($isVideo) {
+            return $this->videoResponse($request, $userId, $mediaId, (int) $meta['size'], $etag, $headers);
+        }
+
+        if ($request->method === 'HEAD') {
+            return new Response(200, '', ['Content-Length' => (string) $meta['size']] + $headers);
+        }
+
+        $bytes = $this->media->data($userId, $mediaId);
+        if ($bytes === null) {
+            throw new ApiException(404, 'Media not found.');
+        }
+
+        return new Response(200, $bytes, [
+            'Content-Length' => (string) strlen($bytes),
+        ] + $headers);
+    }
+
+    /** @param array<string, string> $headers */
+    private function videoResponse(
+        Request $request,
+        int $userId,
+        int $mediaId,
+        int $size,
+        string $etag,
+        array $headers
+    ): Response {
+        $rangeHeader = $request->header('range');
+        $ifRange = trim($request->header('if-range') ?? '');
+        if ($ifRange !== '' && !hash_equals($etag, $ifRange)) {
+            $rangeHeader = null;
+        }
+
+        $range = HttpByteRange::parse($rangeHeader, $size);
+        if ($range === null) {
+            $start = 0;
+            $end = $size - 1;
+            $length = $size;
+            $status = 200;
+        } else {
+            $start = $range->start;
+            $end = $range->end;
+            $length = $range->length();
+            $status = 206;
+        }
+        $headers['Content-Length'] = (string) $length;
+        if ($range !== null) {
+            $headers['Content-Range'] = 'bytes ' . $start . '-' . $end . '/' . $size;
+        }
+
+        if ($request->method === 'HEAD') {
+            return new Response($status, '', $headers);
+        }
+
+        $chunks = $this->media->chunks($userId, $mediaId, $start, $length);
+        $chunks->rewind();
+        if (!$chunks->valid()) {
+            throw new ApiException(404, 'Media not found.');
+        }
+
+        return Response::stream(static function () use ($chunks): void {
+            while ($chunks->valid()) {
+                echo $chunks->current();
+                flush();
+                $chunks->next();
+            }
+        }, $headers, $status);
+    }
+
+    private function profileMediaVariant(Request $request, int $userId, int $mediaId, int $width): Response
+    {
+        $isPublic = $this->authorizeProfileMedia($request, $userId);
+        $image = $this->marketplace->responsivePhoto($userId, $mediaId, $width);
+        $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $image['sourceHash'] . '|' . $width);
+        $cache = $isPublic ? 'public, max-age=86400, must-revalidate' : 'private, no-store';
+        if (ApiResponder::etagMatches($request, $etag)) {
+            return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
+        }
+
+        return new Response(200, $image['bytes'], [
+            'Content-Type' => $image['contentType'],
+            'Content-Length' => (string) $image['size'],
+            'Content-Disposition' => 'inline; filename="profile-photo-' . $mediaId . '-' . $width . '.webp"',
+            'Cache-Control' => $cache,
+            'ETag' => $etag,
         ]);
+    }
+
+    private function authorizeProfileMedia(Request $request, int $userId): bool
+    {
+        if ($this->profiles->findByUser($userId, true) !== null) {
+            return true;
+        }
+
+        $viewer = $this->guard->optionalCurrentUser($request);
+        if ($viewer === null || ((int) $viewer['id'] !== $userId && $viewer['role'] !== 'ADMIN')) {
+            throw new ApiException(404, 'Media not found.');
+        }
+
+        return false;
     }
 }

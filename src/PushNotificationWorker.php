@@ -28,7 +28,7 @@ final class PushNotificationWorker
             try {
                 $result = $this->push->send((int) $job['user_id'], self::notification($job));
                 if ($result === PushNotificationSender::SKIPPED) {
-                    $this->outbox->markSkipped($id, 'No active push subscriptions were available.');
+                    $this->outbox->markSkipped($id, 'Delivery was disabled or no active push subscription was available.');
                     $summary['skipped']++;
                     continue;
                 }
@@ -78,8 +78,28 @@ final class PushNotificationWorker
             'eventType' => (string) $job['event_type'],
             'title' => (string) $job['title'],
             'body' => (string) $job['body'],
+            'params' => self::messageParameters($job['message_params'] ?? null),
+            'recipientLocale' => (string) ($job['recipient_locale'] ?? 'fr'),
             'targetUrl' => (string) $job['target_url'],
             'createdAt' => (string) $job['created_at'],
         ];
+    }
+
+    /** @return array<string, scalar|null> */
+    private static function messageParameters(mixed $value): array
+    {
+        $decoded = is_string($value) ? json_decode($value, true) : $value;
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $parameters = [];
+        foreach ($decoded as $name => $parameter) {
+            if (is_string($name) && (is_scalar($parameter) || $parameter === null)) {
+                $parameters[$name] = $parameter;
+            }
+        }
+
+        return $parameters;
     }
 }

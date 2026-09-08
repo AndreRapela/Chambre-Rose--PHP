@@ -14,6 +14,7 @@ use ChambreRose\Database;
 use ChambreRose\DatabaseMigrator;
 use ChambreRose\NotificationOutboxRepository;
 use ChambreRose\NotificationRepository;
+use ChambreRose\NotificationRetentionService;
 use ChambreRose\PushNotificationService;
 use ChambreRose\PushNotificationWorker;
 use ChambreRose\RealtimeEventRepository;
@@ -38,7 +39,22 @@ try {
         Config::int('PUSH_OUTBOX_RETRY_MAX_SECONDS', 3600)
     );
     $realtimeEvents = new RealtimeEventRepository($pdo);
+    $notificationRetention = new NotificationRetentionService($pdo);
+    $readRetentionDays = max(1, Config::int('NOTIFICATION_READ_RETENTION_DAYS', 90));
+    $unreadRetentionDays = max(
+        $readRetentionDays,
+        Config::int('NOTIFICATION_UNREAD_RETENTION_DAYS', 365)
+    );
+    $notificationPurgeBatch = max(
+        1,
+        min(5000, Config::int('NOTIFICATION_RETENTION_BATCH_SIZE', 500))
+    );
+    $notificationPurgeInterval = max(
+        300,
+        Config::int('NOTIFICATION_RETENTION_INTERVAL_SECONDS', 3600)
+    );
     $nextRealtimePurgeAt = 0;
+    $nextNotificationPurgeAt = 0;
 
     do {
         $expiredRealtimeEvents = 0;
@@ -48,13 +64,30 @@ try {
             );
             $nextRealtimePurgeAt = time() + 3600;
         }
+        $expiredNotifications = 0;
+        if (time() >= $nextNotificationPurgeAt) {
+            $expiredNotifications = $notificationRetention->purgeBatch(
+                $readRetentionDays,
+                $unreadRetentionDays,
+                $notificationPurgeBatch
+            );
+            $nextNotificationPurgeAt = $expiredNotifications >= $notificationPurgeBatch
+                ? time()
+                : time() + $notificationPurgeInterval;
+        }
         $summary = $worker->processBatch($batchSize, $workerId, $lockTimeout);
-        if (!$watch || $summary['claimed'] > 0 || $expiredRealtimeEvents > 0) {
+        if (
+            !$watch
+            || $summary['claimed'] > 0
+            || $expiredRealtimeEvents > 0
+            || $expiredNotifications > 0
+        ) {
             fwrite(STDOUT, json_encode(
                 [
                     'worker' => $workerId,
                     'timestamp' => gmdate('c'),
                     'expiredRealtimeEvents' => $expiredRealtimeEvents,
+                    'expiredNotifications' => $expiredNotifications,
                 ] + $summary,
                 JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES
             ) . PHP_EOL);

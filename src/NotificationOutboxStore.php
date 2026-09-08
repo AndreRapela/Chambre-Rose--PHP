@@ -13,7 +13,7 @@ interface NotificationOutboxStore
      */
     public function transaction(callable $operation): mixed;
 
-    public function enqueue(int $notificationId, int $userId, int $maxAttempts): void;
+    public function enqueue(int $notificationId, int $userId, int $maxAttempts, ?string $availableAt = null): void;
 
     /** @return list<array<string, mixed>> */
     public function claim(int $limit, string $workerId, int $lockTimeoutSeconds): array;

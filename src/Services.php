@@ -43,6 +43,12 @@ final class AuthService
         if ($user['approvalStatus'] === 'REJECTED') {
             throw new ApiException(403, 'Your account was not approved. Contact support for assistance.', ['approvalStatus' => 'REJECTED']);
         }
+        if (array_key_exists('locale', $input)) {
+            $locale = strtolower(trim((string) $input['locale']));
+            if (in_array($locale, ['en', 'fr'], true) && $locale !== $user['locale']) {
+                $user = $this->users->updateLocale((int) $user['id'], $locale);
+            }
+        }
 
         return $this->authenticationResponse($user);
     }
@@ -168,13 +174,29 @@ final class AuthService
             (int) $updated['id'],
             UserNotificationService::ACCOUNT,
             'PROFILE_UPDATED',
-            'Account details updated',
-            'Your Chambre Rose account details were updated successfully.',
             '/espace-prive/perfil',
             null
         );
 
         return $this->authenticationResponse($updated);
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
+    public function updateLocale(string $currentEmail, array $input): array
+    {
+        $locale = strtolower(trim((string) ($input['locale'] ?? '')));
+        if (!in_array($locale, ['en', 'fr'], true)) {
+            throw new ApiException(400, 'Locale must be en or fr.', ['locale' => 'must be en or fr']);
+        }
+        $user = $this->users->findByEmail(strtolower(trim($currentEmail)));
+        if ($user === null) {
+            throw new ApiException(404, 'User profile not found.');
+        }
+
+        return self::profileFromUser($this->users->updateLocale((int) $user['id'], $locale));
     }
 
     /**
@@ -247,8 +269,6 @@ final class AuthService
                     (int) $user['id'],
                     UserNotificationService::SECURITY,
                     'PASSWORD_RESET_REQUESTED',
-                    'Password reset requested',
-                    'Password reset instructions were requested for your account. Contact support if this was not you.',
                     '/contenu/contact',
                     null
                 );
@@ -279,8 +299,6 @@ final class AuthService
             $userId,
             UserNotificationService::SECURITY,
             'PASSWORD_CHANGED',
-            'Password changed',
-            'Your Chambre Rose password was changed. Contact support if this was not you.',
             '/contenu/contact',
             null
         );

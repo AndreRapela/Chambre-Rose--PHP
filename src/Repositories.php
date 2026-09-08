@@ -159,6 +159,17 @@ final class UserRepository
         return $this->find($id) ?? throw new ApiException(404, 'User profile not found.');
     }
 
+    /** @return array<string, mixed> */
+    public function updateLocale(int $id, string $locale): array
+    {
+        $statement = $this->pdo->prepare(
+            'UPDATE users SET locale=:locale,updated_at=CURRENT_TIMESTAMP WHERE id=:id'
+        );
+        $statement->execute(['id' => $id, 'locale' => $locale]);
+
+        return $this->find($id) ?? throw new ApiException(404, 'User profile not found.');
+    }
+
     /** @return list<array<string, mixed>> */
     public function list(
         ?string $email,

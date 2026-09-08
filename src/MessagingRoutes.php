@@ -59,10 +59,9 @@ final class MessagingRoutes implements RouteHandler
                     $recipientId,
                     UserNotificationService::DIRECT_MESSAGE,
                     'MESSAGE_RECEIVED',
-                    'New private message',
-                    'You received a private message from ' . ($senderName === '' ? 'a member' : $senderName) . '.',
                     '/mensagens/' . $conversationId,
-                    'message:' . (int) $message['id']
+                    'message:' . (int) $message['id'],
+                    ['senderName' => $senderName]
                 );
                 $this->realtimeEvents->publishForUsers(
                     [$userId, $recipientId],
