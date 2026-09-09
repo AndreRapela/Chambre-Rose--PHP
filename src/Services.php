@@ -340,27 +340,48 @@ final class AdminUserService
     ) {
     }
 
-    /** @return list<array<string, mixed>> */
+    /** @return array{items:list<array<string,mixed>>,page:int,pageSize:int,total:int,totalPages:int} */
     public function list(
         ?string $email,
         ?string $name,
         string $sort,
         ?string $approvalStatus = null,
-        ?string $role = null
+        ?string $role = null,
+        int $page = 1,
+        int $pageSize = 25
     ): array {
         $email = self::clean($email);
         $name = self::clean($name);
         $approvalStatus = self::enum($approvalStatus, ['PENDING', 'APPROVED', 'REJECTED'], 'approvalStatus');
         $role = self::enum($role, ['ADMIN', 'VISITOR', 'ESCORT', 'STORE'], 'role');
-
-        return array_map(function (array $user): array {
+        $result = $this->users->paginate(
+            $email,
+            $name,
+            $sort,
+            $approvalStatus,
+            $role,
+            max(1, $page),
+            max(10, min(100, $pageSize))
+        );
+        $professionalIds = array_values(array_map(
+            static fn (array $user): int => (int) $user['id'],
+            array_filter(
+                $result['items'],
+                static fn (array $user): bool => in_array($user['role'], ['ESCORT', 'STORE'], true)
+            )
+        ));
+        $professionalProfiles = $this->profiles?->findAdminSummariesByUserIds($professionalIds) ?? [];
+        $result['items'] = array_map(function (array $user) use ($professionalProfiles): array {
             $summary = self::summary($user);
-            if ($this->profiles !== null && in_array($user['role'], ['ESCORT', 'STORE'], true)) {
-                $summary['professionalProfile'] = $this->profiles->findByUser((int) $user['id']);
+            $userId = (int) $user['id'];
+            if (isset($professionalProfiles[$userId])) {
+                $summary['professionalProfile'] = $professionalProfiles[$userId];
             }
 
             return $summary;
-        }, $this->users->list($email, $name, $sort, $approvalStatus, $role));
+        }, $result['items']);
+
+        return $result;
     }
 
     /** @return array<string, mixed> */

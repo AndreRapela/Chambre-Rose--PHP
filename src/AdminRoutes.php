@@ -26,7 +26,9 @@ final class AdminRoutes implements RouteHandler
                 self::queryString($request, 'name'),
                 self::queryString($request, 'sort') ?? 'newest',
                 self::queryString($request, 'approvalStatus'),
-                self::queryString($request, 'role')
+                self::queryString($request, 'role'),
+                self::queryInt($request, 'page', 1),
+                self::queryInt($request, 'pageSize', 25)
             ));
         }
         if ($method === 'PATCH' && preg_match('#^/api/admin/users/(\d+)/vip$#', $path, $match)) {
@@ -97,5 +99,14 @@ final class AdminRoutes implements RouteHandler
         $value = $request->query[$name] ?? null;
 
         return is_scalar($value) ? (string) $value : null;
+    }
+
+    private static function queryInt(Request $request, string $name, int $fallback): int
+    {
+        $value = $request->query[$name] ?? null;
+
+        return is_scalar($value) && filter_var($value, FILTER_VALIDATE_INT) !== false
+            ? max(1, (int) $value)
+            : $fallback;
     }
 }

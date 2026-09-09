@@ -9,10 +9,12 @@ putenv('APP_ENV=production');
 require dirname(__DIR__) . '/bootstrap.php';
 
 use ChambreRose\ApiException;
+use ChambreRose\AdminUserService;
 use ChambreRose\App;
 use ChambreRose\AuthSessionCookie;
 use ChambreRose\HttpByteRange;
 use ChambreRose\Jwt;
+use ChambreRose\LocationNormalizer;
 use ChambreRose\MultipartParser;
 use ChambreRose\NotificationRepository;
 use ChambreRose\NotificationOutboxStore;
@@ -24,6 +26,7 @@ use ChambreRose\PushNotificationSender;
 use ChambreRose\PushNotificationWorker;
 use ChambreRose\PushDeviceCookie;
 use ChambreRose\ProductImageRepository;
+use ChambreRose\ProfessionalProfileRepository;
 use ChambreRose\ProfileMediaRepository;
 use ChambreRose\RealtimeEventRepository;
 use ChambreRose\RealtimeRoutes;
@@ -33,6 +36,7 @@ use ChambreRose\ResponsiveImageVariantRepository;
 use ChambreRose\Request;
 use ChambreRose\Response;
 use ChambreRose\UploadedFile;
+use ChambreRose\UserRepository;
 use ChambreRose\UserNotificationService;
 use ChambreRose\Validator;
 
@@ -132,6 +136,17 @@ $assert = static function (bool $condition, string $message) use (&$tests): void
         throw new RuntimeException($message);
     }
 };
+
+$assert(
+    LocationNormalizer::key('  Île-de-France  ', 100) === 'ile de france'
+    && LocationNormalizer::key('São   Paulo', 80) === 'sao paulo',
+    'Location matching must ignore accents, punctuation and repeated whitespace.'
+);
+$assert(
+    LocationNormalizer::countryKey('Belgique') === 'belgium'
+    && in_array('brasil', LocationNormalizer::countryKeys('Brazil'), true),
+    'Common translated country names must share one ranking key.'
+);
 
 $memoryOutbox = new MemoryNotificationOutbox();
 $controlledPush = new ControlledPushSender();
@@ -258,6 +273,80 @@ $assert(
     'A tampered Push device cookie must not revoke a subscription.'
 );
 if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    $adminDatabase = new PDO('sqlite::memory:');
+    $adminDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $adminDatabase->exec(<<<'SQL'
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL,
+          first_name TEXT NOT NULL, last_name TEXT NOT NULL, phone TEXT NOT NULL,
+          address TEXT NOT NULL, city TEXT NOT NULL, country TEXT NOT NULL, postal_code TEXT NOT NULL,
+          role TEXT NOT NULL, approval_status TEXT NOT NULL, approval_reason TEXT NULL,
+          review_deadline TEXT NULL, approved_at TEXT NULL, locale TEXT NOT NULL,
+          vip_active INTEGER NOT NULL, vip_since TEXT NULL, vip_until TEXT NULL,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE professional_profiles (
+          user_id INTEGER PRIMARY KEY, profile_type TEXT NOT NULL, display_name TEXT NOT NULL,
+          business_name TEXT NULL, segment TEXT NULL, location TEXT NULL,
+          location_city TEXT NULL, location_region TEXT NULL, location_country TEXT NULL
+        );
+        SQL);
+    $adminUserInsert = $adminDatabase->prepare(
+        'INSERT INTO users (id,email,password_hash,first_name,last_name,phone,address,city,country,'
+        . 'postal_code,role,approval_status,approval_reason,review_deadline,approved_at,locale,'
+        . 'vip_active,vip_since,vip_until,created_at,updated_at) VALUES '
+        . '(:id,:email,:password_hash,:first_name,:last_name,:phone,:address,:city,:country,'
+        . ':postal_code,:role,:approval_status,NULL,NULL,NULL,:locale,0,NULL,NULL,:created_at,:updated_at)'
+    );
+    $adminProfileInsert = $adminDatabase->prepare(
+        'INSERT INTO professional_profiles (user_id,profile_type,display_name,business_name,segment,'
+        . 'location,location_city,location_region,location_country) VALUES '
+        . '(:user_id,:profile_type,:display_name,NULL,:segment,NULL,:city,:region,:country)'
+    );
+    for ($index = 1; $index <= 30; $index++) {
+        $createdAt = sprintf('2026-09-%02d 10:00:00', (($index - 1) % 28) + 1);
+        $adminUserInsert->execute([
+            'id' => $index,
+            'email' => "professional-{$index}@example.test",
+            'password_hash' => 'hash',
+            'first_name' => 'Rose',
+            'last_name' => (string) $index,
+            'phone' => '12345678',
+            'address' => '',
+            'city' => 'Brussels',
+            'country' => 'Belgium',
+            'postal_code' => '',
+            'role' => 'ESCORT',
+            'approval_status' => 'PENDING',
+            'locale' => 'en',
+            'created_at' => $createdAt,
+            'updated_at' => $createdAt,
+        ]);
+        $adminProfileInsert->execute([
+            'user_id' => $index,
+            'profile_type' => 'ESCORT',
+            'display_name' => "Profile {$index}",
+            'segment' => 'Massage',
+            'city' => 'Brussels',
+            'region' => 'Brussels-Capital',
+            'country' => 'Belgium',
+        ]);
+    }
+    $adminPage = (new AdminUserService(
+        new UserRepository($adminDatabase),
+        null,
+        new ProfessionalProfileRepository($adminDatabase)
+    ))->list(null, null, 'newest', 'PENDING', null, 2, 10);
+    $assert(
+        $adminPage['page'] === 2
+        && $adminPage['pageSize'] === 10
+        && $adminPage['total'] === 30
+        && $adminPage['totalPages'] === 3
+        && count($adminPage['items']) === 10
+        && isset($adminPage['items'][0]['professionalProfile']['displayName']),
+        'Administrator accounts must use bounded pagination and one lightweight profile summary batch.'
+    );
+
     $notificationDatabase = new PDO('sqlite::memory:');
     $notificationDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $notificationDatabase->exec(
@@ -507,6 +596,32 @@ try {
     $assert($exception->status === 400 && isset($exception->fields['email']), 'Registration must report field errors.');
 }
 
+try {
+    Validator::register([
+        'firstName' => 'Ana', 'lastName' => 'Silva', 'email' => 'ana@example.com',
+        'phone' => '12345', 'password' => 'Strong9!pass',
+    ]);
+    $assert(false, 'A short phone number must fail registration.');
+} catch (ApiException $exception) {
+    $assert(
+        ($exception->fields['phone'] ?? null) === 'Enter a phone number with 8 to 15 digits.',
+        'Registration must explain the required phone digit count.'
+    );
+}
+
+try {
+    Validator::register([
+        'firstName' => 'Ana', 'lastName' => 'Silva', 'email' => 'ana@example.com',
+        'phone' => 'call-me-now', 'password' => 'Strong9!pass',
+    ]);
+    $assert(false, 'Letters must not be accepted as a phone number.');
+} catch (ApiException $exception) {
+    $assert(
+        ($exception->fields['phone'] ?? null) === 'Use only numbers and common phone symbols.',
+        'Registration must explain an unsupported phone format.'
+    );
+}
+
 $visitor = Validator::register([
     'firstName' => 'Ana', 'lastName' => 'Silva', 'email' => 'ana@example.com',
     'phone' => '12345678', 'password' => 'Strong9!pass',
@@ -534,9 +649,19 @@ $assert($image->detectedContentType() === 'image/png', 'Uploaded image type must
 $assert($image->actualSize() === strlen($png), 'Uploaded image size must come from its bytes.');
 
 $imageProcessor = new ResponsiveImageProcessor();
-$responsiveVariants = $imageProcessor->generate($png);
+$tinyVariants = $imageProcessor->generate($png);
+$wideSource = imagecreatetruecolor(800, 400);
+$assert($wideSource instanceof GdImage, 'Responsive image fixture must be allocated.');
+imagefilledrectangle($wideSource, 0, 0, 799, 399, imagecolorallocate($wideSource, 157, 32, 73));
+ob_start();
+imagepng($wideSource);
+$widePng = ob_get_clean();
+imagedestroy($wideSource);
+$assert(is_string($widePng), 'Responsive image fixture must be encoded.');
+$responsiveVariants = $imageProcessor->generate($widePng);
 $assert(
-    array_column($responsiveVariants, 'width') === [320, 640, 960, 1280]
+    $tinyVariants === []
+    && array_column($responsiveVariants, 'width') === [320, 640]
     && array_reduce(
         $responsiveVariants,
         static fn (bool $valid, array $variant): bool => $valid
@@ -545,12 +670,12 @@ $assert(
             && substr($variant['bytes'], 8, 4) === 'WEBP',
         true
     ),
-    'Uploaded photos must produce valid 320, 640, 960 and 1280 pixel WebP variants.'
+    'Responsive photos must create valid WebP variants without enlarging their source.'
 );
 $assert(
-    ResponsiveImageService::srcSet('/api/profiles/9/media/2')
-        === '/api/profiles/9/media/2/320.webp 320w, /api/profiles/9/media/2/640.webp 640w, /api/profiles/9/media/2/960.webp 960w, /api/profiles/9/media/2/1280.webp 1280w',
-    'Responsive image metadata must expose standards-compliant width descriptors.'
+    ResponsiveImageService::srcSet('/api/profiles/9/media/2', [640, 320])
+        === '/api/profiles/9/media/2/320.webp 320w, /api/profiles/9/media/2/640.webp 640w',
+    'Responsive image metadata must expose only available, ordered width descriptors.'
 );
 
 $closedRange = HttpByteRange::parse('bytes=2-5', 10);
@@ -613,15 +738,26 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         new ResponsiveImageVariantRepository($responsiveImageDatabase)
     );
     $responsiveProductImages = new ProductImageRepository($responsiveImageDatabase, $responsiveImageService);
-    $responsiveProductImages->put(44, 'MAIN', $image);
+    $responsiveImage = new UploadedFile('wide.png', 'image/png', strlen($widePng), null, $widePng);
+    $responsiveProductImages->put(44, 'MAIN', $responsiveImage);
     $storedProductVariant = $responsiveProductImages->responsive(44, 'MAIN', 320);
     $assert(
         $storedProductVariant['width'] === 320
         && $storedProductVariant['contentType'] === 'image/webp'
         && str_starts_with($storedProductVariant['bytes'], 'RIFF')
-        && (int) $responsiveImageDatabase->query('SELECT COUNT(*) FROM responsive_image_variants')->fetchColumn() === 4,
-        'Product uploads must atomically persist all responsive WebP variants.'
+        && (int) $responsiveImageDatabase->query('SELECT COUNT(*) FROM responsive_image_variants')->fetchColumn() === 2,
+        'Product uploads must atomically persist only non-upscaled responsive WebP variants.'
     );
+    try {
+        $responsiveProductImages->responsive(44, 'MAIN', 960);
+        $assert(false, 'A responsive endpoint must not enlarge an 800-pixel source to 960 pixels.');
+    } catch (ApiException $exception) {
+        $assert(
+            $exception->status === 404
+            && (int) $responsiveImageDatabase->query('SELECT COUNT(*) FROM responsive_image_variants')->fetchColumn() === 2,
+            'Unavailable oversized variants must return 404 without creating an upscaled file.'
+        );
+    }
 
     $mediaDatabase = new PDO('sqlite::memory:');
     $mediaDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -630,6 +766,30 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         . 'id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,media_type TEXT NOT NULL,file_name TEXT NOT NULL,'
         . 'content_type TEXT NOT NULL,size_bytes INTEGER NOT NULL,media_data BLOB NOT NULL,'
         . 'position INTEGER NOT NULL,created_at TEXT NOT NULL)'
+    );
+    $mediaDatabase->exec(
+        'CREATE TABLE responsive_image_variants ('
+        . 'profile_media_id INTEGER,width INTEGER NOT NULL)'
+    );
+    $mediaDatabase->exec(
+        "INSERT INTO profile_media (id,user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) VALUES"
+        . " (1,7,'PHOTO','later.jpg','image/jpeg',1,X'01',5,'2026-09-08 00:00:00'),"
+        . " (2,7,'PHOTO','cover.jpg','image/jpeg',1,X'02',1,'2026-09-08 00:00:00'),"
+        . " (4,8,'PHOTO','other.jpg','image/jpeg',1,X'03',0,'2026-09-08 00:00:00')"
+    );
+    $mediaDatabase->exec(
+        'INSERT INTO responsive_image_variants (profile_media_id,width) VALUES (1,320),(2,320),(2,640),(4,320)'
+    );
+    $profileMedia = new ProfileMediaRepository($mediaDatabase);
+    $covers = $profileMedia->firstPhotosForUsers([7, 8, 99], true);
+    $assert(
+        count($covers[7]) === 1
+        && (int) $covers[7][0]['id'] === 2
+        && ($covers[7][0]['srcSet'] ?? '') === '/api/profiles/7/media/2/320.webp 320w, /api/profiles/7/media/2/640.webp 640w'
+        && !array_key_exists('fileName', $covers[7][0])
+        && count($covers[8]) === 1
+        && $covers[99] === [],
+        'Listing cards must receive only each profile\'s first public photo and its available variants.'
     );
     $videoFixture = '0123456789abcdefghijklmnopqrstuvwxyz';
     $insertMedia = $mediaDatabase->prepare(
@@ -641,7 +801,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     $insertMedia->bindValue(':data', $videoFixture, PDO::PARAM_LOB);
     $insertMedia->execute();
     $mediaChunks = iterator_to_array(
-        (new ProfileMediaRepository($mediaDatabase))->chunks(7, 3, 2, 7, 3),
+        $profileMedia->chunks(7, 3, 2, 7, 3),
         false
     );
     $assert(

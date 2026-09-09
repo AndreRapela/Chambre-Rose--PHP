@@ -12,6 +12,7 @@ final class IntegrationDataCleanup
     private const EMAIL_PREFIXES = [
         'visitor',
         'profile',
+        'store-profile',
         'weak-password',
         'future-profile',
         'unsafe-website',

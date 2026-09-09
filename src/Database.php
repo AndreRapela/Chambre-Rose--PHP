@@ -308,6 +308,20 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-19-profile-price-options',
+                'file' => dirname(__DIR__) . '/database/migrations/019-profile-price-options.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-20-profile-location-ranking',
+                'file' => dirname(__DIR__) . '/database/migrations/020-profile-location-ranking.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 

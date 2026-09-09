@@ -26,7 +26,7 @@ final class ListingRoutes implements RouteHandler
             return ApiResponder::json($this->marketplace->listings($request->query));
         }
         if ($method === 'GET' && preg_match('#^/api/listings/(\d+)$#', $path, $match)) {
-            return ApiResponder::json($this->marketplace->publicProfile((int) $match[1]));
+            return ApiResponder::json($this->marketplace->visitPublicProfile((int) $match[1]));
         }
         if ($method === 'GET' && preg_match('#^/api/listings/(\d+)/contact$#', $path, $match)) {
             return ApiResponder::json(
@@ -195,15 +195,11 @@ final class ListingRoutes implements RouteHandler
         $user = $this->guard->currentUser($request);
 
         if ($method === 'GET' && $path === '/api/favorites') {
-            $items = [];
-            foreach ($this->favorites->ids((int) $user['id']) as $id) {
-                try {
-                    $items[] = $this->marketplace->publicProfile($id);
-                } catch (ApiException) {
-                }
-            }
-
-            return ApiResponder::json(['items' => $items]);
+            return ApiResponder::json([
+                'items' => $this->marketplace->publicListingsByUserIds(
+                    $this->favorites->ids((int) $user['id'])
+                ),
+            ]);
         }
         if ($method === 'POST' && preg_match('#^/api/favorites/(\d+)$#', $path, $match)) {
             $target = (int) $match[1];

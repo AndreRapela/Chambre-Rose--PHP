@@ -41,6 +41,9 @@ final class ResponsiveImageService
         }
 
         $generated = $this->processor->generate($sourceBytes, [$width]);
+        if ($generated === []) {
+            throw new ApiException(404, 'Responsive image size is larger than the source image.');
+        }
         $this->variants->save($ownerType, $ownerId, $sourceHash, $generated);
 
         return $this->variants->find($ownerType, $ownerId, $width, $sourceHash)
@@ -55,11 +58,19 @@ final class ResponsiveImageService
         return $this->variants->find($ownerType, $ownerId, $width);
     }
 
-    public static function srcSet(string $baseUrl): string
+    /** @param list<int>|null $widths */
+    public static function srcSet(string $baseUrl, ?array $widths = null): string
     {
+        $availableWidths = array_values(array_unique($widths ?? ResponsiveImageProcessor::WIDTHS));
+        $availableWidths = array_values(array_filter(
+            $availableWidths,
+            static fn (int $width): bool => in_array($width, ResponsiveImageProcessor::WIDTHS, true)
+        ));
+        sort($availableWidths, SORT_NUMERIC);
+
         return implode(', ', array_map(
             static fn (int $width): string => $baseUrl . '/' . $width . '.webp ' . $width . 'w',
-            ResponsiveImageProcessor::WIDTHS
+            $availableWidths
         ));
     }
 

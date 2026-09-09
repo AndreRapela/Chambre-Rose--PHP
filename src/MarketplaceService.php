@@ -55,11 +55,52 @@ final class MarketplaceService
     /** @return array<string, mixed> */
     public function publicProfile(int $userId): array
     {
-        $this->profiles->incrementViews($userId);
         $profile = $this->profiles->findByUser($userId, true) ?? throw new ApiException(404, 'Listing not found.');
         $profile['reviews'] = $this->profiles->reviews($userId);
 
         return $this->withMedia($profile, true);
+    }
+
+    /** @return array<string, mixed> */
+    public function visitPublicProfile(int $userId): array
+    {
+        $profile = $this->publicProfile($userId);
+        $this->profiles->incrementViews($userId);
+        $profile['viewsCount'] = (int) ($profile['viewsCount'] ?? 0) + 1;
+
+        return $profile;
+    }
+
+    /**
+     * @param list<int> $userIds
+     * @return list<array<string, mixed>>
+     */
+    public function publicListingsByUserIds(array $userIds): array
+    {
+        $userIds = array_values(array_unique(array_filter(
+            $userIds,
+            static fn (int $userId): bool => $userId > 0
+        )));
+        if ($userIds === []) {
+            return [];
+        }
+
+        $profilesByUser = [];
+        foreach ($this->profiles->findPublicListingsByUserIds($userIds) as $profile) {
+            $profilesByUser[(int) $profile['userId']] = $profile;
+        }
+        $mediaByUser = $this->media->firstPhotosForUsers($userIds, true);
+        $result = [];
+        foreach ($userIds as $userId) {
+            if (!isset($profilesByUser[$userId])) {
+                continue;
+            }
+            $profile = $profilesByUser[$userId];
+            $profile['media'] = $mediaByUser[$userId] ?? [];
+            $result[] = $profile;
+        }
+
+        return $result;
     }
 
     /**
@@ -136,7 +177,7 @@ final class MarketplaceService
             static fn (array $profile): int => (int) $profile['userId'],
             $result['items']
         );
-        $mediaByUser = $this->media->listForUsers($userIds, true);
+        $mediaByUser = $this->media->firstPhotosForUsers($userIds, true);
         $result['items'] = array_map(
             static function (array $profile) use ($mediaByUser): array {
                 $profile['media'] = $mediaByUser[(int) $profile['userId']] ?? [];
@@ -196,7 +237,9 @@ final class MarketplaceService
             }
         }
 
-        return $media;
+        return $type === 'PHOTO'
+            ? ($this->media->metadata($userId, (int) $media['id']) ?? $media)
+            : $media;
     }
 
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string} */
@@ -237,8 +280,10 @@ final class MarketplaceService
             $errors['displayName'] = 'must contain between 1 and 120 characters';
         }
         $data = ['displayName' => $display];
-        foreach (['gender' => 40,'location' => 160,'bio' => 3000,'hair' => 60,'eyes' => 60,'origin' => 80,'availability' => 500,'website' => 300,'businessName' => 160,'legalName' => 160,'segment' => 100,'businessAddress' => 200,'businessHours' => 500,'contactEmail' => 160,'responseTime' => 40] as $field => $max) {
-            $value = isset($input[$field]) ? trim((string)$input[$field]) : '';
+        foreach (['gender' => 40,'location' => 260,'locationCity' => 80,'locationRegion' => 100,'locationCountry' => 80,'bio' => 3000,'hair' => 60,'eyes' => 60,'origin' => 80,'availability' => 500,'website' => 300,'businessName' => 160,'legalName' => 160,'segment' => 100,'businessAddress' => 200,'businessHours' => 500,'contactEmail' => 160,'responseTime' => 40] as $field => $max) {
+            $value = in_array($field, ['location', 'locationCity', 'locationRegion', 'locationCountry'], true)
+                ? LocationNormalizer::display($input[$field] ?? '')
+                : (isset($input[$field]) ? trim((string)$input[$field]) : '');
             if (self::len($value) > $max) {
                 $errors[$field] = "cannot exceed {$max} characters";
             }
@@ -273,12 +318,15 @@ final class MarketplaceService
             $items = array_filter($items, static fn (string $item) => $item !== '' && self::len($item) <= 80);
             $data[$field] = array_values(array_unique($items));
         }
-        foreach (['priceFrom','priceTo'] as $field) {
+        foreach (['priceFrom','priceTo','priceHour','priceNight','priceWeekend'] as $field) {
             $value = $input[$field] ?? null;
             if ($value !== null && $value !== '' && (!is_numeric($value) || (float)$value < 0 || (float)$value > 99999999.99)) {
                 $errors[$field] = 'must be a valid non-negative amount';
             }
             $data[$field] = $value === null || $value === '' ? null : (float)$value;
+        }
+        if (!array_key_exists('priceHour', $input) && $data['priceFrom'] !== null) {
+            $data['priceHour'] = $data['priceFrom'];
         }
         if ($data['priceFrom'] !== null && $data['priceTo'] !== null && $data['priceFrom'] > $data['priceTo']) {
             $errors['priceTo'] = 'must be greater than or equal to priceFrom';
@@ -333,9 +381,27 @@ final class MarketplaceService
                 $errors['segment'] = 'is required';
             }
         }
-        if ($data['location'] === null) {
-            $data['location'] = $user['city'];
+        $legacyLocation = array_values(array_filter(array_map(
+            static fn (string $part): string => trim($part),
+            explode(',', (string) ($data['location'] ?? ''))
+        )));
+        $accountCity = trim((string) ($user['city'] ?? ''));
+        $accountCountry = trim((string) ($user['country'] ?? ''));
+        $data['locationCity'] ??= $legacyLocation[0] ?? ($accountCity !== '' ? $accountCity : null);
+        $data['locationCountry'] ??= count($legacyLocation) > 1
+            ? $legacyLocation[array_key_last($legacyLocation)]
+            : ($accountCountry !== '' ? $accountCountry : null);
+        if ($data['locationCity'] === null) {
+            $errors['locationCity'] = 'is required';
         }
+        if ($data['locationCountry'] === null) {
+            $errors['locationCountry'] = 'is required';
+        }
+        $data['location'] = implode(', ', array_filter([
+            $data['locationCity'],
+            $data['locationRegion'],
+            $data['locationCountry'],
+        ]));
         if ($errors !== []) {
             throw new ApiException(400, 'Invalid professional profile data.', $errors);
         }

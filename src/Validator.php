@@ -32,7 +32,8 @@ final class Validator
         self::requiredString($data, 'lastName', 2, 80, $errors);
         self::requiredString($data, 'email', 1, 160, $errors);
         self::email($data, 'email', $errors);
-        self::requiredString($data, 'phone', 8, 40, $errors);
+        self::requiredString($data, 'phone', 1, 40, $errors);
+        self::phone($data, 'phone', $errors);
         self::optionalString($data, 'address', 160, $errors);
         self::optionalString($data, 'city', 80, $errors);
         self::optionalString($data, 'country', 80, $errors);
@@ -160,6 +161,28 @@ final class Validator
     {
         if (isset($data[$field]) && is_string($data[$field]) && filter_var(trim($data[$field]), FILTER_VALIDATE_EMAIL) === false) {
             $errors[$field] = 'must be a well-formed email address';
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @param array<string, string> $errors
+     */
+    private static function phone(array $data, string $field, array &$errors): void
+    {
+        if (isset($errors[$field]) || !isset($data[$field]) || !is_string($data[$field])) {
+            return;
+        }
+        $value = trim($data[$field]);
+        if (!preg_match('/^\+?[0-9()\s.\/-]+$/', $value)) {
+            $errors[$field] = 'Use only numbers and common phone symbols.';
+
+            return;
+        }
+        $digits = preg_replace('/\D+/', '', $value) ?? '';
+        $digitCount = strlen($digits);
+        if ($digitCount < 8 || $digitCount > 15) {
+            $errors[$field] = 'Enter a phone number with 8 to 15 digits.';
         }
     }
 

@@ -44,14 +44,23 @@ final class ResponsiveImageProcessor
             throw new ApiException(400, 'The uploaded image could not be decoded.');
         }
 
-        $targetWidths = array_values(array_unique($widths ?? self::WIDTHS));
+        $requestedWidths = array_values(array_unique($widths ?? self::WIDTHS));
         $targetWidths = array_values(array_filter(
-            $targetWidths,
+            $requestedWidths,
             static fn (int $width): bool => in_array($width, self::WIDTHS, true)
         ));
         if ($targetWidths === []) {
             imagedestroy($source);
             throw new ApiException(400, 'Unsupported responsive image width.');
+        }
+        $targetWidths = array_values(array_filter(
+            $targetWidths,
+            static fn (int $width): bool => $width <= $sourceWidth
+        ));
+        if ($targetWidths === []) {
+            imagedestroy($source);
+
+            return [];
         }
 
         $variants = [];
@@ -71,7 +80,7 @@ final class ResponsiveImageProcessor
                     imagesavealpha($target, true);
                     $transparent = imagecolorallocatealpha($target, 0, 0, 0, 127);
                     imagefilledrectangle($target, 0, 0, $targetWidth, $targetHeight, $transparent);
-                    if (!imagecopyresampled(
+                    imagecopyresampled(
                         $target,
                         $source,
                         0,
@@ -82,9 +91,7 @@ final class ResponsiveImageProcessor
                         $targetHeight,
                         $sourceWidth,
                         $sourceHeight
-                    )) {
-                        throw new ApiException(503, 'Unable to resize the uploaded image.');
-                    }
+                    );
 
                     ob_start();
                     try {

@@ -234,9 +234,10 @@ $assert(
 
 $profile = json_encode([
     'displayName' => $profileName, 'birthDate' => '1995-05-12', 'gender' => 'woman',
-    'location' => 'Brussels', 'bio' => 'Integration profile', 'languages' => ['fr'],
+    'locationCity' => 'Saint-Gilles', 'locationRegion' => 'Brussels-Capital', 'locationCountry' => 'Belgium',
+    'bio' => 'Integration profile', 'languages' => ['fr'],
     'services' => ['massage'], 'contactEmail' => "contact-{$runId}@example.com",
-    'responseTime' => 'FEW_HOURS',
+    'responseTime' => 'FEW_HOURS', 'priceHour' => 50, 'priceNight' => 250,
 ], JSON_THROW_ON_ERROR);
 $boundary = 'integration-' . bin2hex(random_bytes(12));
 $fields = [
@@ -261,7 +262,46 @@ $professionalRaw = file_get_contents($base . '/api/auth/register', false, $conte
 preg_match('/\s(\d{3})\s/', $http_response_header[0] ?? '', $statusMatch);
 $professionalStatus = (int)($statusMatch[1] ?? 0);
 $professional = json_decode((string)$professionalRaw, true);
-$assert($professionalStatus === 201 && ($professional['approvalStatus'] ?? null) === 'PENDING', 'Professional registration must be pending.');
+$assert(
+    $professionalStatus === 201 && ($professional['approvalStatus'] ?? null) === 'PENDING',
+    'Companion registration must succeed with one public location and remain pending.'
+);
+
+$storeProfile = json_encode([
+    'displayName' => 'Store Integration ' . $runId,
+    'segment' => 'Intimate wellness',
+    'locationCity' => 'Brussels',
+    'locationRegion' => 'Brussels-Capital',
+    'locationCountry' => 'Belgium',
+    'businessHours' => 'MON,TUE,WED,THU,FRI|10:00|19:00',
+], JSON_THROW_ON_ERROR);
+$storeBoundary = 'store-profile-' . bin2hex(random_bytes(12));
+$storeFields = [
+    'firstName' => 'Store', 'lastName' => 'Integration',
+    'email' => $cleanup->email('store-profile'), 'phone' => '12345678',
+    'password' => 'Integration9!pass', 'accountType' => 'STORE', 'locale' => 'fr',
+    'profile' => $storeProfile,
+];
+$storeParts = [];
+foreach ($storeFields as $name => $value) {
+    $storeParts[] = "--{$storeBoundary}\r\nContent-Disposition: form-data; name=\"{$name}\"\r\n\r\n{$value}\r\n";
+}
+$storeParts[] = "--{$storeBoundary}\r\nContent-Disposition: form-data; name=\"establishmentPhoto\"; filename=\"store.png\"\r\nContent-Type: image/png\r\n\r\n" . file_get_contents($fixture) . "\r\n";
+$storeParts[] = "--{$storeBoundary}--\r\n";
+$storeMultipart = implode('', $storeParts);
+$storeContext = stream_context_create(['http' => [
+    'method' => 'POST',
+    'header' => "Content-Type: multipart/form-data; boundary={$storeBoundary}\r\nContent-Length: " . strlen($storeMultipart),
+    'content' => $storeMultipart,
+    'ignore_errors' => true,
+]]);
+$storeRaw = file_get_contents($base . '/api/auth/register', false, $storeContext);
+preg_match('/\s(\d{3})\s/', $http_response_header[0] ?? '', $storeStatusMatch);
+$storeBody = json_decode((string) $storeRaw, true);
+$assert(
+    (int) ($storeStatusMatch[1] ?? 0) === 201 && ($storeBody['approvalStatus'] ?? null) === 'PENDING',
+    'Store registration must succeed without a duplicate account address or unnecessary business fields.'
+);
 
 $futureProfile = json_encode([
     'displayName' => 'Invalid Future Profile',
@@ -381,7 +421,7 @@ if ($adminPassword !== '') {
     $assert(
         (int) ($productUpdateStatusMatch[1] ?? 0) === 200
         && ($responsiveProduct['imageUrl'] ?? '') === "/api/products/{$productId}/images/main"
-        && str_contains((string) ($responsiveProduct['imageSrcSet'] ?? ''), "/api/products/{$productId}/images/main/1280.webp 1280w")
+        && ($responsiveProduct['imageSrcSet'] ?? '') === "/api/products/{$productId}/images/main/320.webp 320w"
         && (int) ($productVariantStatusMatch[1] ?? 0) === 200
         && is_string($productVariant)
         && str_starts_with($productVariant, 'RIFF')
@@ -404,9 +444,27 @@ if ($adminPassword !== '') {
         && !array_key_exists('rating', $purchasedProduct),
         'A non-VIP visitor must be able to buy a store product and add exactly one star count.'
     );
-    [$usersStatus, $users] = $request('GET', '/api/admin/users', null, $adminCookie);
-    $match = array_values(array_filter($users, static fn (array $user): bool => $user['email'] === $cleanup->email('profile')));
-    $assert($usersStatus === 200 && count($match) === 1, 'Admin must see the pending account.');
+    [$usersStatus, $users] = $request(
+        'GET',
+        '/api/admin/users?email=' . rawurlencode($cleanup->email('profile')) . '&role=ESCORT&page=1&pageSize=10',
+        null,
+        $adminCookie
+    );
+    $match = is_array($users['items'] ?? null) ? $users['items'] : [];
+    $assert($usersStatus === 200, 'Admin account pagination must return HTTP 200.');
+    $assert(
+        count($match) === 1 && (int) ($users['total'] ?? 0) === 1,
+        'Admin account filters must report only the matching registration'
+        . ' (items=' . count($match) . ', total=' . (int) ($users['total'] ?? 0) . ').'
+    );
+    $assert(
+        (int) ($users['page'] ?? 0) === 1 && (int) ($users['pageSize'] ?? 0) === 10,
+        'Admin account pagination must preserve the requested page and page size.'
+    );
+    $assert(
+        isset($match[0]['professionalProfile']['displayName']),
+        'Admin account pages must include a lightweight professional summary.'
+    );
     $id = (int)$match[0]['id'];
     [$adminProfileStatus, $adminProfile] = $request('GET', "/api/profiles/{$id}", null, $adminCookie);
     $mediaId = (int)($adminProfile['media'][0]['id'] ?? 0);
@@ -433,11 +491,52 @@ if ($adminPassword !== '') {
         && !array_key_exists('legalName', $listing)
         && !array_key_exists('businessAddress', $listing)
         && !array_key_exists('contactEmail', $listing)
+        && ($listing['city'] ?? null) === 'Saint-Gilles'
+        && ($listing['province'] ?? null) === 'Brussels-Capital'
+        && ($listing['country'] ?? null) === 'Belgium'
+        && !array_key_exists('priceFrom', $listing)
+        && !array_key_exists('priceTo', $listing)
+        && (float) ($listing['priceHour'] ?? 0) === 50.0
+        && (float) ($listing['priceNight'] ?? 0) === 250.0
+        && ($listing['priceWeekend'] ?? null) === null
         && ($listing['hasContactEmail'] ?? false) === true
-        && str_contains((string) ($listing['media'][0]['srcSet'] ?? ''), "/api/profiles/{$id}/media/{$mediaId}/1280.webp 1280w")
+        && ($listing['media'][0]['srcSet'] ?? '') === "/api/profiles/{$id}/media/{$mediaId}/320.webp 320w"
         && !array_key_exists('fileName', $listing['media'][0] ?? []),
         'Approved listings must expose responsive media and contact availability while withholding private fields.'
     );
+    $viewsStatement = Database::connection()->prepare(
+        'SELECT views_count FROM professional_profiles WHERE user_id=:id'
+    );
+    $viewsStatement->execute(['id' => $id]);
+    $viewsAfterDetail = (int) $viewsStatement->fetchColumn();
+    $assert(
+        (int) ($listing['viewsCount'] ?? 0) === 1 && $viewsAfterDetail === 1,
+        'Opening a public profile detail must record exactly one real visit.'
+    );
+    $additionalPhoto = (string) file_get_contents($fixture);
+    $database = Database::connection();
+    $driver = (string) $database->getAttribute(PDO::ATTR_DRIVER_NAME);
+    if ($driver === 'mysql') {
+        $insertAdditionalPhoto = $database->prepare(
+            'INSERT INTO profile_media '
+            . '(user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) '
+            . "VALUES (:user,'PHOTO','secondary-integration.png','image/png',:size,:data,10,CURRENT_TIMESTAMP(3))"
+        );
+        $insertAdditionalPhoto->bindValue(':user', $id, PDO::PARAM_INT);
+        $insertAdditionalPhoto->bindValue(':size', strlen($additionalPhoto), PDO::PARAM_INT);
+        $insertAdditionalPhoto->bindValue(':data', $additionalPhoto, PDO::PARAM_LOB);
+        $insertAdditionalPhoto->execute();
+    } else {
+        $database->prepare(
+            'INSERT INTO profile_media '
+            . '(user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) '
+            . "VALUES (:user,'PHOTO','secondary-integration.png','image/png',:size,decode(:data,'base64'),10,CURRENT_TIMESTAMP)"
+        )->execute([
+            'user' => $id,
+            'size' => strlen($additionalPhoto),
+            'data' => base64_encode($additionalPhoto),
+        ]);
+    }
     [$listingsStatus, $listings] = $request(
         'GET',
         '/api/listings?pageSize=50&q=' . rawurlencode($profileName)
@@ -449,9 +548,46 @@ if ($adminPassword !== '') {
     $assert(
         $listingsStatus === 200
         && count($listedProfile) === 1
+        && count($listedProfile[0]['media'] ?? []) === 1
         && (int) ($listedProfile[0]['media'][0]['id'] ?? 0) === $mediaId
+        && !array_key_exists('priceFrom', $listedProfile[0])
+        && !array_key_exists('priceTo', $listedProfile[0])
+        && !array_key_exists('priceHour', $listedProfile[0])
+        && !array_key_exists('priceNight', $listedProfile[0])
+        && !array_key_exists('priceWeekend', $listedProfile[0])
         && !array_key_exists('fileName', $listedProfile[0]['media'][0] ?? []),
-        'The listings collection must include batched public media without original file names.'
+        'The listings collection must include public media while withholding names of files and every price.'
+    );
+    [$nearbyStatus, $nearbyListings] = $request(
+        'GET',
+        '/api/listings?type=ESCORT&pageSize=50&nearCity=saint%20gilles&nearRegion=brussels%20capital&nearCountry=Belgique'
+    );
+    $assert(
+        $nearbyStatus === 200
+        && (int) ($nearbyListings['items'][0]['id'] ?? 0) === $id,
+        'Location ranking must ignore accents, punctuation, casing and common translated country names.'
+    );
+    [$favoriteAddStatus] = $request('POST', "/api/favorites/{$id}", [], $visitorCookie);
+    [$favoritesStatus, $favoriteProfiles] = $request('GET', '/api/favorites', null, $visitorCookie);
+    [$favoriteRemoveStatus] = $request('DELETE', "/api/favorites/{$id}", null, $visitorCookie);
+    $favoriteProfile = array_values(array_filter(
+        $favoriteProfiles['items'] ?? [],
+        static fn (array $item): bool => (int) ($item['id'] ?? 0) === $id
+    ));
+    $viewsStatement->execute(['id' => $id]);
+    $viewsAfterFavoriteActivity = (int) $viewsStatement->fetchColumn();
+    $assert(
+        $favoriteAddStatus === 201
+        && $favoritesStatus === 200
+        && $favoriteRemoveStatus === 204
+        && count($favoriteProfile) === 1
+        && count($favoriteProfile[0]['media'] ?? []) === 1
+        && (int) ($favoriteProfile[0]['media'][0]['id'] ?? 0) === $mediaId
+        && !array_key_exists('priceHour', $favoriteProfile[0])
+        && !array_key_exists('priceNight', $favoriteProfile[0])
+        && !array_key_exists('priceWeekend', $favoriteProfile[0])
+        && $viewsAfterFavoriteActivity === $viewsAfterDetail,
+        'Favorites must load public cards in bulk without exposing prices or recording artificial visits.'
     );
     $mediaContext = stream_context_create(['http' => [
         'method' => 'GET',
@@ -518,8 +654,8 @@ if ($adminPassword !== '') {
         && (int) $responsiveDimensions[0] === 320
         && ($responsiveHeaderMap['content-type'] ?? '') === 'image/webp'
         && ($responsiveHeaderMap['cache-control'] ?? '') === 'public, max-age=86400, must-revalidate'
-        && (int) $storedVariantStatement->fetchColumn() === 4,
-        'Approved profile photos must serve cached WebP variants at the requested width.'
+        && (int) $storedVariantStatement->fetchColumn() === 1,
+        'Approved profile photos must serve only cached WebP variants that do not upscale the source.'
     );
 
     $videoFixture = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -645,6 +781,18 @@ if ($adminPassword !== '') {
         'email' => $cleanup->email('profile'), 'password' => 'Integration9!pass',
     ]);
     $assert($professionalLoginStatus === 200 && is_string($professionalCookie), 'Approved professional login must work.');
+    [$optionalRegionStatus, $optionalRegionProfile] = $request(
+        'PUT',
+        '/api/profiles/me',
+        ['locationRegion' => ''],
+        $professionalCookie
+    );
+    $assert(
+        $optionalRegionStatus === 200
+        && ($optionalRegionProfile['locationRegion'] ?? null) === null
+        && ($optionalRegionProfile['location'] ?? null) === 'Saint-Gilles, Belgium',
+        'Professional profiles must accept city and country when a state or region does not apply.'
+    );
     [$localeStatus, $localizedProfile] = $request(
         'PATCH',
         '/api/auth/locale',
@@ -707,11 +855,17 @@ if ($adminPassword !== '') {
         ['amount' => null],
         $visitorCookie
     );
+    $viewsStatement->execute(['id' => $id]);
+    $viewsAfterSelection = (int) $viewsStatement->fetchColumn();
     $assert(
         $selectionStatus === 201
         && (int) ($selectedProfile['starCount'] ?? -1) === $starsBeforeSelection + 1
         && !array_key_exists('rating', $selectedProfile),
         'A completed VIP selection must add one star count without exposing a score.'
+    );
+    $assert(
+        $viewsAfterSelection === $viewsAfterDetail,
+        'Validating and registering a selection must not create profile visits.'
     );
     [$contactStatus, $contact] = $request('GET', "/api/listings/{$id}/contact", null, $visitorCookie);
     $assert(
@@ -740,7 +894,8 @@ if ($adminPassword !== '') {
         && $duplicateReviewStatus === 403
         && $reviewedListingStatus === 200
         && (float) ($reviewedListing['averageRating'] ?? 0) > 0
-        && count($reviewedListing['reviews'] ?? []) > 0,
+        && count($reviewedListing['reviews'] ?? []) > 0
+        && (int) ($reviewedListing['viewsCount'] ?? 0) === $viewsAfterDetail + 1,
         'A completed selection must allow one rated comment and update the public average.'
     );
     [$conversationStatus, $conversation] = $request(

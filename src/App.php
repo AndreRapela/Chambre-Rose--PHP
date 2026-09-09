@@ -118,7 +118,7 @@ final class App
 
     private function brandLogo(Request $request): Response
     {
-        $path = dirname(__DIR__) . '/resources/brand/brand-logo.png';
+        $path = dirname(__DIR__) . '/resources/brand/brand-logo-84.webp';
         $bytes = is_file($path) ? file_get_contents($path) : false;
         if ($bytes === false) {
             throw new ApiException(404, 'Brand logo not found.');
@@ -130,7 +130,7 @@ final class App
         }
 
         return new Response(200, $bytes, [
-            'Content-Type' => 'image/png',
+            'Content-Type' => 'image/webp',
             'Content-Length' => (string) strlen($bytes),
             'Cache-Control' => $cacheControl,
             'ETag' => $etag,

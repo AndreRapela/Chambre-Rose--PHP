@@ -12,7 +12,46 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: chambre_rose_test
+          MYSQL_USER: chambre_rose
+          MYSQL_PASSWORD: integration-database-password
+          MYSQL_ROOT_PASSWORD: integration-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -pintegration-root-password --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      APP_ENV: testing
+      APP_DEBUG: 'false'
+      APP_AUTO_MIGRATE: 'true'
+      DB_DRIVER: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_NAME: chambre_rose_test
+      DB_USERNAME: chambre_rose
+      DB_PASSWORD: integration-database-password
+      DB_CHARSET: utf8mb4
+      JWT_SECRET: integration-jwt-secret-with-more-than-thirty-two-characters
+      RATE_LIMIT_SECRET: integration-rate-limit-secret-with-more-than-thirty-two-characters
+      AUTH_COOKIE_SECURE: 'false'
+      MAIL_TRANSPORT: log
+      SEED_DEMO_USERS: 'false'
+      SEED_MVP_CONTENT: 'false'
+      SEED_ADMIN_EMAIL: integration-admin@chambre-rose.test
+      SEED_ADMIN_PASSWORD: Integration9!Admin
+      TEST_ADMIN_EMAIL: integration-admin@chambre-rose.test
+      TEST_ADMIN_PASSWORD: Integration9!Admin
+      TEST_API_URL: http://127.0.0.1:8080
 
     steps:
       - name: Check out repository
@@ -22,7 +61,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
-          extensions: fileinfo, gd, json, pdo, pdo_sqlite
+          extensions: fileinfo, gd, json, pdo, pdo_mysql, pdo_sqlite
           coverage: none
 
       - name: Validate Composer configuration
@@ -39,3 +78,35 @@ jobs:
 
       - name: Run unit tests
         run: composer test
+
+      - name: Prepare integration database
+        run: composer setup
+
+      - name: Start integration API
+        run: |
+          php -S 127.0.0.1:8080 -t public public/router.php > /tmp/chambre-rose-api.log 2>&1 &
+          echo $! > /tmp/chambre-rose-api.pid
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8080/api/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/chambre-rose-api.log
+          exit 1
+
+      - name: Run database and API contract integration tests
+        run: composer test:integration
+
+      - name: Check out Angular contract consumer
+        uses: actions/checkout@v4
+        with:
+          repository: AndreRapela/Chambre-Rose--angular
+          path: frontend-contract
+
+      - name: Verify the live Angular-PHP response contract
+        run: node frontend-contract/scripts/check-live-api-contract.mjs
+
+      - name: Show integration server log on failure
+        if: failure()
+        run: cat /tmp/chambre-rose-api.log || true

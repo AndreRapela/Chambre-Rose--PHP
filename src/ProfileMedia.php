@@ -18,17 +18,16 @@ final class ProfileMediaRepository
         $statement = $this->pdo->prepare('SELECT id, user_id, media_type, file_name, content_type, size_bytes, position, created_at FROM profile_media WHERE user_id=:id ORDER BY media_type, position, id');
         $statement->execute(['id' => $userId]);
 
-        return array_map(
-            static fn (array $row): array => self::map($row, $public),
-            $statement->fetchAll()
-        );
+        return $this->mapRows($statement->fetchAll(), $public);
     }
 
     /**
+     * Returns only the first photo required by each listing card.
+     *
      * @param list<int> $userIds
      * @return array<int, list<array<string, mixed>>>
      */
-    public function listForUsers(array $userIds, bool $public = false): array
+    public function firstPhotosForUsers(array $userIds, bool $public = false): array
     {
         $userIds = array_values(array_unique(array_filter(
             array_map(static fn (int $userId): int => $userId, $userIds),
@@ -39,25 +38,24 @@ final class ProfileMediaRepository
         }
 
         $mediaByUser = array_fill_keys($userIds, []);
-        $placeholders = [];
-        foreach ($userIds as $index => $userId) {
-            $placeholder = ':user_id_' . $index;
-            $placeholders[] = $placeholder;
-        }
-
+        $placeholders = array_map(
+            static fn (int $index): string => ':cover_user_id_' . $index,
+            array_keys($userIds)
+        );
         $statement = $this->pdo->prepare(
-            'SELECT id, user_id, media_type, file_name, content_type, size_bytes, position, created_at'
-            . ' FROM profile_media WHERE user_id IN (' . implode(', ', $placeholders) . ')'
-            . ' ORDER BY user_id, media_type, position, id'
+            'SELECT id, user_id, media_type, file_name, content_type, size_bytes, position, created_at FROM ('
+            . ' SELECT id, user_id, media_type, file_name, content_type, size_bytes, position, created_at,'
+            . ' ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY position, id) AS media_rank'
+            . ' FROM profile_media WHERE media_type=\'PHOTO\' AND user_id IN (' . implode(', ', $placeholders) . ')'
+            . ') ranked_media WHERE media_rank=1 ORDER BY user_id'
         );
         foreach ($userIds as $index => $userId) {
-            $statement->bindValue(':user_id_' . $index, $userId, PDO::PARAM_INT);
+            $statement->bindValue(':cover_user_id_' . $index, $userId, PDO::PARAM_INT);
         }
         $statement->execute();
 
-        foreach ($statement->fetchAll() as $row) {
-            $userId = (int) $row['user_id'];
-            $mediaByUser[$userId][] = self::map($row, $public);
+        foreach ($this->mapRows($statement->fetchAll(), $public) as $media) {
+            $mediaByUser[(int) $media['userId']][] = $media;
         }
 
         return $mediaByUser;
@@ -141,7 +139,7 @@ final class ProfileMediaRepository
         $statement->execute(['uid' => $userId,'id' => $mediaId]);
         $row = $statement->fetch();
 
-        return is_array($row) ? self::map($row) : null;
+        return is_array($row) ? $this->mapRows([$row], false)[0] : null;
     }
 
     public function data(int $userId, int $mediaId): ?string
@@ -194,23 +192,78 @@ final class ProfileMediaRepository
 
     /**
      * @param array<string, mixed> $row
+     * @param list<int> $responsiveWidths
      * @return array<string, mixed>
      */
-    private static function map(array $row, bool $public = false): array
+    private static function map(array $row, bool $public = false, array $responsiveWidths = []): array
     {
         $url = '/api/profiles/' . (int) $row['user_id'] . '/media/' . (int) $row['id'];
         $media = ['id' => (int)$row['id'],'userId' => (int)$row['user_id'],'type' => (string)$row['media_type'],
             'fileName' => (string)$row['file_name'],'contentType' => (string)$row['content_type'],'size' => (int)$row['size_bytes'],
             'position' => (int)$row['position'],'url' => $url,
             'createdAt' => (string)$row['created_at']];
-        if ($media['type'] === 'PHOTO') {
-            $media['srcSet'] = ResponsiveImageService::srcSet($url);
+        if ($media['type'] === 'PHOTO' && $responsiveWidths !== []) {
+            $media['srcSet'] = ResponsiveImageService::srcSet($url, $responsiveWidths);
         }
         if ($public) {
             unset($media['fileName']);
         }
 
         return $media;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private function mapRows(array $rows, bool $public): array
+    {
+        $photoIds = array_values(array_map(
+            static fn (array $row): int => (int) $row['id'],
+            array_filter($rows, static fn (array $row): bool => $row['media_type'] === 'PHOTO')
+        ));
+        $responsiveWidths = $this->responsiveWidths($photoIds);
+
+        return array_map(
+            static fn (array $row): array => self::map(
+                $row,
+                $public,
+                $responsiveWidths[(int) $row['id']] ?? []
+            ),
+            $rows
+        );
+    }
+
+    /**
+     * @param list<int> $mediaIds
+     * @return array<int, list<int>>
+     */
+    private function responsiveWidths(array $mediaIds): array
+    {
+        if ($mediaIds === []) {
+            return [];
+        }
+
+        $placeholders = array_map(
+            static fn (int $index): string => ':responsive_media_id_' . $index,
+            array_keys($mediaIds)
+        );
+        $statement = $this->pdo->prepare(
+            'SELECT profile_media_id, width FROM responsive_image_variants'
+            . ' WHERE profile_media_id IN (' . implode(', ', $placeholders) . ')'
+            . ' ORDER BY profile_media_id, width'
+        );
+        foreach ($mediaIds as $index => $mediaId) {
+            $statement->bindValue(':responsive_media_id_' . $index, $mediaId, PDO::PARAM_INT);
+        }
+        $statement->execute();
+
+        $widths = [];
+        foreach ($statement->fetchAll() as $row) {
+            $widths[(int) $row['profile_media_id']][] = (int) $row['width'];
+        }
+
+        return $widths;
     }
 
     private static function lobToString(mixed $value): ?string

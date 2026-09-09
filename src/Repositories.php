@@ -170,14 +170,18 @@ final class UserRepository
         return $this->find($id) ?? throw new ApiException(404, 'User profile not found.');
     }
 
-    /** @return list<array<string, mixed>> */
-    public function list(
+    /** @return array{items:list<array<string, mixed>>,page:int,pageSize:int,total:int,totalPages:int} */
+    public function paginate(
         ?string $email,
         ?string $name,
         string $sort,
         ?string $approvalStatus = null,
-        ?string $role = null
+        ?string $role = null,
+        int $page = 1,
+        int $pageSize = 25
     ): array {
+        $page = max(1, $page);
+        $pageSize = max(10, min(100, $pageSize));
         $where = [];
         $params = [];
         if ($email !== null) {
@@ -197,15 +201,27 @@ final class UserRepository
             $params['role'] = $role;
         }
         $direction = strtolower($sort) === 'oldest' ? 'ASC' : 'DESC';
+        $whereSql = $where === [] ? '' : ' WHERE ' . implode(' AND ', $where);
+        $count = $this->pdo->prepare('SELECT COUNT(*) FROM users' . $whereSql);
+        $count->execute($params);
+        $total = (int) $count->fetchColumn();
+        $totalPages = max(1, (int) ceil($total / $pageSize));
+        $page = min($page, $totalPages);
+        $offset = ($page - 1) * $pageSize;
         $sql = 'SELECT ' . self::SELECT_COLUMNS . ' FROM users';
-        if ($where !== []) {
-            $sql .= ' WHERE ' . implode(' AND ', $where);
-        }
-        $sql .= ' ORDER BY created_at ' . $direction . ', id ' . $direction;
+        $sql .= $whereSql;
+        $sql .= ' ORDER BY created_at ' . $direction . ', id ' . $direction
+            . ' LIMIT ' . $pageSize . ' OFFSET ' . $offset;
         $statement = $this->pdo->prepare($sql);
         $statement->execute($params);
 
-        return array_map([self::class, 'mapUser'], $statement->fetchAll());
+        return [
+            'items' => array_map([self::class, 'mapUser'], $statement->fetchAll()),
+            'page' => $page,
+            'pageSize' => $pageSize,
+            'total' => $total,
+            'totalPages' => $totalPages,
+        ];
     }
 
     public function countAdmins(): int

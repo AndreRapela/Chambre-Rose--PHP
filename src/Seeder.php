@@ -108,6 +108,7 @@ final class Seeder
             $this->profiles->upsert((int) $user['id'], 'STORE', [
                 'displayName' => 'Maison Rose Intime',
                 'location' => 'Brussels, Belgium',
+                'locationCity' => 'Brussels', 'locationRegion' => 'Brussels-Capital', 'locationCountry' => 'Belgium',
                 'bio' => 'Boutique fictive du MVP spécialisée dans le bien-être intime, la lingerie et les accessoires pour adultes.',
                 'languages' => ['French', 'English'],
                 'services' => ['Discreet delivery', 'Store pickup', 'Private advice'],
@@ -218,22 +219,24 @@ final class Seeder
     private function seedCompanions(): void
     {
         $profiles = [
-            ['Luna Douce', 'Paris, France', '1998-04-18', 168, 54, 'Brown', 'Hazel', 'French', 10, 458, 'carousel-basic-black.jpeg'],
-            ['Emma Charm', 'Lyon, France', '1996-09-03', 171, 58, 'Black', 'Brown', 'Belgian', 9, 371, 'carousel-pink-lace-tie.jpeg'],
-            ['Maya Sensuelle', 'Marseille, France', '1999-02-14', 165, 52, 'Brown', 'Green', 'French', 8, 296, 'carousel-pink-ring-thong.jpeg'],
-            ['Nina Velvet', 'Toulouse, France', '1997-11-27', 169, 56, 'Blonde', 'Blue', 'European', 7, 241, 'carousel-basic-black.jpeg'],
-            ['Sasha Luxury', 'Nice, France', '1995-06-09', 173, 60, 'Black', 'Brown', 'French', 6, 189, 'carousel-pink-ring-thong.jpeg'],
+            ['Luna Douce', 'Paris', 'Île-de-France', '1998-04-18', 168, 54, 'Brown', 'Hazel', 'French', 10, 458, 'carousel-basic-black.jpeg'],
+            ['Emma Charm', 'Lyon', 'Auvergne-Rhône-Alpes', '1996-09-03', 171, 58, 'Black', 'Brown', 'Belgian', 9, 371, 'carousel-pink-lace-tie.jpeg'],
+            ['Maya Sensuelle', 'Marseille', "Provence-Alpes-Côte d'Azur", '1999-02-14', 165, 52, 'Brown', 'Green', 'French', 8, 296, 'carousel-pink-ring-thong.jpeg'],
+            ['Nina Velvet', 'Toulouse', 'Occitanie', '1997-11-27', 169, 56, 'Blonde', 'Blue', 'European', 7, 241, 'carousel-basic-black.jpeg'],
+            ['Sasha Luxury', 'Nice', "Provence-Alpes-Côte d'Azur", '1995-06-09', 173, 60, 'Black', 'Brown', 'French', 6, 189, 'carousel-pink-ring-thong.jpeg'],
         ];
-        foreach ($profiles as $index => [$name, $location, $birth, $height, $weight, $hair, $eyes, $origin, $purchases, $views, $image]) {
+        foreach ($profiles as $index => [$name, $city, $region, $birth, $height, $weight, $hair, $eyes, $origin, $purchases, $views, $image]) {
+            $location = "{$city}, {$region}, France";
             $email = 'demo-companion-' . ($index + 1) . '@chambre-rose.invalid';
             $user = $this->users->findByEmail($email) ?? $this->users->create([
                 'firstName' => $name, 'lastName' => '', 'email' => $email, 'phone' => '', 'address' => '',
-                'city' => explode(',', $location)[0], 'country' => 'France', 'postalCode' => '',
+                'city' => $city, 'country' => 'France', 'postalCode' => '',
             ], password_hash(bin2hex(random_bytes(24)), PASSWORD_BCRYPT, ['cost' => 12]), 'ESCORT', 'APPROVED', 'fr');
             $userId = (int) $user['id'];
             if ($this->profiles->findByUser($userId) === null) {
                 $this->profiles->upsert($userId, 'ESCORT', [
                     'displayName' => $name, 'birthDate' => $birth, 'gender' => 'WOMAN', 'location' => $location,
+                    'locationCity' => $city, 'locationRegion' => $region, 'locationCountry' => 'France',
                     'bio' => 'Profil fictif de démonstration du MVP. Une présence élégante, attentive et discrète pour des échanges respectueux.',
                     'languages' => ['French', 'English'], 'heightCm' => $height, 'weightKg' => $weight,
                     'bustCm' => 90, 'waistCm' => 60, 'hipsCm' => 90, 'hair' => $hair, 'eyes' => $eyes, 'origin' => $origin,
@@ -241,7 +244,8 @@ final class Seeder
                     'interests' => ['Fine lingerie', 'Travel', 'Photography', 'Conversation'],
                     'contactOptions' => ['Private message|0', 'Personalized photos|20', 'Short custom video|35', 'Video call (15 min)|45'],
                     'contactEmail' => $email, 'responseTime' => $index < 2 ? 'LESS_THAN_HOUR' : 'FEW_HOURS',
-                    'availability' => 'Online today', 'website' => null, 'priceFrom' => 89, 'priceTo' => 189,
+                    'availability' => 'Online today', 'website' => null,
+                    'priceHour' => 89, 'priceNight' => 390, 'priceWeekend' => 690,
                     'businessName' => null, 'legalName' => null, 'segment' => null, 'businessAddress' => null, 'businessHours' => null,
                 ]);
                 $this->pdo->prepare('UPDATE professional_profiles SET purchase_count=:purchases,views_count=:views,verified=TRUE WHERE user_id=:id')
