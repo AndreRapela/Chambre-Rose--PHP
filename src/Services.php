@@ -200,6 +200,21 @@ final class AuthService
     }
 
     /**
+     * Permanently removes the authenticated account and all data owned by it.
+     * The database foreign keys cascade dependent profile, media, messaging and
+     * notification rows while preserving historical orders where appropriate.
+     */
+    public function deleteAccount(string $currentEmail): void
+    {
+        $user = $this->users->findByEmail(strtolower(trim($currentEmail)));
+        if ($user === null) {
+            throw new ApiException(404, 'User account not found.');
+        }
+
+        $this->users->delete((int) $user['id']);
+    }
+
+    /**
      * @param array<string, mixed> $user
      * @return array<string, mixed>
      */
@@ -415,6 +430,19 @@ final class AdminUserService
         }
 
         return self::summary($user);
+    }
+
+    public function deleteUser(int $targetId, int $actorId): void
+    {
+        if ($targetId === $actorId) {
+            throw new ApiException(403, 'Administrators cannot delete their own account.');
+        }
+
+        if ($this->users->find($targetId) === null) {
+            throw new ApiException(404, 'User account not found.');
+        }
+
+        $this->users->delete($targetId);
     }
 
     private static function clean(?string $value): ?string

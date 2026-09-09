@@ -66,6 +66,15 @@ final class AdminRoutes implements RouteHandler
 
             return ApiResponder::json($updated);
         }
+        if ($method === 'DELETE' && preg_match('#^/api/admin/users/(\d+)$#', $path, $match)) {
+            $admin = $this->guard->currentUser($request);
+            if (($admin['role'] ?? '') !== 'ADMIN') {
+                throw new ApiException(403, 'Administrator access is required.');
+            }
+            $this->service->deleteUser((int) $match[1], (int) $admin['id']);
+
+            return ApiResponder::empty();
+        }
 
         return null;
     }

@@ -159,7 +159,24 @@ final class Validator
      */
     private static function email(array $data, string $field, array &$errors): void
     {
-        if (isset($data[$field]) && is_string($data[$field]) && filter_var(trim($data[$field]), FILTER_VALIDATE_EMAIL) === false) {
+        if (!isset($data[$field]) || !is_string($data[$field])) {
+            return;
+        }
+
+        $email = trim($data[$field]);
+        $parts = explode('@', $email);
+        $domain = count($parts) === 2 ? $parts[1] : '';
+        $labels = $domain === '' ? [] : explode('.', $domain);
+        $topLevelDomain = $labels === [] ? '' : (string) end($labels);
+        $validDomain = count($labels) >= 2
+            && !str_contains($domain, '..')
+            && (bool) preg_match('/^(?:[A-Z]{2,63}|XN--[A-Z0-9-]{2,59})$/i', $topLevelDomain);
+
+        if (preg_match('/\s/', $email)
+            || str_contains($parts[0], '..')
+            || !$validDomain
+            || filter_var($email, FILTER_VALIDATE_EMAIL) === false
+        ) {
             $errors[$field] = 'must be a well-formed email address';
         }
     }

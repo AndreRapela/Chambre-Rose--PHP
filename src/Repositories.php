@@ -130,6 +130,9 @@ final class UserRepository
     {
         $statement = $this->pdo->prepare('DELETE FROM users WHERE id = :id');
         $statement->execute(['id' => $id]);
+        if ($statement->rowCount() === 0) {
+            throw new ApiException(404, 'User account not found.');
+        }
     }
 
     /**

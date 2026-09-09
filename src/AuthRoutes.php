@@ -86,6 +86,15 @@ final class AuthRoutes implements RouteHandler
 
             return ApiResponder::json($this->auth->profile($identity['sub']));
         }
+        if ($method === 'DELETE' && $path === '/api/auth/me') {
+            $identity = $this->guard->authenticate($request);
+            if ($identity['role'] === 'ADMIN') {
+                throw new ApiException(403, 'Administrators cannot delete their own account.');
+            }
+            $this->auth->deleteAccount($identity['sub']);
+
+            return ApiResponder::empty()->withHeaders(['Set-Cookie' => $this->sessionCookie->clear()]);
+        }
         if ($method === 'PUT' && $path === '/api/auth/me') {
             $identity = $this->guard->authenticate($request);
             $this->guard->requireJson($request);

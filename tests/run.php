@@ -332,11 +332,13 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
             'country' => 'Belgium',
         ]);
     }
-    $adminPage = (new AdminUserService(
-        new UserRepository($adminDatabase),
+    $adminUsers = new UserRepository($adminDatabase);
+    $adminService = new AdminUserService(
+        $adminUsers,
         null,
         new ProfessionalProfileRepository($adminDatabase)
-    ))->list(null, null, 'newest', 'PENDING', null, 2, 10);
+    );
+    $adminPage = $adminService->list(null, null, 'newest', 'PENDING', null, 2, 10);
     $assert(
         $adminPage['page'] === 2
         && $adminPage['pageSize'] === 10
@@ -346,6 +348,14 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         && isset($adminPage['items'][0]['professionalProfile']['displayName']),
         'Administrator accounts must use bounded pagination and one lightweight profile summary batch.'
     );
+    $adminService->deleteUser(2, 1);
+    $assert($adminUsers->find(2) === null, 'Administrators must be able to remove another account.');
+    try {
+        $adminService->deleteUser(1, 1);
+        $assert(false, 'An administrator must not be able to remove their own account.');
+    } catch (ApiException $exception) {
+        $assert($exception->status === 403, 'Self-deletion from administrator controls must be rejected.');
+    }
 
     $notificationDatabase = new PDO('sqlite::memory:');
     $notificationDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -577,6 +587,15 @@ try {
 
 $login = Validator::login(['email' => ' Test@Example.com ', 'password' => '123456']);
 $assert($login['email'] === 'Test@Example.com', 'Login validator must trim email.');
+$invalidEmails = ['person@example', 'person @example.com', 'person..name@example.com', 'person@example..com'];
+foreach ($invalidEmails as $invalidEmail) {
+    try {
+        Validator::login(['email' => $invalidEmail, 'password' => '123456']);
+        $assert(false, "Malformed email {$invalidEmail} must be rejected.");
+    } catch (ApiException $exception) {
+        $assert(isset($exception->fields['email']), "Malformed email {$invalidEmail} must report the email field.");
+    }
+}
 $assert(Validator::accountType([]) === 'VISITOR', 'Visitor must be the default account type.');
 $assert(Validator::accountType(['accountType' => 'user']) === 'VISITOR', 'Legacy USER must map to VISITOR.');
 $assert(Validator::accountType(['accountType' => 'escort']) === 'ESCORT', 'Escort account type must be supported.');
