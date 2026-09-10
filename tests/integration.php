@@ -9,6 +9,7 @@ use ChambreRose\ApiException;
 use ChambreRose\AuthRateLimiter;
 use ChambreRose\Config;
 use ChambreRose\Database;
+use ChambreRose\Jwt;
 use ChambreRose\Tests\IntegrationDataCleanup;
 
 $base = rtrim(getenv('TEST_API_URL') ?: 'http://localhost:8080', '/');
@@ -222,6 +223,46 @@ $assert(
     'Visitor registration must create an HttpOnly server session without exposing the JWT.'
 );
 
+[$forgotStatus, $forgotBody] = $request('POST', '/api/auth/forgot-password', [
+    'email' => $cleanup->email('visitor'),
+    'locale' => 'en',
+]);
+$resetEmail = Database::connection()->prepare(
+    'SELECT delivery_status, body FROM email_outbox WHERE recipient = :recipient AND template = :template ORDER BY id DESC LIMIT 1'
+);
+$resetEmail->execute(['recipient' => $cleanup->email('visitor'), 'template' => 'password_reset']);
+$resetEmailRow = $resetEmail->fetch();
+$resetCode = null;
+if (is_array($resetEmailRow)) {
+    preg_match('/\n(\d{6})\n/', (string) ($resetEmailRow['body'] ?? ''), $codeMatch);
+    $resetCode = $codeMatch[1] ?? null;
+}
+$resetChallenge = (string) ($forgotBody['challenge'] ?? '');
+$assert(
+    $forgotStatus === 202
+    && strlen($resetChallenge) >= 32
+    && is_array($resetEmailRow)
+    && in_array($resetEmailRow['delivery_status'] ?? null, ['SENT', 'LOGGED'], true)
+    && is_string($resetCode)
+    && preg_match('/^\d{6}$/', $resetCode) === 1,
+    'Password recovery must send a six-digit verification code and return a reset challenge.'
+);
+[$wrongCodeStatus] = $request('POST', '/api/auth/verify-reset-code', [
+    'challenge' => $resetChallenge,
+    'code' => $resetCode === '000000' ? '999999' : '000000',
+]);
+$assert($wrongCodeStatus === 400, 'An incorrect password recovery code must be rejected.');
+[$verifyCodeStatus] = $request('POST', '/api/auth/verify-reset-code', [
+    'challenge' => $resetChallenge,
+    'code' => $resetCode,
+]);
+$assert($verifyCodeStatus === 200, 'The correct password recovery code must unlock password reset.');
+[$resetPasswordStatus] = $request('POST', '/api/auth/reset-password', [
+    'token' => $resetChallenge,
+    'password' => 'Reset9!pass',
+]);
+$assert($resetPasswordStatus === 200, 'A verified password recovery challenge must allow a new password.');
+
 [$weakPasswordStatus, $weakPasswordBody] = $request('POST', '/api/auth/register', [
     'firstName' => 'Weak', 'lastName' => 'Password',
     'email' => $cleanup->email('weak-password'), 'phone' => '12345678',
@@ -263,8 +304,35 @@ preg_match('/\s(\d{3})\s/', $http_response_header[0] ?? '', $statusMatch);
 $professionalStatus = (int)($statusMatch[1] ?? 0);
 $professional = json_decode((string)$professionalRaw, true);
 $assert(
-    $professionalStatus === 201 && ($professional['approvalStatus'] ?? null) === 'PENDING',
-    'Companion registration must succeed with one public location and remain pending.'
+    $professionalStatus === 201
+    && ($professional['approvalStatus'] ?? null) === 'PENDING'
+    && ($professional['pendingApproval'] ?? false) === true
+    && str_contains((string) ($professional['message'] ?? ''), '24'),
+    'Companion registration must succeed with one public location, remain pending and explain the 24-hour review.'
+);
+$professionalEmail = Database::connection()->prepare(
+    'SELECT delivery_status, body FROM email_outbox WHERE recipient = :recipient AND template = :template ORDER BY id DESC LIMIT 1'
+);
+$professionalEmail->execute(['recipient' => $cleanup->email('profile'), 'template' => 'account_created']);
+$professionalEmailRow = $professionalEmail->fetch();
+$assert(
+    is_array($professionalEmailRow)
+    && in_array($professionalEmailRow['delivery_status'] ?? null, ['SENT', 'LOGGED'], true)
+    && str_contains((string) ($professionalEmailRow['body'] ?? ''), '24'),
+    'Professional registration must queue a confirmation email containing the review deadline.'
+);
+$pendingToken = (new Jwt())->generate($cleanup->email('profile'), 'ESCORT');
+[$pendingResourceStatus, $pendingResourceBody] = $request(
+    'GET',
+    '/api/auth/me',
+    null,
+    null,
+    ['Authorization: Bearer ' . $pendingToken]
+);
+$assert(
+    $pendingResourceStatus === 403
+    && ($pendingResourceBody['fields']['approvalStatus'] ?? null) === 'PENDING',
+    'Pending professional accounts must be denied protected resources even when they present a valid token.'
 );
 
 $storeProfile = json_encode([
@@ -481,8 +549,22 @@ if ($adminPassword !== '') {
         $privateMediaStatus === 404 && $privateVariantStatus === 404,
         'Pending profile media and its responsive variants must not be public.'
     );
-    [$approvalStatus] = $request('PATCH', "/api/admin/users/{$id}/approval", ['status' => 'APPROVED'], $adminCookie);
-    $assert($approvalStatus === 200, 'Admin approval must work.');
+    [$approvalStatus, $approvalBody] = $request('PATCH', "/api/admin/users/{$id}/approval", ['status' => 'APPROVED'], $adminCookie);
+    $assert(
+        $approvalStatus === 200 && in_array($approvalBody['approvalEmailStatus'] ?? null, ['SENT', 'LOGGED'], true),
+        'Admin approval must work and trigger the approval email.'
+    );
+    $approvalEmail = Database::connection()->prepare(
+        'SELECT delivery_status, body FROM email_outbox WHERE recipient = :recipient AND template = :template ORDER BY id DESC LIMIT 1'
+    );
+    $approvalEmail->execute(['recipient' => $cleanup->email('profile'), 'template' => 'account_approved']);
+    $approvalEmailRow = $approvalEmail->fetch();
+    $assert(
+        is_array($approvalEmailRow)
+        && in_array($approvalEmailRow['delivery_status'] ?? null, ['SENT', 'LOGGED'], true)
+        && str_contains((string) ($approvalEmailRow['body'] ?? ''), '/auth/login'),
+        'Approved accounts must receive an email with a sign-in link.'
+    );
     [$listingStatus, $listing] = $request('GET', "/api/listings/{$id}");
     $assert(
         $listingStatus === 200
@@ -909,9 +991,9 @@ if ($adminPassword !== '') {
     [$preferenceStatus, $defaultPreferences] = $request('GET', '/api/notification-preferences', null, $professionalCookie);
     [$savedPreferenceStatus, $savedPreferences] = $request('PUT', '/api/notification-preferences', [
         'directMessages' => true,
-        'accountUpdates' => true,
+        'accountUpdates' => false,
         'marketplaceUpdates' => false,
-        'securityUpdates' => true,
+        'securityUpdates' => false,
         'browserNotifications' => true,
         'inAppNotifications' => true,
         'onlyDirectMessages' => false,
@@ -926,7 +1008,9 @@ if ($adminPassword !== '') {
         $preferenceStatus === 200
         && ($defaultPreferences['directMessages'] ?? false) === true
         && $savedPreferenceStatus === 200
+        && ($savedPreferences['accountUpdates'] ?? false) === true
         && ($savedPreferences['marketplaceUpdates'] ?? true) === false
+        && ($savedPreferences['securityUpdates'] ?? false) === true
         && ($savedPreferences['quietHoursEnabled'] ?? false) === true
         && ($savedPreferences['timezone'] ?? '') === 'Europe/Brussels',
         'Notification preferences must load with safe defaults and persist per account.'

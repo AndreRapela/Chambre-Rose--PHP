@@ -62,6 +62,16 @@ final class AuthRoutes implements RouteHandler
 
             return ApiResponder::json($this->auth->forgotPassword($input), 202);
         }
+        if ($method === 'POST' && $path === '/api/auth/verify-reset-code') {
+            $this->guard->requireJson($request);
+            $input = $request->json();
+            $challenge = is_string($input['challenge'] ?? null) ? trim($input['challenge']) : '';
+            $this->rateLimiter->consumePasswordResetAttempt($challenge, $request->clientIp);
+            $response = $this->auth->verifyPasswordResetCode($input);
+            $this->rateLimiter->clearPasswordResetAttempts($challenge);
+
+            return ApiResponder::json($response);
+        }
         if ($method === 'POST' && $path === '/api/auth/reset-password') {
             $this->guard->requireJson($request);
             $input = $request->json();

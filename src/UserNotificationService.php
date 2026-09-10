@@ -46,9 +46,10 @@ final class UserNotificationService
             self::SECURITY => 'securityUpdates',
             default => 'accountUpdates',
         };
-        $categoryEnabled = $preferences[$categoryPreference] === true;
+        $requiredCategory = in_array($category, [self::ACCOUNT, self::SECURITY], true);
+        $categoryEnabled = $requiredCategory || $preferences[$categoryPreference] === true;
         $onlyDirectMessages = $preferences['onlyDirectMessages'] === true;
-        $allowed = $categoryEnabled && (!$onlyDirectMessages || $category === self::DIRECT_MESSAGE);
+        $allowed = $categoryEnabled && (!$onlyDirectMessages || in_array($category, [self::DIRECT_MESSAGE, self::ACCOUNT, self::SECURITY], true));
         $inAppEnabled = $allowed && $preferences['inAppNotifications'] === true;
         $browserEnabled = $allowed && $preferences['browserNotifications'] === true;
         if (!$inAppEnabled && !$browserEnabled) {

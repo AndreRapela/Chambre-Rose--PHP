@@ -128,7 +128,7 @@ Invoke-RestMethod http://localhost:8080/api/health
 
 - `POST /api/auth/register`: cria `VISITOR`, `ESCORT` ou `STORE`. Contas profissionais ficam `PENDING` para revisao em ate 24 horas.
 - `POST /api/auth/login` e `POST /api/auth/logout`: criam e encerram a sessao em cookie HttpOnly; o logout revoga somente o Push do navegador atual.
-- `POST /api/auth/forgot-password` e `POST /api/auth/reset-password`: recuperacao por token de uso unico, valido por uma hora.
+- `POST /api/auth/forgot-password`, `POST /api/auth/verify-reset-code` e `POST /api/auth/reset-password`: recuperacao por codigo de seis digitos enviado por email, com desafio temporario valido por uma hora.
 - `GET|PUT /api/profiles/me`: consulta e edita o proprio perfil profissional.
 - `GET|PUT /api/profiles/{userId}`: consulta ou edita qualquer perfil como administrador.
 - `GET /api/listings` e `GET /api/listings/{userId}`: busca publica paginada de acompanhantes e lojas aprovadas.
@@ -144,7 +144,7 @@ Fotos aceitam JPG, PNG e WebP ate 8 MB. Videos aceitam MP4 e WebM ate 25 MB. Par
 
 Por privacidade, nomes originais nunca aparecem no catalogo nem no cabecalho de download e toda midia usa `Cache-Control: private, no-store`. O frontend oficial redimensiona e reencoda fotos em canvas antes do envio, removendo metadados EXIF/GPS. Integracoes que enviarem arquivos diretamente para a API tambem devem reencodar as imagens antes do upload; o backend PHP sem GD/Imagick valida tipo e tamanho, mas armazena os bytes recebidos.
 
-Os e-mails usam `MAIL_TRANSPORT=log`, `mail` ou `smtp`. No modo `log`, nenhum envio e fingido: a API devolve resposta neutra e registra somente metadados mascarados, mantendo o conteudo no `email_outbox` para diagnostico. Em producao, configure SMTP pelas variaveis documentadas em `.env.example`.
+Os e-mails usam `MAIL_TRANSPORT=mail` (recomendado em produção), `smtp` ou `log` (desenvolvimento). No modo `log`, nenhum envio é fingido: a API registra a mensagem no `email_outbox` para diagnóstico. Em produção, `log` é convertido automaticamente para `mail` — use `MAIL_ALLOW_LOG=true` somente em um staging controlado. Para SMTP, configure as variáveis documentadas em `.env.example`.
 
 ## Worker de notificacoes
 

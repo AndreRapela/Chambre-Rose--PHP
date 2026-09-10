@@ -81,9 +81,10 @@ final class NotificationRoutes implements RouteHandler
         $current = $this->notifications->preferences((int) $user['id']);
         $preferences = [
             'directMessages' => self::booleanPreference($input, $current, 'directMessages'),
-            'accountUpdates' => self::booleanPreference($input, $current, 'accountUpdates'),
+            // Account and security emails are mandatory and cannot be opted out of.
+            'accountUpdates' => true,
             'marketplaceUpdates' => self::booleanPreference($input, $current, 'marketplaceUpdates'),
-            'securityUpdates' => self::booleanPreference($input, $current, 'securityUpdates'),
+            'securityUpdates' => true,
             'browserNotifications' => self::booleanPreference($input, $current, 'browserNotifications'),
             'inAppNotifications' => self::booleanPreference($input, $current, 'inAppNotifications'),
             'onlyDirectMessages' => self::booleanPreference($input, $current, 'onlyDirectMessages'),

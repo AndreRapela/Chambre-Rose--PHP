@@ -26,9 +26,10 @@ final class NotificationRepository
 
         return [
             'directMessages' => !is_array($row) || self::bool($row['direct_messages']),
-            'accountUpdates' => !is_array($row) || self::bool($row['account_updates']),
+            // These categories are required for account and security emails.
+            'accountUpdates' => true,
             'marketplaceUpdates' => !is_array($row) || self::bool($row['marketplace_updates']),
-            'securityUpdates' => !is_array($row) || self::bool($row['security_updates']),
+            'securityUpdates' => true,
             'browserNotifications' => !is_array($row) || self::bool($row['browser_notifications']),
             'inAppNotifications' => !is_array($row) || self::bool($row['in_app_notifications']),
             'onlyDirectMessages' => is_array($row) && self::bool($row['only_direct_messages']),
@@ -94,9 +95,9 @@ final class NotificationRepository
         $statement->execute([
             'user_id' => $userId,
             'direct_messages' => $this->databaseBool($preferences['directMessages']),
-            'account_updates' => $this->databaseBool($preferences['accountUpdates']),
+            'account_updates' => 1,
             'marketplace_updates' => $this->databaseBool($preferences['marketplaceUpdates']),
-            'security_updates' => $this->databaseBool($preferences['securityUpdates']),
+            'security_updates' => 1,
             'browser_notifications' => $this->databaseBool($preferences['browserNotifications']),
             'in_app_notifications' => $this->databaseBool($preferences['inAppNotifications']),
             'only_direct_messages' => $this->databaseBool($preferences['onlyDirectMessages']),
@@ -284,7 +285,8 @@ final class NotificationRepository
         if ($preferences['browserNotifications'] !== true) {
             return false;
         }
-        if ($preferences['onlyDirectMessages'] === true && $category !== UserNotificationService::DIRECT_MESSAGE) {
+        if ($preferences['onlyDirectMessages'] === true
+            && !in_array($category, [UserNotificationService::DIRECT_MESSAGE, UserNotificationService::ACCOUNT, UserNotificationService::SECURITY], true)) {
             return false;
         }
         if ($eventType === UserNotificationService::DAILY_DIGEST) {

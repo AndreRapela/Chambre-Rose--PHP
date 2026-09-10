@@ -38,7 +38,10 @@ final class AuthService
             throw new ApiException(401, 'Invalid email or password.');
         }
         if ($user['approvalStatus'] === 'PENDING') {
-            throw new ApiException(403, 'Your account is awaiting approval.', ['approvalStatus' => 'PENDING']);
+            throw new ApiException(403, 'Your account is awaiting administrator approval. Reviews are completed within 24 hours.', [
+                'approvalStatus' => 'PENDING',
+                'reviewDeadline' => $user['reviewDeadline'],
+            ]);
         }
         if ($user['approvalStatus'] === 'REJECTED') {
             throw new ApiException(403, 'Your account was not approved. Contact support for assistance.', ['approvalStatus' => 'REJECTED']);
@@ -117,15 +120,31 @@ final class AuthService
             throw $exception;
         }
         if (in_array($type, ['ESCORT', 'STORE'], true)) {
-            $this->mail->send($user['email'], 'account_created', $locale, [
-                'name' => $user['firstName'],
-            ]);
+            $emailStatus = 'FAILED';
+            try {
+                $emailStatus = $this->mail->send($user['email'], 'account_created', $locale, [
+                    'name' => $user['firstName'],
+                ]);
+            } catch (\Throwable $exception) {
+                // A transient mail/database problem must not turn a valid
+                // registration into a misleading server error. The account
+                // remains pending and the failure is available in the log.
+                error_log('[Chambre Rose API] Registration email could not be queued: ' . $exception->getMessage());
+            }
+
+            $message = match ($locale) {
+                'pt' => 'Cadastro recebido. Sua conta foi criada, mas permanece inativa até o administrador aprovar seu perfil. A análise será concluída em até 24 horas e você receberá um email com a decisão.',
+                'en' => 'Registration received. Your account was created, but it remains inactive until an administrator approves your profile. The review will be completed within 24 hours and you will receive an email with the decision.',
+                default => 'Inscription reçue. Votre compte a été créé, mais reste inactif jusqu’à la validation de votre profil par un administrateur. L’examen sera terminé sous 24 heures et vous recevrez un e-mail avec la décision.',
+            };
 
             return [
                 'pendingApproval' => true,
                 'approvalStatus' => 'PENDING',
                 'reviewDeadline' => $user['reviewDeadline'],
                 'role' => $user['role'],
+                'message' => $message,
+                'emailStatus' => $emailStatus,
                 'profile' => self::profileFromUser($user),
             ];
         }
@@ -271,14 +290,15 @@ final class AuthService
     public function forgotPassword(array $input): array
     {
         $email = strtolower(trim((string) ($input['email'] ?? '')));
+        $challenge = $this->passwordResets->anonymousChallenge();
         if (filter_var($email, FILTER_VALIDATE_EMAIL) !== false) {
             $user = $this->users->findByEmail($email);
             if ($user !== null) {
-                $token = $this->passwordResets->issue((int) $user['id']);
-                $base = rtrim(Config::get('APP_FRONTEND_URL', 'http://localhost:4200') ?? 'http://localhost:4200', '/');
+                $issued = $this->passwordResets->issueCode((int) $user['id']);
+                $challenge = $issued['challenge'];
                 $this->mail->send($user['email'], 'password_reset', Validator::locale($input + ['locale' => $user['locale']]), [
                     'name' => $user['firstName'],
-                    'url' => $base . '/auth/reset-password?token=' . rawurlencode($token),
+                    'code' => $issued['code'],
                 ]);
                 $this->notifications?->notify(
                     (int) $user['id'],
@@ -290,7 +310,28 @@ final class AuthService
             }
         }
 
-        return ['message' => 'If the account exists, password reset instructions will be sent.'];
+        return [
+            'message' => 'If the account exists, a password reset verification code will be sent.',
+            'challenge' => $challenge,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, string>
+     */
+    public function verifyPasswordResetCode(array $input): array
+    {
+        $challenge = is_string($input['challenge'] ?? null) ? trim($input['challenge']) : '';
+        $code = is_string($input['code'] ?? null) ? trim($input['code']) : '';
+        if (strlen($challenge) < 32 || !preg_match('/^\d{6}$/', $code)) {
+            throw new ApiException(400, 'Invalid or expired verification code.');
+        }
+        if (!$this->passwordResets->verifyCode($challenge, $code)) {
+            throw new ApiException(400, 'Invalid or expired verification code.');
+        }
+
+        return ['message' => 'Verification code accepted.'];
     }
 
     /**
@@ -299,7 +340,9 @@ final class AuthService
      */
     public function resetPassword(array $input): array
     {
-        $token = is_string($input['token'] ?? null) ? trim($input['token']) : '';
+        $token = is_string($input['token'] ?? ($input['challenge'] ?? null))
+            ? trim((string) ($input['token'] ?? $input['challenge']))
+            : '';
         $password = is_string($input['password'] ?? null) ? $input['password'] : '';
         if (strlen($token) < 32) {
             throw new ApiException(400, 'Invalid or expired password reset request.');
@@ -409,16 +452,30 @@ final class AdminUserService
     public function updateApproval(int $id, string $status, ?string $reason): array
     {
         $user = $this->users->setApproval($id, $status, $reason);
+        $emailStatus = 'FAILED';
         if ($this->mail !== null) {
-            $this->mail->send(
-                $user['email'],
-                $user['approvalStatus'] === 'APPROVED' ? 'account_approved' : 'account_rejected',
-                $user['locale'],
-                ['name' => $user['firstName']]
-            );
+            try {
+                $frontend = rtrim(Config::get('APP_FRONTEND_URL', 'http://localhost:4200') ?? 'http://localhost:4200', '/');
+                $emailStatus = $this->mail->send(
+                    $user['email'],
+                    $user['approvalStatus'] === 'APPROVED' ? 'account_approved' : 'account_rejected',
+                    $user['locale'],
+                    [
+                        'name' => $user['firstName'],
+                        'url' => $frontend . '/auth/login',
+                    ]
+                );
+            } catch (\Throwable $exception) {
+                // Approval is the source of truth. A mail outage must not
+                // roll back or hide the decision already made by the admin.
+                error_log('[Chambre Rose API] Approval email could not be queued: ' . $exception->getMessage());
+            }
         }
 
-        return self::summary($user);
+        $summary = self::summary($user);
+        $summary['approvalEmailStatus'] = $emailStatus;
+
+        return $summary;
     }
 
     /** @return array<string, mixed> */

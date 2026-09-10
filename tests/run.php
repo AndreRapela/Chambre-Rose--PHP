@@ -516,7 +516,20 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     $assert(
         ($suppressed['suppressed'] ?? false) === true
         && (int) $preferenceDatabase->query('SELECT COUNT(*) FROM account_notifications')->fetchColumn() === 2,
-        'Direct-messages-only mode must suppress every other notification category.'
+        'Direct-messages-only mode must suppress optional marketplace notifications.'
+    );
+
+    $requiredNotification = $notificationService->notify(
+        91,
+        UserNotificationService::ACCOUNT,
+        'PROFILE_UPDATED',
+        '/espace-prive/perfil',
+        'preferences:required'
+    );
+    $assert(
+        ($requiredNotification['suppressed'] ?? false) !== true
+        && (int) $preferenceDatabase->query('SELECT COUNT(*) FROM account_notifications')->fetchColumn() === 3,
+        'Direct-messages-only mode must keep mandatory account notifications active.'
     );
 
     $notificationPreferences['onlyDirectMessages'] = false;
@@ -533,7 +546,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     );
     $inAppFeed = $preferenceRepository->feed(91);
     $assert(
-        count($inAppFeed['items']) === 2
+        count($inAppFeed['items']) === 3
         && ($inAppFeed['items'][0]['params']['senderName'] ?? null) === 'Camille'
         && (int) $preferenceDatabase->query('SELECT COUNT(*) FROM push_notification_outbox')->fetchColumn() === 1,
         'In-app-only mode must expose structured message parameters without enqueueing browser Push.'
@@ -551,7 +564,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         ['senderName' => 'Morgan']
     );
     $assert(
-        count($preferenceRepository->feed(91)['items']) === 2
+        count($preferenceRepository->feed(91)['items']) === 3
         && (int) $preferenceDatabase->query('SELECT COUNT(*) FROM push_notification_outbox')->fetchColumn() === 2,
         'Browser-only mode must enqueue Push without exposing the event in the in-app feed.'
     );

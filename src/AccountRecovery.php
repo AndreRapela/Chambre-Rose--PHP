@@ -12,6 +12,37 @@ final class PasswordResetRepository
     {
     }
 
+    /** @return array{challenge: string, code: string} */
+    public function issueCode(int $userId): array
+    {
+        $challenge = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+        $code = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+        $statement = $this->pdo->prepare(
+            'UPDATE password_reset_tokens SET used_at=CURRENT_TIMESTAMP WHERE user_id=:id AND used_at IS NULL'
+        );
+        $statement->execute(['id' => $userId]);
+
+        $expires = gmdate('Y-m-d H:i:s', time() + 3600);
+        $statement = $this->pdo->prepare(
+            'INSERT INTO password_reset_tokens '
+            . '(user_id,token_hash,verification_code_hash,verification_attempts,expires_at,created_at) '
+            . 'VALUES (:uid,:hash,:code_hash,0,:expires,CURRENT_TIMESTAMP)'
+        );
+        $statement->execute([
+            'uid' => $userId,
+            'hash' => hash('sha256', $challenge),
+            'code_hash' => hash('sha256', $code),
+            'expires' => $expires,
+        ]);
+
+        return ['challenge' => $challenge, 'code' => $code];
+    }
+
+    public function anonymousChallenge(): string
+    {
+        return rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+    }
+
     public function issue(int $userId): string
     {
         $raw = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
@@ -35,13 +66,74 @@ final class PasswordResetRepository
 
         return $raw;
     }
+
+    public function verifyCode(string $raw, string $code): bool
+    {
+        if ($raw === '' || !preg_match('/^\d{6}$/', $code)) {
+            return false;
+        }
+
+        $this->pdo->beginTransaction();
+
+        try {
+            $sql = 'SELECT id,verification_code_hash,verification_attempts,verified_at '
+                . 'FROM password_reset_tokens '
+                . 'WHERE token_hash=:hash AND used_at IS NULL AND expires_at>CURRENT_TIMESTAMP';
+            if ($this->isLockable()) {
+                $sql .= ' FOR UPDATE';
+            }
+            $statement = $this->pdo->prepare($sql);
+            $statement->execute(['hash' => hash('sha256', $raw)]);
+            $row = $statement->fetch();
+            if (!is_array($row) || !is_string($row['verification_code_hash'] ?? null)) {
+                $this->pdo->rollBack();
+
+                return false;
+            }
+            if ($row['verified_at'] !== null) {
+                $this->pdo->commit();
+
+                return true;
+            }
+
+            $attempts = (int) ($row['verification_attempts'] ?? 0);
+            if ($attempts >= 5) {
+                $this->pdo->rollBack();
+                throw new ApiException(429, 'Too many verification attempts. Request a new code.');
+            }
+
+            $valid = hash_equals($row['verification_code_hash'], hash('sha256', $code));
+            $statement = $this->pdo->prepare(
+                'UPDATE password_reset_tokens SET verification_attempts=:attempts'
+                . ($valid ? ',verified_at=CURRENT_TIMESTAMP' : '')
+                . ' WHERE id=:id'
+            );
+            $statement->execute(['id' => $row['id'], 'attempts' => $attempts + 1]);
+            $this->pdo->commit();
+
+            return $valid;
+        } catch (\Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+
+            throw $e;
+        }
+    }
+
     public function consume(string $raw): ?int
     {
         $hash = hash('sha256', $raw);
         $this->pdo->beginTransaction();
 
         try {
-            $s = $this->pdo->prepare('SELECT id,user_id FROM password_reset_tokens WHERE token_hash=:hash AND used_at IS NULL AND expires_at>CURRENT_TIMESTAMP FOR UPDATE');
+            $sql = 'SELECT id,user_id FROM password_reset_tokens WHERE token_hash=:hash '
+                . 'AND used_at IS NULL AND expires_at>CURRENT_TIMESTAMP '
+                . 'AND (verification_code_hash IS NULL OR verified_at IS NOT NULL)';
+            if ($this->isLockable()) {
+                $sql .= ' FOR UPDATE';
+            }
+            $s = $this->pdo->prepare($sql);
             $s->execute(['hash' => $hash]);
             $r = $s->fetch();
             if (!is_array($r)) {
@@ -64,6 +156,11 @@ final class PasswordResetRepository
             throw $e;
         }
     }
+
+    private function isLockable(): bool
+    {
+        return $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite';
+    }
 }
 
 final class MailService
@@ -72,17 +169,38 @@ final class MailService
     {
     }
 
-    /** @param array<string,string> $vars */
-    public function send(string $recipient, string $template, string $locale, array $vars): void
+    /**
+     * @param array<string,string> $vars
+     * @return 'SENT'|'LOGGED'|'FAILED'
+     */
+    public function send(string $recipient, string $template, string $locale, array $vars): string
     {
         $locale = in_array($locale, ['fr','en','pt'], true) ? $locale : 'fr';
         [$subject,$body] = $this->render($template, $locale, $vars);
-        $transport = strtolower(Config::get('MAIL_TRANSPORT', 'log') ?? 'log');
+        $transport = strtolower(Config::get('MAIL_TRANSPORT') ?? '');
+        $environment = strtolower(Config::get('APP_ENV', 'development') ?? 'development');
+        // Logging is useful locally, but silently leaving production emails in
+        // the database is surprising and prevents approval notifications from
+        // reaching applicants. An explicit MAIL_ALLOW_LOG=true opt-out keeps
+        // diagnostics available for controlled staging environments.
+        if ($transport === '' || ($transport === 'log'
+            && $environment === 'production'
+            && !Config::bool('MAIL_ALLOW_LOG', false))) {
+            $transport = $environment === 'production' ? 'mail' : 'log';
+        }
         $status = 'LOGGED';
 
         try {
             if ($transport === 'mail') {
-                $headers = 'Content-Type: text/plain; charset=UTF-8' . "\r\n" . 'From: ' . (Config::get('MAIL_FROM', 'noreply@chambre-rose.com') ?? 'noreply@chambre-rose.com');
+                $from = Config::get('MAIL_FROM', 'noreply@chambre-rose.com') ?? 'noreply@chambre-rose.com';
+                $headers = implode("\r\n", [
+                    'From: ' . $from,
+                    'Reply-To: ' . $from,
+                    'MIME-Version: 1.0',
+                    'Content-Type: text/plain; charset=UTF-8',
+                    'Content-Transfer-Encoding: 8bit',
+                    'X-Mailer: Chambre Rose',
+                ]);
                 $status = mail($recipient, $subject, $body, $headers) ? 'SENT' : 'FAILED';
             } elseif ($transport === 'smtp') {
                 $this->smtp($recipient, $subject, $body);
@@ -114,6 +232,8 @@ final class MailService
         if ($transport === 'log') {
             error_log('[Chambre Rose API] Email queued in development: ' . $template . ' to ' . self::mask($recipient) . '.');
         }
+
+        return $status;
     }
     /**
      * @param array<string, string> $v
@@ -123,21 +243,22 @@ final class MailService
     {
         $name = $v['name'] ?? '';
         $url = $v['url'] ?? '';
+        $code = $v['code'] ?? '';
         $texts = [
           'password_reset' => [
-            'fr' => ['Réinitialisation de votre mot de passe',"Bonjour {$name},\n\nNous avons reçu une demande de réinitialisation. Utilisez ce lien sécurisé, valable une heure :\n{$url}\n\nSi vous n’êtes pas à l’origine de cette demande, ignorez ce message.\n\nL’équipe Chambre Rose"],
-            'en' => ['Reset your password',"Hello {$name},\n\nWe received a password reset request. Use this secure link within one hour:\n{$url}\n\nIf you did not request this, ignore this message.\n\nChambre Rose team"],
-            'pt' => ['Redefinição de senha',"Olá {$name},\n\nRecebemos um pedido de redefinição de senha. Use este link seguro em até uma hora:\n{$url}\n\nSe não foi você, ignore esta mensagem.\n\nEquipe Chambre Rose"],
+            'fr' => ['Code de réinitialisation du mot de passe',"Bonjour {$name},\n\nNous avons reçu une demande de réinitialisation. Saisissez ce code à 6 chiffres dans Chambre Rose dans l’heure :\n{$code}\n\nSi vous n’êtes pas à l’origine de cette demande, ignorez ce message.\n\nL’équipe Chambre Rose"],
+            'en' => ['Password reset verification code',"Hello {$name},\n\nWe received a password reset request. Enter this six-digit code in Chambre Rose within one hour:\n{$code}\n\nIf you did not request this, ignore this message.\n\nChambre Rose team"],
+            'pt' => ['Código de redefinição de senha',"Olá {$name},\n\nRecebemos um pedido de redefinição de senha. Digite este código de 6 números no Chambre Rose em até uma hora:\n{$code}\n\nSe não foi você, ignore este email.\n\nEquipe Chambre Rose"],
           ],
           'account_created' => [
-            'fr' => ['Compte reçu',"Bonjour {$name},\n\nVotre compte professionnel a bien été reçu. Notre équipe l’examinera dans un délai de 24 heures. Vous recevrez un message après la décision.\n\nL’équipe Chambre Rose"],
-            'en' => ['Account received',"Hello {$name},\n\nYour professional account has been received. Our team will review it within 24 hours and notify you after a decision.\n\nChambre Rose team"],
-            'pt' => ['Conta recebida',"Olá {$name},\n\nSua conta profissional foi recebida. Nossa equipe fará a análise em até 24 horas e avisará após a decisão.\n\nEquipe Chambre Rose"],
+            'fr' => ['Inscription reçue',"Bonjour {$name},\n\nVotre compte professionnel a été créé, mais il reste inactif jusqu’à sa validation par un administrateur. Notre équipe examinera votre profil sous 24 heures et vous enverra un e-mail dès que la décision sera prise.\n\nL’équipe Chambre Rose"],
+            'en' => ['Registration received',"Hello {$name},\n\nYour professional account was created, but it remains inactive until an administrator approves your profile. Our team will review it within 24 hours and email you as soon as a decision is made.\n\nChambre Rose team"],
+            'pt' => ['Cadastro recebido',"Olá {$name},\n\nSua conta profissional foi criada, mas permanece inativa até um administrador aprovar seu perfil. Nossa equipe fará a análise em até 24 horas e enviará um email assim que houver uma decisão.\n\nEquipe Chambre Rose"],
           ],
           'account_approved' => [
-            'fr' => ['Compte approuvé',"Bonjour {$name},\n\nVotre compte Chambre Rose a été approuvé. Vous pouvez maintenant vous connecter.\n\nL’équipe Chambre Rose"],
-            'en' => ['Account approved',"Hello {$name},\n\nYour Chambre Rose account has been approved. You can now sign in.\n\nChambre Rose team"],
-            'pt' => ['Conta aprovada',"Olá {$name},\n\nSua conta Chambre Rose foi aprovada. Você já pode entrar.\n\nEquipe Chambre Rose"],
+            'fr' => ['Compte approuvé',"Bonjour {$name},\n\nVotre compte Chambre Rose a été approuvé. Vous pouvez maintenant vous connecter ici :\n{$url}\n\nL’équipe Chambre Rose"],
+            'en' => ['Account approved',"Hello {$name},\n\nYour Chambre Rose account has been approved. You can now sign in here:\n{$url}\n\nChambre Rose team"],
+            'pt' => ['Conta aprovada',"Olá {$name},\n\nSua conta Chambre Rose foi aprovada. Você já pode entrar por este link:\n{$url}\n\nEquipe Chambre Rose"],
           ],
           'account_rejected' => [
             'fr' => ['Mise à jour de votre demande',"Bonjour {$name},\n\nVotre demande n’a pas été approuvée. Contactez le support si vous souhaitez davantage d’informations.\n\nL’équipe Chambre Rose"],
