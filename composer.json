@@ -16,6 +16,8 @@
   },
   "suggest": {
     "ext-bcmath": "Recomendada para criptografia Web Push mais rápida.",
+    "ext-curl": "Necessaria para entregar notificacoes Push nativas.",
+    "ext-openssl": "Necessaria para assinar tokens FCM e APNs.",
     "ext-pdo_mysql": "Necessaria para usar o MySQL da EasyHost.",
     "ext-pdo_pgsql": "Necessaria somente para desenvolvimento com PostgreSQL."
   },

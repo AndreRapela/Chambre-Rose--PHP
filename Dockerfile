@@ -1,9 +1,9 @@
 FROM php:8.3-apache
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libjpeg62-turbo-dev libpng-dev libpq-dev libwebp-dev unzip \
+    && apt-get install -y --no-install-recommends libcurl4-openssl-dev libjpeg62-turbo-dev libpng-dev libpq-dev libwebp-dev unzip \
     && docker-php-ext-configure gd --with-jpeg --with-webp \
-    && docker-php-ext-install bcmath gd pdo_pgsql pdo_mysql \
+    && docker-php-ext-install bcmath curl gd pdo_pgsql pdo_mysql \
     && a2enmod rewrite headers \
     && rm -rf /var/lib/apt/lists/*
 

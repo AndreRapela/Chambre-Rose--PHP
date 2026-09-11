@@ -34,7 +34,9 @@ final class App
         $notificationRepository = new NotificationRepository($pdo);
         $notificationOutbox = new NotificationOutboxRepository($pdo);
         $realtimeEvents = new RealtimeEventRepository($pdo);
-        $pushNotifications = new PushNotificationService($notificationRepository);
+        $webPushNotifications = new PushNotificationService($notificationRepository);
+        $nativePushNotifications = new NativePushNotificationService($notificationRepository);
+        $pushNotifications = new CompositePushNotificationSender($webPushNotifications, $nativePushNotifications);
         $userNotifications = new UserNotificationService(
             $notificationRepository,
             $notificationOutbox,
@@ -59,8 +61,9 @@ final class App
             new ListingRoutes($marketplace, $profiles, $profileMedia, $favorites, $products, $guard, $userNotifications),
             new ProductRoutes($productService, $products, $productImages, $guard, $userNotifications),
             new MessagingRoutes($messaging, $users, $guard, $userNotifications, $realtimeEvents),
-            new NotificationRoutes($notificationRepository, $userNotifications, $guard, $pushDeviceCookie),
+            new NotificationRoutes($notificationRepository, $userNotifications, $guard, $pushDeviceCookie, $nativePushNotifications),
             new AdminRoutes(new AdminUserService($users, $mail, $profiles), $guard, $userNotifications),
+            new AdminModerationRoutes(new AdminModerationService($pdo), $guard),
             new RealtimeRoutes($realtimeEvents, $guard),
         ]);
         $this->booted = true;

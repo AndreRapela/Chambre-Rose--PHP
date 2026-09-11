@@ -332,6 +332,74 @@ final class NotificationRepository
         $this->pdo->prepare($sql)->execute(['id' => $id]);
     }
 
+    public function saveNativeDevice(
+        int $userId,
+        string $token,
+        string $platform,
+        string $locale,
+        ?string $appVersion
+    ): void {
+        $params = [
+            'user_id' => $userId,
+            'token_hash' => hash('sha256', $token),
+            'device_token' => $token,
+            'platform' => $platform,
+            'locale' => $locale,
+            'app_version' => $appVersion,
+        ];
+        $sql = $this->isMySql()
+            ? <<<'SQL'
+                INSERT INTO native_push_devices (
+                  user_id,token_hash,device_token,platform,locale,app_version,created_at,updated_at
+                ) VALUES (
+                  :user_id,:token_hash,:device_token,:platform,:locale,:app_version,CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3)
+                ) ON DUPLICATE KEY UPDATE
+                  user_id=VALUES(user_id),device_token=VALUES(device_token),platform=VALUES(platform),
+                  locale=VALUES(locale),app_version=VALUES(app_version),failure_count=0,updated_at=CURRENT_TIMESTAMP(3)
+                SQL
+            : <<<'SQL'
+                INSERT INTO native_push_devices (
+                  user_id,token_hash,device_token,platform,locale,app_version,created_at,updated_at
+                ) VALUES (
+                  :user_id,:token_hash,:device_token,:platform,:locale,:app_version,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+                ) ON CONFLICT (token_hash) DO UPDATE SET
+                  user_id=EXCLUDED.user_id,device_token=EXCLUDED.device_token,platform=EXCLUDED.platform,
+                  locale=EXCLUDED.locale,app_version=EXCLUDED.app_version,failure_count=0,updated_at=CURRENT_TIMESTAMP
+                SQL;
+        $this->pdo->prepare($sql)->execute($params);
+    }
+
+    public function deleteNativeDevice(int $userId, string $token): void
+    {
+        $this->pdo->prepare(
+            'DELETE FROM native_push_devices WHERE user_id=:user_id AND token_hash=:token_hash'
+        )->execute(['user_id' => $userId, 'token_hash' => hash('sha256', $token)]);
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function nativeDevices(int $userId): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT id,device_token,platform,locale FROM native_push_devices '
+            . 'WHERE user_id=:user_id AND failure_count<5 ORDER BY id'
+        );
+        $statement->execute(['user_id' => $userId]);
+
+        return $statement->fetchAll();
+    }
+
+    public function recordNativeDeviceResult(int $id, bool $success, bool $expired = false): void
+    {
+        if ($expired) {
+            $this->pdo->prepare('DELETE FROM native_push_devices WHERE id=:id')->execute(['id' => $id]);
+            return;
+        }
+        $sql = $success
+            ? 'UPDATE native_push_devices SET failure_count=0,last_success_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=:id'
+            : 'UPDATE native_push_devices SET failure_count=failure_count+1,last_failure_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=:id';
+        $this->pdo->prepare($sql)->execute(['id' => $id]);
+    }
+
     /** @return array<string, mixed>|null */
     private function find(int $id, int $userId): ?array
     {

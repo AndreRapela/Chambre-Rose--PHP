@@ -12,7 +12,8 @@ final class NotificationRoutes implements RouteHandler
         private readonly NotificationRepository $notifications,
         private readonly UserNotificationService $service,
         private readonly ApiRequestGuard $guard,
-        private readonly PushDeviceCookie $pushDeviceCookie
+        private readonly PushDeviceCookie $pushDeviceCookie,
+        private readonly NativePushNotificationService $nativePush
     ) {
     }
 
@@ -25,7 +26,11 @@ final class NotificationRoutes implements RouteHandler
             $this->guard->currentUser($request);
             $publicKey = $this->service->publicKey();
 
-            return ApiResponder::json(['enabled' => $publicKey !== null, 'publicKey' => $publicKey]);
+            return ApiResponder::json([
+                'enabled' => $publicKey !== null,
+                'publicKey' => $publicKey,
+                'nativeEnabled' => $this->nativePush->isConfigured(),
+            ]);
         }
         if ($method === 'GET' && $path === '/api/notifications') {
             $user = $this->guard->currentUser($request);
@@ -56,6 +61,17 @@ final class NotificationRoutes implements RouteHandler
             }
 
             return ApiResponder::empty()->withHeaders(['Set-Cookie' => $this->pushDeviceCookie->clear()]);
+        }
+        if ($method === 'POST' && $path === '/api/native-push-devices') {
+            return $this->saveNativeDevice($request);
+        }
+        if ($method === 'DELETE' && $path === '/api/native-push-devices') {
+            $user = $this->guard->currentUser($request);
+            $this->guard->requireJson($request);
+            $token = trim((string) ($request->json()['token'] ?? ''));
+            if ($token !== '') $this->notifications->deleteNativeDevice((int) $user['id'], $token);
+
+            return ApiResponder::empty();
         }
         if ($method === 'PATCH' && $path === '/api/notifications/read') {
             $user = $this->guard->currentUser($request);
@@ -174,6 +190,30 @@ final class NotificationRoutes implements RouteHandler
 
         return ApiResponder::json(['subscribed' => true], 201)
             ->withHeaders(['Set-Cookie' => $this->pushDeviceCookie->issue($endpoint)]);
+    }
+
+    private function saveNativeDevice(Request $request): Response
+    {
+        $user = $this->guard->currentUser($request);
+        $this->guard->requireJson($request);
+        $input = $request->json();
+        $token = trim((string) ($input['token'] ?? ''));
+        $platform = strtolower(trim((string) ($input['platform'] ?? '')));
+        $locale = strtolower(trim((string) ($input['locale'] ?? 'en')));
+        $appVersion = trim((string) ($input['appVersion'] ?? ''));
+        if (strlen($token) < 20 || strlen($token) > 4096 || !in_array($platform, ['android', 'ios'], true)) {
+            throw new ApiException(400, 'Invalid native push device.');
+        }
+        if (preg_match('/^[a-z]{2}(?:[-_][a-z]{2})?$/i', $locale) !== 1) $locale = 'en';
+        $this->notifications->saveNativeDevice(
+            (int) $user['id'],
+            $token,
+            $platform,
+            substr($locale, 0, 16),
+            $appVersion === '' ? null : substr($appVersion, 0, 32)
+        );
+
+        return ApiResponder::json(['registered' => true], 201);
     }
 
     private static function queryInt(Request $request, string $name, int $fallback): int

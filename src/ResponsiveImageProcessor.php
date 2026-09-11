@@ -50,7 +50,7 @@ final class ResponsiveImageProcessor
             static fn (int $width): bool => in_array($width, self::WIDTHS, true)
         ));
         if ($targetWidths === []) {
-            imagedestroy($source);
+            unset($source);
             throw new ApiException(400, 'Unsupported responsive image width.');
         }
         $targetWidths = array_values(array_filter(
@@ -58,7 +58,7 @@ final class ResponsiveImageProcessor
             static fn (int $width): bool => $width <= $sourceWidth
         ));
         if ($targetWidths === []) {
-            imagedestroy($source);
+            unset($source);
 
             return [];
         }
@@ -111,11 +111,11 @@ final class ResponsiveImageProcessor
                         'bytes' => $bytes,
                     ];
                 } finally {
-                    imagedestroy($target);
+                    unset($target);
                 }
             }
         } finally {
-            imagedestroy($source);
+            unset($source);
         }
 
         return $variants;

@@ -10,6 +10,7 @@ require dirname(__DIR__) . '/bootstrap.php';
 
 use ChambreRose\ApiException;
 use ChambreRose\ApiResponder;
+use ChambreRose\AdminModerationService;
 use ChambreRose\AdminUserService;
 use ChambreRose\App;
 use ChambreRose\AuthSessionCookie;
@@ -352,6 +353,10 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
           business_name TEXT NULL, segment TEXT NULL, location TEXT NULL,
           location_city TEXT NULL, location_region TEXT NULL, location_country TEXT NULL
         );
+        CREATE TABLE user_reports (
+          id INTEGER PRIMARY KEY, reporter_id INTEGER NOT NULL, reported_id INTEGER NOT NULL,
+          reason TEXT NOT NULL, details TEXT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL
+        );
         SQL);
     $adminUserInsert = $adminDatabase->prepare(
         'INSERT INTO users (id,email,password_hash,first_name,last_name,phone,address,city,region,country,'
@@ -395,6 +400,26 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
             'country' => 'Belgium',
         ]);
     }
+    $adminDatabase->exec(
+        "INSERT INTO user_reports (id,reporter_id,reported_id,reason,details,status,created_at) VALUES "
+        . "(1,1,2,'FAKE_PROFILE','Evidence supplied','OPEN','2026-09-11 10:00:00'),"
+        . "(2,3,4,'HARASSMENT',NULL,'RESOLVED','2026-09-10 10:00:00')"
+    );
+    $moderation = new AdminModerationService($adminDatabase);
+    $openReports = $moderation->list('open', 1, 25);
+    $reviewingReport = $moderation->updateStatus(1, 'reviewing');
+    $assert(
+        $openReports['total'] === 1
+        && $openReports['items'][0]['reported']['id'] === 2
+        && $reviewingReport['status'] === 'REVIEWING',
+        'Administrator moderation must filter reports and persist workflow status changes.'
+    );
+    try {
+        $moderation->updateStatus(1, 'invalid');
+        $assert(false, 'Unknown moderation states must be rejected.');
+    } catch (ApiException $exception) {
+        $assert($exception->status === 400, 'Unknown moderation states must return a validation error.');
+    }
     $adminUsers = new UserRepository($adminDatabase);
     $adminService = new AdminUserService(
         $adminUsers,
@@ -426,6 +451,13 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         'CREATE TABLE push_subscriptions ('
         . 'id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,endpoint_hash TEXT NOT NULL,endpoint TEXT NOT NULL)'
     );
+    $notificationDatabase->exec(
+        'CREATE TABLE native_push_devices ('
+        . 'id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,'
+        . 'device_token TEXT NOT NULL,platform TEXT NOT NULL,locale TEXT NOT NULL,app_version TEXT NULL,'
+        . 'failure_count INTEGER NOT NULL DEFAULT 0,last_success_at TEXT NULL,last_failure_at TEXT NULL,'
+        . 'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)'
+    );
     $insertSubscription = $notificationDatabase->prepare(
         'INSERT INTO push_subscriptions (id,user_id,endpoint_hash,endpoint) VALUES (:id,:user_id,:hash,:endpoint)'
     );
@@ -438,7 +470,8 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
             'endpoint' => $endpoint,
         ]);
     }
-    (new NotificationRepository($notificationDatabase))->deleteSubscriptionByHash(
+    $deviceRepository = new NotificationRepository($notificationDatabase);
+    $deviceRepository->deleteSubscriptionByHash(
         7,
         hash('sha256', 'https://push.example.test/current-device')
     );
@@ -446,6 +479,28 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     $assert(
         $remainingDevice === 'https://push.example.test/mobile-device',
         'Revoking the current Push device must preserve the account subscription on another device.'
+    );
+    $nativeToken = str_repeat('native-token-', 4);
+    $deviceRepository->saveNativeDevice(7, $nativeToken, 'android', 'en', '1.0.0');
+    $deviceRepository->saveNativeDevice(8, $nativeToken, 'ios', 'fr-BE', '1.0.1');
+    $nativeDevices = $deviceRepository->nativeDevices(8);
+    $nativeDeviceId = (int) $nativeDevices[0]['id'];
+    $assert(
+        count($nativeDevices) === 1
+        && $nativeDevices[0]['platform'] === 'ios'
+        && $nativeDevices[0]['locale'] === 'fr-BE',
+        'A native token must be rebound to the current account and retain its platform metadata.'
+    );
+    $deviceRepository->recordNativeDeviceResult($nativeDeviceId, false);
+    $deviceRepository->recordNativeDeviceResult($nativeDeviceId, true);
+    $failureCount = $notificationDatabase
+        ->query('SELECT failure_count FROM native_push_devices WHERE id=' . $nativeDeviceId)
+        ->fetchColumn();
+    $assert((int) $failureCount === 0, 'A successful native delivery must clear prior failure counts.');
+    $deviceRepository->recordNativeDeviceResult($nativeDeviceId, false, true);
+    $assert(
+        $deviceRepository->nativeDevices(8) === [],
+        'Expired native device tokens must be removed instead of retried indefinitely.'
     );
 
     $retentionDatabase = new PDO('sqlite::memory:');
@@ -773,7 +828,7 @@ imagefilledrectangle($wideSource, 0, 0, 799, 399, imagecolorallocate($wideSource
 ob_start();
 imagepng($wideSource);
 $widePng = ob_get_clean();
-imagedestroy($wideSource);
+unset($wideSource);
 $assert(is_string($widePng), 'Responsive image fixture must be encoded.');
 $responsiveVariants = $imageProcessor->generate($widePng);
 $assert(

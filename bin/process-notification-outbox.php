@@ -15,6 +15,8 @@ use ChambreRose\DatabaseMigrator;
 use ChambreRose\NotificationOutboxRepository;
 use ChambreRose\NotificationRepository;
 use ChambreRose\NotificationRetentionService;
+use ChambreRose\NativePushNotificationService;
+use ChambreRose\CompositePushNotificationSender;
 use ChambreRose\PushNotificationService;
 use ChambreRose\PushNotificationWorker;
 use ChambreRose\RealtimeEventRepository;
@@ -34,7 +36,10 @@ try {
     $notifications = new NotificationRepository($pdo);
     $worker = new PushNotificationWorker(
         new NotificationOutboxRepository($pdo),
-        new PushNotificationService($notifications),
+        new CompositePushNotificationSender(
+            new PushNotificationService($notifications),
+            new NativePushNotificationService($notifications)
+        ),
         Config::int('PUSH_OUTBOX_RETRY_BASE_SECONDS', 15),
         Config::int('PUSH_OUTBOX_RETRY_MAX_SECONDS', 3600)
     );
