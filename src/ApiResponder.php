@@ -35,7 +35,12 @@ final class ApiResponder
         }
         foreach (explode(',', $header) as $candidate) {
             $candidate = trim($candidate);
-            if ($candidate === '*' || preg_replace('/^W\//i', '', $candidate) === $etag) {
+            $normalized = preg_replace('/^W\//i', '', $candidate);
+            // Apache's compression filter appends a representation suffix to
+            // otherwise identical ETags (for example "-gzip"). Accepting that
+            // transport variant keeps conditional GETs useful behind Apache.
+            $normalized = preg_replace('/-(?:gzip|br)"$/i', '"', (string) $normalized);
+            if ($candidate === '*' || $normalized === $etag) {
                 return true;
             }
         }

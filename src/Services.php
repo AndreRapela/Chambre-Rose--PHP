@@ -62,8 +62,8 @@ final class AuthService
      */
     public function register(array $input, ?UploadedFile $registrationPhoto = null): array
     {
-        $data = Validator::register($input);
         $type = Validator::accountType($input);
+        $data = Validator::register($input, true, $type);
         $locale = Validator::locale($input);
         $data['email'] = strtolower($data['email']);
         if ($this->users->emailExists($data['email'])) {
@@ -169,12 +169,12 @@ final class AuthService
      */
     public function updateProfile(string $currentEmail, array $input): array
     {
-        $data = Validator::register($input, false);
-        $data['email'] = strtolower($data['email']);
         $user = $this->users->findByEmail(strtolower(trim($currentEmail)));
         if ($user === null) {
             throw new ApiException(404, 'User profile not found.');
         }
+        $data = Validator::register($input, false, (string) $user['role']);
+        $data['email'] = strtolower($data['email']);
         if ($this->users->emailExists($data['email'], $user['id'])) {
             throw new ApiException(409, 'Email is already registered.');
         }
@@ -198,6 +198,38 @@ final class AuthService
         );
 
         return $this->authenticationResponse($updated);
+    }
+
+    /**
+     * Updates the authenticated member's single private location source. For
+     * professionals, the city/region/country projection is synchronized with
+     * the public listing while the street and postal code remain account-only.
+     *
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
+    public function updateLocation(string $currentEmail, array $input): array
+    {
+        $user = $this->users->findByEmail(strtolower(trim($currentEmail)));
+        if ($user === null) {
+            throw new ApiException(404, 'User profile not found.');
+        }
+        $location = Validator::location($input, (string) $user['role']);
+        $updated = $this->users->updateLocation((int) $user['id'], $location);
+        $profile = self::profileFromUser($updated);
+
+        if (in_array($updated['role'], ['ESCORT', 'STORE'], true)) {
+            $professional = $this->marketplace->saveProfile((int) $updated['id'], [
+                'locationCity' => $location['city'],
+                'locationRegion' => $location['region'],
+                'locationCountry' => $location['country'],
+            ]);
+            $profile['locationCity'] = $professional['locationCity'] ?? $location['city'];
+            $profile['locationRegion'] = $professional['locationRegion'] ?? $location['region'];
+            $profile['locationCountry'] = $professional['locationCountry'] ?? $location['country'];
+        }
+
+        return $profile;
     }
 
     /**
@@ -249,6 +281,7 @@ final class AuthService
             'city' => $user['city'],
             'country' => $user['country'],
             'postalCode' => $user['postalCode'],
+            'locationRegion' => $user['region'],
             'role' => $user['role'],
             'approvalStatus' => $user['approvalStatus'],
             'approvalReason' => $user['approvalReason'],
@@ -296,9 +329,11 @@ final class AuthService
             if ($user !== null) {
                 $issued = $this->passwordResets->issueCode((int) $user['id']);
                 $challenge = $issued['challenge'];
+                $frontend = rtrim(Config::get('APP_FRONTEND_URL', 'https://www.chambre-rose.com') ?? 'https://www.chambre-rose.com', '/');
                 $this->mail->send($user['email'], 'password_reset', Validator::locale($input + ['locale' => $user['locale']]), [
                     'name' => $user['firstName'],
                     'code' => $issued['code'],
+                    'url' => $frontend . '/auth/reset-password?challenge=' . rawurlencode($challenge),
                 ]);
                 $this->notifications?->notify(
                     (int) $user['id'],
@@ -537,6 +572,12 @@ final class AdminUserService
             'firstName' => $user['firstName'],
             'lastName' => $user['lastName'],
             'email' => $user['email'],
+            'phone' => $user['phone'],
+            'address' => $user['address'],
+            'city' => $user['city'],
+            'country' => $user['country'],
+            'postalCode' => $user['postalCode'],
+            'locationRegion' => $user['region'],
             'role' => $user['role'],
             'approvalStatus' => $user['approvalStatus'],
             'approvalReason' => $user['approvalReason'],

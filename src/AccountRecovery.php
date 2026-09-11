@@ -93,7 +93,9 @@ final class PasswordResetRepository
             if ($row['verified_at'] !== null) {
                 $this->pdo->commit();
 
-                return true;
+                // Keep retries idempotent for the same code, but never allow
+                // an arbitrary code after the token has already been verified.
+                return hash_equals($row['verification_code_hash'], hash('sha256', $code));
             }
 
             $attempts = (int) ($row['verification_attempts'] ?? 0);
@@ -175,8 +177,11 @@ final class MailService
      */
     public function send(string $recipient, string $template, string $locale, array $vars): string
     {
-        $locale = in_array($locale, ['fr','en','pt'], true) ? $locale : 'fr';
-        [$subject,$body] = $this->render($template, $locale, $vars);
+        // Portuguese is not a supported communication language for the site.
+        // Keep French when explicitly selected and use English for every other
+        // value so an old/stale `pt` preference can never leak into an email.
+        $locale = strtolower($locale) === 'fr' ? 'fr' : 'en';
+        [$subject, $textBody, $htmlBody] = $this->render($template, $locale, $vars);
         $transport = strtolower(Config::get('MAIL_TRANSPORT') ?? '');
         $environment = strtolower(Config::get('APP_ENV', 'development') ?? 'development');
         // Logging is useful locally, but silently leaving production emails in
@@ -193,17 +198,17 @@ final class MailService
         try {
             if ($transport === 'mail') {
                 $from = Config::get('MAIL_FROM', 'noreply@chambre-rose.com') ?? 'noreply@chambre-rose.com';
+                $boundary = '=_ChambreRose_' . bin2hex(random_bytes(12));
                 $headers = implode("\r\n", [
                     'From: ' . $from,
                     'Reply-To: ' . $from,
                     'MIME-Version: 1.0',
-                    'Content-Type: text/plain; charset=UTF-8',
-                    'Content-Transfer-Encoding: 8bit',
+                    'Content-Type: multipart/alternative; boundary="' . $boundary . '"',
                     'X-Mailer: Chambre Rose',
                 ]);
-                $status = mail($recipient, $subject, $body, $headers) ? 'SENT' : 'FAILED';
+                $status = mail($recipient, $subject, $this->multipart($boundary, $textBody, $htmlBody), $headers) ? 'SENT' : 'FAILED';
             } elseif ($transport === 'smtp') {
-                $this->smtp($recipient, $subject, $body);
+                $this->smtp($recipient, $subject, $textBody, $htmlBody);
                 $status = 'SENT';
             } elseif ($transport !== 'log') {
                 throw new \RuntimeException('Unsupported mail transport.');
@@ -212,9 +217,11 @@ final class MailService
             $status = 'FAILED';
             error_log('[Chambre Rose API] Email delivery failed for template ' . $template . '.');
         }
+        // Keep the plain-text alternative for diagnostics and tests. Never
+        // persist a reset URL/challenge in the outbox table.
         $storedBody = $template === 'password_reset'
-            ? preg_replace('/https?:\/\/\S+/u', '[secure reset link omitted]', $body) ?? '[reset email redacted]'
-            : $body;
+            ? preg_replace('/https?:\/\/\S+/u', '[secure reset link omitted]', $textBody) ?? '[reset email redacted]'
+            : $textBody;
         $sentAt = $status === 'SENT' ? 'CURRENT_TIMESTAMP' : 'NULL';
         $statement = $this->pdo->prepare(
             'INSERT INTO email_outbox '
@@ -237,39 +244,200 @@ final class MailService
     }
     /**
      * @param array<string, string> $v
-     * @return array{string, string}
+     * @return array{string, string, string}
      */
     private function render(string $template, string $locale, array $v): array
     {
-        $name = $v['name'] ?? '';
-        $url = $v['url'] ?? '';
-        $code = $v['code'] ?? '';
-        $texts = [
-          'password_reset' => [
-            'fr' => ['Code de réinitialisation du mot de passe',"Bonjour {$name},\n\nNous avons reçu une demande de réinitialisation. Saisissez ce code à 6 chiffres dans Chambre Rose dans l’heure :\n{$code}\n\nSi vous n’êtes pas à l’origine de cette demande, ignorez ce message.\n\nL’équipe Chambre Rose"],
-            'en' => ['Password reset verification code',"Hello {$name},\n\nWe received a password reset request. Enter this six-digit code in Chambre Rose within one hour:\n{$code}\n\nIf you did not request this, ignore this message.\n\nChambre Rose team"],
-            'pt' => ['Código de redefinição de senha',"Olá {$name},\n\nRecebemos um pedido de redefinição de senha. Digite este código de 6 números no Chambre Rose em até uma hora:\n{$code}\n\nSe não foi você, ignore este email.\n\nEquipe Chambre Rose"],
-          ],
-          'account_created' => [
-            'fr' => ['Inscription reçue',"Bonjour {$name},\n\nVotre compte professionnel a été créé, mais il reste inactif jusqu’à sa validation par un administrateur. Notre équipe examinera votre profil sous 24 heures et vous enverra un e-mail dès que la décision sera prise.\n\nL’équipe Chambre Rose"],
-            'en' => ['Registration received',"Hello {$name},\n\nYour professional account was created, but it remains inactive until an administrator approves your profile. Our team will review it within 24 hours and email you as soon as a decision is made.\n\nChambre Rose team"],
-            'pt' => ['Cadastro recebido',"Olá {$name},\n\nSua conta profissional foi criada, mas permanece inativa até um administrador aprovar seu perfil. Nossa equipe fará a análise em até 24 horas e enviará um email assim que houver uma decisão.\n\nEquipe Chambre Rose"],
-          ],
-          'account_approved' => [
-            'fr' => ['Compte approuvé',"Bonjour {$name},\n\nVotre compte Chambre Rose a été approuvé. Vous pouvez maintenant vous connecter ici :\n{$url}\n\nL’équipe Chambre Rose"],
-            'en' => ['Account approved',"Hello {$name},\n\nYour Chambre Rose account has been approved. You can now sign in here:\n{$url}\n\nChambre Rose team"],
-            'pt' => ['Conta aprovada',"Olá {$name},\n\nSua conta Chambre Rose foi aprovada. Você já pode entrar por este link:\n{$url}\n\nEquipe Chambre Rose"],
-          ],
-          'account_rejected' => [
-            'fr' => ['Mise à jour de votre demande',"Bonjour {$name},\n\nVotre demande n’a pas été approuvée. Contactez le support si vous souhaitez davantage d’informations.\n\nL’équipe Chambre Rose"],
-            'en' => ['Application update',"Hello {$name},\n\nYour application was not approved. Contact support if you need more information.\n\nChambre Rose team"],
-            'pt' => ['Atualização do cadastro',"Olá {$name},\n\nSeu cadastro não foi aprovado. Entre em contato com o suporte caso precise de mais informações.\n\nEquipe Chambre Rose"],
-          ],
+        $name = trim($v['name'] ?? '') ?: ($locale === 'fr' ? 'vous' : 'there');
+        $url = trim($v['url'] ?? '');
+        $code = trim($v['code'] ?? '');
+        $copy = [
+            'en' => [
+                'password_reset' => [
+                    'subject' => 'Your Chambre Rose verification code',
+                    'eyebrow' => 'SECURITY CHECK',
+                    'title' => 'Reset your password',
+                    'intro' => 'We received a request to reset your Chambre Rose password.',
+                    'code_label' => 'Your six-digit verification code',
+                    'instructions' => 'Enter this code on the reset page within one hour. The code can only be used once.',
+                    'security' => 'If you did not request this, you can safely ignore this email.',
+                    'cta' => 'Open password reset',
+                    'footer' => 'Chambre Rose security team',
+                ],
+                'account_created' => [
+                    'subject' => 'Your Chambre Rose registration is under review',
+                    'eyebrow' => 'WELCOME TO CHAMBRE ROSE',
+                    'title' => 'Your profile is in review',
+                    'intro' => 'Your professional account has been created and is waiting for administrator approval.',
+                    'instructions' => 'Our team will review your profile within 24 hours. You will receive another email as soon as a decision is made.',
+                    'security' => 'You do not need to do anything else right now.',
+                    'cta' => 'Visit Chambre Rose',
+                    'footer' => 'Chambre Rose team',
+                ],
+                'account_approved' => [
+                    'subject' => 'Your Chambre Rose account is approved',
+                    'eyebrow' => 'ACCESS GRANTED',
+                    'title' => 'You are ready to sign in',
+                    'intro' => 'Your Chambre Rose account has been approved by an administrator.',
+                    'instructions' => 'Sign in to complete your profile, discover approved profiles and use private messaging.',
+                    'security' => 'Keep your login details private and never share your password.',
+                    'cta' => 'Sign in to Chambre Rose',
+                    'footer' => 'Chambre Rose team',
+                ],
+                'account_rejected' => [
+                    'subject' => 'Update on your Chambre Rose application',
+                    'eyebrow' => 'APPLICATION UPDATE',
+                    'title' => 'Your application needs attention',
+                    'intro' => 'Your professional profile was not approved at this time.',
+                    'instructions' => 'Please contact support if you need more information or would like help with your next steps.',
+                    'security' => 'Thank you for your interest in Chambre Rose.',
+                    'cta' => 'Contact support',
+                    'footer' => 'Chambre Rose team',
+                ],
+            ],
+            'fr' => [
+                'password_reset' => [
+                    'subject' => 'Votre code de vérification Chambre Rose',
+                    'eyebrow' => 'CONTRÔLE DE SÉCURITÉ',
+                    'title' => 'Réinitialiser votre mot de passe',
+                    'intro' => 'Nous avons reçu une demande de réinitialisation de votre mot de passe Chambre Rose.',
+                    'code_label' => 'Votre code de vérification à six chiffres',
+                    'instructions' => 'Saisissez ce code sur la page de réinitialisation dans l’heure. Il ne peut être utilisé qu’une seule fois.',
+                    'security' => 'Si vous n’êtes pas à l’origine de cette demande, vous pouvez ignorer cet e-mail.',
+                    'cta' => 'Ouvrir la réinitialisation',
+                    'footer' => 'Équipe sécurité Chambre Rose',
+                ],
+                'account_created' => [
+                    'subject' => 'Votre inscription Chambre Rose est en cours d’examen',
+                    'eyebrow' => 'BIENVENUE SUR CHAMBRE ROSE',
+                    'title' => 'Votre profil est en cours d’examen',
+                    'intro' => 'Votre compte professionnel a été créé et attend la validation d’un administrateur.',
+                    'instructions' => 'Notre équipe examinera votre profil sous 24 heures. Vous recevrez un nouvel e-mail dès qu’une décision sera prise.',
+                    'security' => 'Vous n’avez rien d’autre à faire pour le moment.',
+                    'cta' => 'Visiter Chambre Rose',
+                    'footer' => 'Équipe Chambre Rose',
+                ],
+                'account_approved' => [
+                    'subject' => 'Votre compte Chambre Rose est approuvé',
+                    'eyebrow' => 'ACCÈS AUTORISÉ',
+                    'title' => 'Vous pouvez vous connecter',
+                    'intro' => 'Votre compte Chambre Rose a été approuvé par un administrateur.',
+                    'instructions' => 'Connectez-vous pour terminer votre profil, découvrir les profils approuvés et utiliser la messagerie privée.',
+                    'security' => 'Gardez vos identifiants privés et ne partagez jamais votre mot de passe.',
+                    'cta' => 'Se connecter à Chambre Rose',
+                    'footer' => 'Équipe Chambre Rose',
+                ],
+                'account_rejected' => [
+                    'subject' => 'Mise à jour de votre demande Chambre Rose',
+                    'eyebrow' => 'MISE À JOUR DE LA DEMANDE',
+                    'title' => 'Votre demande nécessite votre attention',
+                    'intro' => 'Votre profil professionnel n’a pas été approuvé pour le moment.',
+                    'instructions' => 'Contactez le support si vous souhaitez davantage d’informations ou de l’aide pour la suite.',
+                    'security' => 'Merci de votre intérêt pour Chambre Rose.',
+                    'cta' => 'Contacter le support',
+                    'footer' => 'Équipe Chambre Rose',
+                ],
+            ],
         ];
+        $entry = $copy[$locale][$template] ?? throw new \RuntimeException('Unknown email template.');
+        $isReset = $template === 'password_reset';
+        $displayName = $locale === 'fr' ? 'Bonjour ' . $name : 'Hello ' . $name;
+        $text = $displayName . ",\n\n" . $entry['intro'] . "\n\n";
+        if ($isReset) {
+            $text .= $entry['code_label'] . ":\n\n" . $code . "\n\n";
+        }
+        $text .= $entry['instructions'];
+        if ($url !== '') {
+            $text .= "\n\n" . ($locale === 'fr' ? 'Ouvrir le lien :' : 'Open the link:') . "\n" . $url;
+        }
+        $text .= "\n\n" . $entry['security'] . "\n\n" . $entry['footer'];
 
-        return $texts[$template][$locale] ?? throw new \RuntimeException('Unknown email template.');
+        $content = '<p style="margin:0 0 20px;color:#4d3a40;font-size:16px;line-height:1.65;">'
+            . self::escape($entry['intro']) . '</p>';
+        if ($isReset) {
+            $content .= '<div style="margin:26px 0 24px;padding:22px 18px;border:1px solid #f1c5d1;border-radius:18px;background:#fff5f7;text-align:center;">'
+                . '<div style="color:#922843;font-size:12px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;">'
+                . self::escape($entry['code_label']) . '</div>'
+                . '<div style="margin-top:12px;color:#9e173b;font-size:36px;font-weight:800;letter-spacing:9px;line-height:1.1;">'
+                . self::escape($code) . '</div></div>';
+        }
+        $content .= '<p style="margin:0 0 16px;color:#4d3a40;font-size:16px;line-height:1.65;">'
+            . self::escape($entry['instructions']) . '</p>'
+            . '<div style="margin:22px 0;padding:14px 16px;border-left:4px solid #c53a5d;border-radius:8px;background:#fff8fa;color:#6b4b55;font-size:14px;line-height:1.55;">'
+            . '<span style="color:#9e173b;font-weight:800;">✦ </span>' . self::escape($entry['security']) . '</div>';
+
+        $siteUrl = rtrim(Config::get('APP_FRONTEND_URL', 'https://www.chambre-rose.com') ?? 'https://www.chambre-rose.com', '/');
+        $ctaUrl = $url !== '' ? $url : $siteUrl;
+        $html = $this->htmlTemplate(
+            $entry['eyebrow'],
+            $entry['title'],
+            $content,
+            $entry['cta'],
+            $ctaUrl,
+            $entry['footer'],
+            $locale
+        );
+
+        return [$entry['subject'], $text, $html];
     }
-    private function smtp(string $to, string $subject, string $body): void
+    private function htmlTemplate(
+        string $eyebrow,
+        string $title,
+        string $content,
+        string $ctaLabel,
+        string $ctaUrl,
+        string $footer,
+        string $locale
+    ): string {
+        $siteUrl = rtrim(Config::get('APP_FRONTEND_URL', 'https://www.chambre-rose.com') ?? 'https://www.chambre-rose.com', '/');
+        $assetBase = rtrim(Config::get('MAIL_ASSET_BASE_URL', 'https://www.chambre-rose.com') ?? 'https://www.chambre-rose.com', '/');
+        $safeSiteUrl = self::escape($siteUrl);
+        $safeCtaUrl = self::escape($ctaUrl);
+        $safeLogoUrl = self::escape($assetBase . '/assets/brand-logo-84.webp');
+        $safeEyebrow = self::escape($eyebrow);
+        $safeTitle = self::escape($title);
+        $safeCtaLabel = self::escape($ctaLabel);
+        $safeFooter = self::escape($footer);
+        $lang = $locale === 'fr' ? 'fr' : 'en';
+        $tagline = $locale === 'fr' ? 'Privé · Élégant · Personnel' : 'Private · Polished · Personal';
+        $automated = $locale === 'fr'
+            ? 'Ceci est un message automatique de Chambre Rose. Merci de ne pas répondre.'
+            : 'This is an automated message from Chambre Rose. Please do not reply.';
+
+        return '<!doctype html><html lang="' . $lang . '"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>'
+            . $safeTitle . '</title></head><body style="margin:0;padding:0;background:#f8f0f2;color:#2d1b21;font-family:Arial,Helvetica,sans-serif;">'
+            . '<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">' . $safeEyebrow . ' · ' . $safeTitle . '</div>'
+            . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#f8f0f2;"><tr><td align="center" style="padding:28px 12px;">'
+            . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:620px;overflow:hidden;border-radius:24px;background:#ffffff;box-shadow:0 18px 45px rgba(83,24,43,.14);">'
+            . '<tr><td style="padding:28px 32px;background:linear-gradient(135deg,#2a171e 0%,#4b1b2c 100%);">'
+            . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr>'
+            . '<td width="48" valign="middle"><a href="' . $safeSiteUrl . '" style="text-decoration:none;"><img src="' . $safeLogoUrl . '" width="42" height="42" alt="Chambre Rose" style="display:block;width:42px;height:42px;border:0;outline:none;"></a></td>'
+            . '<td valign="middle" style="padding-left:12px;"><a href="' . $safeSiteUrl . '" style="color:#ffffff;text-decoration:none;font-size:21px;font-weight:800;letter-spacing:.2px;">Chambre Rose</a><div style="margin-top:3px;color:#f5cbd6;font-size:12px;letter-spacing:1.4px;text-transform:uppercase;">' . self::escape($tagline) . '</div></td>'
+            . '<td width="42" align="right" valign="middle" style="color:#f5cbd6;font-size:26px;">✦</td>'
+            . '</tr></table></td></tr>'
+            . '<tr><td style="padding:34px 34px 30px;background:#ffffff;"><div style="color:#c53a5d;font-size:12px;font-weight:800;letter-spacing:1.8px;">'
+            . $safeEyebrow . '</div><h1 style="margin:10px 0 16px;color:#2d1b21;font-size:30px;line-height:1.2;letter-spacing:-.4px;">'
+            . $safeTitle . '</h1>' . $content
+            . '<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:26px 0 8px;"><tr><td style="border-radius:999px;background:#c53a5d;"><a href="' . $safeCtaUrl . '" style="display:inline-block;padding:13px 21px;border:1px solid #c53a5d;border-radius:999px;color:#ffffff;font-size:15px;font-weight:800;text-decoration:none;">'
+            . $safeCtaLabel . ' <span aria-hidden="true">→</span></a></td></tr></table>'
+            . '</td></tr><tr><td style="padding:18px 34px 24px;border-top:1px solid #f2dde3;background:#fffafb;color:#7b626a;font-size:12px;line-height:1.6;">'
+            . '<span style="color:#9e173b;font-size:16px;">♡</span> ' . $safeFooter . '<br><span style="color:#9a858b;">' . self::escape($automated) . '</span>'
+            . '</td></tr></table></td></tr></table></body></html>';
+    }
+    private function multipart(string $boundary, string $textBody, string $htmlBody): string
+    {
+        $encodedText = rtrim(chunk_split(base64_encode($textBody), 76, "\r\n"));
+        $encodedHtml = rtrim(chunk_split(base64_encode($htmlBody), 76, "\r\n"));
+
+        return '--' . $boundary . "\r\n"
+            . "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+            . $encodedText . "\r\n\r\n"
+            . '--' . $boundary . "\r\n"
+            . "Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+            . $encodedHtml . "\r\n\r\n"
+            . '--' . $boundary . "--\r\n";
+    }
+    private function smtp(string $to, string $subject, string $textBody, string $htmlBody): void
     {
         $host = Config::get('SMTP_HOST');
         $port = Config::int('SMTP_PORT', 587);
@@ -319,10 +487,17 @@ final class MailService
         $send('MAIL FROM:<' . $from . '>', [250]);
         $send('RCPT TO:<' . $to . '>', [250,251]);
         $send('DATA', [354]);
-        $payload = "From: {$from}\r\nTo: {$to}\r\nSubject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" . str_replace("\n.", "\n..", $body) . "\r\n.";
+        $boundary = '=_ChambreRose_' . bin2hex(random_bytes(12));
+        $headers = "From: {$from}\r\nTo: {$to}\r\nSubject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"{$boundary}\"\r\n\r\n";
+        $payload = $headers . $this->multipart($boundary, $textBody, $htmlBody);
+        $payload = str_replace("\n.", "\n..", $payload) . "\r\n.";
         $send($payload, [250]);
         $send('QUIT', [221]);
         fclose($socket);
+    }
+    private static function escape(string $value): string
+    {
+        return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
     private static function mask(string $email): string
     {

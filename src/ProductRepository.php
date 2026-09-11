@@ -66,13 +66,20 @@ final class ProductRepository
             'name' => 'name ASC, id ASC',
             default => 'purchase_count DESC, updated_at DESC, id DESC',
         };
+        $orderParams = [];
+        $nearCity = LocationNormalizer::key($filters['nearCity'] ?? '', 80);
+        if ($nearCity !== '') {
+            $order = 'CASE WHEN ' . $this->normalizedLocationSql("COALESCE(store_city,'')")
+                . ' = :near_city_order THEN 0 ELSE 1 END ASC, ' . $order;
+            $orderParams['near_city_order'] = $nearCity;
+        }
         $whereSql = implode(' AND ', $where);
         $count = $this->pdo->prepare('SELECT COUNT(*) FROM products WHERE ' . $whereSql);
         $count->execute($params);
         $total = (int) $count->fetchColumn();
 
         $query = $this->pdo->prepare('SELECT ' . self::COLUMNS . ' FROM products WHERE ' . $whereSql . " ORDER BY {$order} LIMIT :limit OFFSET :offset");
-        foreach ($params as $key => $value) {
+        foreach ($params + $orderParams as $key => $value) {
             $query->bindValue(':' . $key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
         }
         $query->bindValue(':limit', $pageSize, PDO::PARAM_INT);
@@ -283,6 +290,26 @@ final class ProductRepository
         }
 
         return function_exists('mb_substr') ? mb_substr($value, 0, $max, 'UTF-8') : substr($value, 0, $max);
+    }
+
+    private function normalizedLocationSql(string $expression): string
+    {
+        $sql = "LOWER(TRIM({$expression}))";
+        foreach ([
+            'á' => 'a', 'à' => 'a', 'â' => 'a', 'ã' => 'a', 'ä' => 'a', 'å' => 'a',
+            'ç' => 'c', 'é' => 'e', 'è' => 'e', 'ê' => 'e', 'ë' => 'e',
+            'í' => 'i', 'ì' => 'i', 'î' => 'i', 'ï' => 'i', 'ñ' => 'n',
+            'ó' => 'o', 'ò' => 'o', 'ô' => 'o', 'õ' => 'o', 'ö' => 'o', 'ø' => 'o',
+            'ú' => 'u', 'ù' => 'u', 'û' => 'u', 'ü' => 'u', 'ý' => 'y', 'ÿ' => 'y',
+            'æ' => 'ae', 'œ' => 'oe', 'ß' => 'ss', 'ł' => 'l',
+            '-' => ' ', '_' => ' ', '.' => ' ', ',' => ' ', "'" => '', '’' => '',
+        ] as $from => $to) {
+            $from = str_replace("'", "''", $from);
+            $to = str_replace("'", "''", $to);
+            $sql = "REPLACE({$sql},'{$from}','{$to}')";
+        }
+
+        return "TRIM(REPLACE(REPLACE({$sql},'  ',' '),'  ',' '))";
     }
 
     private static function bool(mixed $value): bool

@@ -25,7 +25,7 @@ final class Validator
      * @param array<string, mixed> $data
      * @return array<string, string>
      */
-    public static function register(array $data, bool $includePassword = true): array
+    public static function register(array $data, bool $includePassword = true, ?string $role = null): array
     {
         $errors = [];
         self::requiredString($data, 'firstName', 2, 80, $errors);
@@ -34,9 +34,16 @@ final class Validator
         self::email($data, 'email', $errors);
         self::requiredString($data, 'phone', 1, 40, $errors);
         self::phone($data, 'phone', $errors);
-        self::optionalString($data, 'address', 160, $errors);
-        self::optionalString($data, 'city', 80, $errors);
-        self::optionalString($data, 'country', 80, $errors);
+        if (strtoupper((string) $role) === 'ESCORT') {
+            self::requiredString($data, 'address', 3, 160, $errors);
+            self::requiredString($data, 'city', 1, 80, $errors);
+            self::requiredString($data, 'country', 1, 80, $errors);
+        } else {
+            self::optionalString($data, 'address', 160, $errors);
+            self::optionalString($data, 'city', 80, $errors);
+            self::optionalString($data, 'country', 80, $errors);
+        }
+        self::optionalString($data, 'region', 100, $errors);
         self::optionalString($data, 'postalCode', 20, $errors);
         if ($includePassword) {
             self::validatePassword($data['password'] ?? null, $errors);
@@ -44,7 +51,7 @@ final class Validator
         self::throwIfInvalid($errors);
 
         $result = [];
-        foreach (['firstName', 'lastName', 'email', 'phone', 'address', 'city', 'country', 'postalCode'] as $field) {
+        foreach (['firstName', 'lastName', 'email', 'phone', 'address', 'city', 'region', 'country', 'postalCode'] as $field) {
             $result[$field] = trim((string) ($data[$field] ?? ''));
         }
         if ($includePassword) {
@@ -52,6 +59,33 @@ final class Validator
         }
 
         return $result;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array{address:string,city:string,region:string,country:string,postalCode:string}
+     */
+    public static function location(array $data, string $role): array
+    {
+        $errors = [];
+        if (strtoupper($role) === 'ESCORT') {
+            self::requiredString($data, 'address', 3, 160, $errors);
+        } else {
+            self::optionalString($data, 'address', 160, $errors);
+        }
+        self::requiredString($data, 'city', 1, 80, $errors);
+        self::optionalString($data, 'region', 100, $errors);
+        self::requiredString($data, 'country', 1, 80, $errors);
+        self::optionalString($data, 'postalCode', 20, $errors);
+        self::throwIfInvalid($errors);
+
+        return [
+            'address' => LocationNormalizer::display($data['address'] ?? ''),
+            'city' => LocationNormalizer::display($data['city'] ?? ''),
+            'region' => LocationNormalizer::display($data['region'] ?? ''),
+            'country' => LocationNormalizer::display($data['country'] ?? ''),
+            'postalCode' => LocationNormalizer::display($data['postalCode'] ?? ''),
+        ];
     }
 
     /** @param array<string, mixed> $data */

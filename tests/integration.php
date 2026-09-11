@@ -225,10 +225,12 @@ $assert(
 
 [$forgotStatus, $forgotBody] = $request('POST', '/api/auth/forgot-password', [
     'email' => $cleanup->email('visitor'),
-    'locale' => 'en',
+    // Legacy accounts may still submit a Portuguese locale. Outgoing mail
+    // must remain in one of the site's supported communication languages.
+    'locale' => 'pt',
 ]);
 $resetEmail = Database::connection()->prepare(
-    'SELECT delivery_status, body FROM email_outbox WHERE recipient = :recipient AND template = :template ORDER BY id DESC LIMIT 1'
+    'SELECT delivery_status, locale, subject, body FROM email_outbox WHERE recipient = :recipient AND template = :template ORDER BY id DESC LIMIT 1'
 );
 $resetEmail->execute(['recipient' => $cleanup->email('visitor'), 'template' => 'password_reset']);
 $resetEmailRow = $resetEmail->fetch();
@@ -243,6 +245,9 @@ $assert(
     && strlen($resetChallenge) >= 32
     && is_array($resetEmailRow)
     && in_array($resetEmailRow['delivery_status'] ?? null, ['SENT', 'LOGGED'], true)
+    && ($resetEmailRow['locale'] ?? null) === 'en'
+    && str_contains((string) ($resetEmailRow['subject'] ?? ''), 'verification code')
+    && !str_contains((string) ($resetEmailRow['body'] ?? ''), 'Código')
     && is_string($resetCode)
     && preg_match('/^\d{6}$/', $resetCode) === 1,
     'Password recovery must send a six-digit verification code and return a reset challenge.'
@@ -257,6 +262,11 @@ $assert($wrongCodeStatus === 400, 'An incorrect password recovery code must be r
     'code' => $resetCode,
 ]);
 $assert($verifyCodeStatus === 200, 'The correct password recovery code must unlock password reset.');
+[$wrongAfterVerifyStatus] = $request('POST', '/api/auth/verify-reset-code', [
+    'challenge' => $resetChallenge,
+    'code' => $resetCode === '000000' ? '999999' : '000000',
+]);
+$assert($wrongAfterVerifyStatus === 400, 'A different code must remain invalid after the challenge was verified.');
 [$resetPasswordStatus] = $request('POST', '/api/auth/reset-password', [
     'token' => $resetChallenge,
     'password' => 'Reset9!pass',
@@ -273,6 +283,16 @@ $assert(
     'Registration must reject a password that does not meet every visible strength rule.'
 );
 
+[$missingCompanionAddressStatus, $missingCompanionAddressBody] = $request('POST', '/api/auth/register', [
+    'firstName' => 'Missing', 'lastName' => 'Address',
+    'email' => $cleanup->email('missing-address'), 'phone' => '12345678',
+    'password' => 'Integration9!pass', 'accountType' => 'ESCORT',
+]);
+$assert(
+    $missingCompanionAddressStatus === 400 && isset($missingCompanionAddressBody['fields']['address']),
+    'Companion registration must require an exact private street address.'
+);
+
 $profile = json_encode([
     'displayName' => $profileName, 'birthDate' => '1995-05-12', 'gender' => 'woman',
     'locationCity' => 'Saint-Gilles', 'locationRegion' => 'Brussels-Capital', 'locationCountry' => 'Belgium',
@@ -284,6 +304,8 @@ $boundary = 'integration-' . bin2hex(random_bytes(12));
 $fields = [
     'firstName' => 'Profile', 'lastName' => 'Integration',
     'email' => $cleanup->email('profile'), 'phone' => '12345678',
+    'address' => 'Rue Integration 33', 'city' => 'Saint-Gilles',
+    'region' => 'Brussels-Capital', 'country' => 'Belgium', 'postalCode' => '1060',
     'password' => 'Integration9!pass', 'accountType' => 'ESCORT', 'locale' => 'pt', 'profile' => $profile,
 ];
 $parts = [];
@@ -449,6 +471,7 @@ if ($adminPassword !== '') {
         'imageUrl' => '/assets/carousel-pink-lace-tie.jpeg',
         'description' => $cleanup->productDescription(),
         'storeName' => $cleanup->storeName(),
+        'storeCity' => 'Saint-Gilles',
         'active' => true,
     ], $adminCookie);
     $productId = (int) ($testProduct['id'] ?? 0);
@@ -459,6 +482,7 @@ if ($adminPassword !== '') {
         'price' => '29.9',
         'description' => $cleanup->productDescription(),
         'storeName' => $cleanup->storeName(),
+        'storeCity' => 'Saint-Gilles',
         'active' => 'true',
     ];
     $productParts = [];
@@ -512,6 +536,11 @@ if ($adminPassword !== '') {
         && !array_key_exists('rating', $purchasedProduct),
         'A non-VIP visitor must be able to buy a store product and add exactly one star count.'
     );
+    [$nearbyProductsStatus, $nearbyProducts] = $request('GET', '/api/products?pageSize=48&nearCity=saint%20gilles');
+    $assert(
+        $nearbyProductsStatus === 200 && (int) ($nearbyProducts['items'][0]['id'] ?? 0) === $productId,
+        'Product recommendations must prioritize stores in the selected city without hiding other products.'
+    );
     [$usersStatus, $users] = $request(
         'GET',
         '/api/admin/users?email=' . rawurlencode($cleanup->email('profile')) . '&role=ESCORT&page=1&pageSize=10',
@@ -532,6 +561,11 @@ if ($adminPassword !== '') {
     $assert(
         isset($match[0]['professionalProfile']['displayName']),
         'Admin account pages must include a lightweight professional summary.'
+    );
+    $assert(
+        ($match[0]['address'] ?? null) === 'Rue Integration 33'
+        && ($match[0]['postalCode'] ?? null) === '1060',
+        'Administrators must receive the private exact address needed for account review.'
     );
     $id = (int)$match[0]['id'];
     [$adminProfileStatus, $adminProfile] = $request('GET', "/api/profiles/{$id}", null, $adminCookie);
@@ -572,6 +606,8 @@ if ($adminPassword !== '') {
         && !array_key_exists('birthDate', $listing)
         && !array_key_exists('legalName', $listing)
         && !array_key_exists('businessAddress', $listing)
+        && !array_key_exists('address', $listing)
+        && !array_key_exists('postalCode', $listing)
         && !array_key_exists('contactEmail', $listing)
         && ($listing['city'] ?? null) === 'Saint-Gilles'
         && ($listing['province'] ?? null) === 'Brussels-Capital'
@@ -585,6 +621,27 @@ if ($adminPassword !== '') {
         && ($listing['media'][0]['srcSet'] ?? '') === "/api/profiles/{$id}/media/{$mediaId}/320.webp 320w"
         && !array_key_exists('fileName', $listing['media'][0] ?? []),
         'Approved listings must expose responsive media and contact availability while withholding private fields.'
+    );
+    [$sitemapStatus, $sitemapBody, $sitemapHeaders] = $binaryRequest('GET', '/api/seo/sitemap.xml');
+    [$cachedSitemapStatus, $cachedSitemapBody] = $binaryRequest(
+        'GET',
+        '/api/seo/sitemap.xml',
+        ['If-None-Match: ' . ($sitemapHeaders['etag'] ?? '')]
+    );
+    [$apiDocumentStatus, , $apiDocumentHeaders] = $binaryRequest('GET', '/api/products?pageSize=1');
+    $assert(
+        $sitemapStatus === 200
+        && str_starts_with($sitemapHeaders['content-type'] ?? '', 'application/xml')
+        && str_contains($sitemapBody, "<loc>https://www.chambre-rose.com/catalogue/perfil/{$id}</loc>")
+        && str_contains($sitemapBody, "<loc>https://www.chambre-rose.com/catalogue/produto/{$productId}</loc>")
+        && !str_contains($sitemapBody, 'Rue Integration')
+        && isset($sitemapHeaders['etag'])
+        && !isset($sitemapHeaders['x-robots-tag'])
+        && $cachedSitemapStatus === 304
+        && $cachedSitemapBody === ''
+        && $apiDocumentStatus === 200
+        && ($apiDocumentHeaders['x-robots-tag'] ?? '') === 'noindex, nofollow, nosnippet',
+        'The SEO sitemap must list approved public entities, support caching and never reveal private addresses.'
     );
     $viewsStatement = Database::connection()->prepare(
         'SELECT views_count FROM professional_profiles WHERE user_id=:id'
@@ -649,6 +706,37 @@ if ($adminPassword !== '') {
         && (int) ($nearbyListings['items'][0]['id'] ?? 0) === $id,
         'Location ranking must ignore accents, punctuation, casing and common translated country names.'
     );
+    [$companionLoginStatus, , $companionCookie] = $request('POST', '/api/auth/login', [
+        'email' => $cleanup->email('profile'), 'password' => 'Integration9!pass',
+    ]);
+    [$locationUpdateStatus, $locationUpdate] = $request('PATCH', '/api/auth/location', [
+        'address' => 'Rue de Rivoli 33', 'city' => 'Paris', 'region' => 'Île-de-France',
+        'country' => 'France', 'postalCode' => '75001',
+    ], $companionCookie);
+    [$relocatedPublicStatus, $relocatedPublic] = $request('GET', "/api/listings/{$id}");
+    $locationHistory = Database::connection()->prepare(
+        'SELECT address,city,region,country,postal_code FROM user_location_history WHERE user_id=:id ORDER BY id DESC LIMIT 1'
+    );
+    $locationHistory->execute(['id' => $id]);
+    $archivedLocation = $locationHistory->fetch();
+    $viewsStatement->execute(['id' => $id]);
+    $viewsAfterRelocation = (int) $viewsStatement->fetchColumn();
+    $assert(
+        $companionLoginStatus === 200
+        && $locationUpdateStatus === 200
+        && ($locationUpdate['address'] ?? null) === 'Rue de Rivoli 33'
+        && ($locationUpdate['locationCity'] ?? null) === 'Paris'
+        && ($relocatedPublicStatus === 200)
+        && ($relocatedPublic['city'] ?? null) === 'Paris'
+        && ($relocatedPublic['country'] ?? null) === 'France'
+        && !array_key_exists('address', $relocatedPublic)
+        && !array_key_exists('postalCode', $relocatedPublic)
+        && is_array($archivedLocation)
+        && ($archivedLocation['address'] ?? null) === 'Rue de Rivoli 33'
+        && ($archivedLocation['region'] ?? null) === 'Île-de-France'
+        && $viewsAfterRelocation === $viewsAfterDetail + 1,
+        'Changing the shared location must update the profile, archive the exact address privately and expose only city/country publicly.'
+    );
     [$favoriteAddStatus] = $request('POST', "/api/favorites/{$id}", [], $visitorCookie);
     [$favoritesStatus, $favoriteProfiles] = $request('GET', '/api/favorites', null, $visitorCookie);
     [$favoriteRemoveStatus] = $request('DELETE', "/api/favorites/{$id}", null, $visitorCookie);
@@ -668,7 +756,7 @@ if ($adminPassword !== '') {
         && !array_key_exists('priceHour', $favoriteProfile[0])
         && !array_key_exists('priceNight', $favoriteProfile[0])
         && !array_key_exists('priceWeekend', $favoriteProfile[0])
-        && $viewsAfterFavoriteActivity === $viewsAfterDetail,
+        && $viewsAfterFavoriteActivity === $viewsAfterRelocation,
         'Favorites must load public cards in bulk without exposing prices or recording artificial visits.'
     );
     $mediaContext = stream_context_create(['http' => [
@@ -872,7 +960,7 @@ if ($adminPassword !== '') {
     $assert(
         $optionalRegionStatus === 200
         && ($optionalRegionProfile['locationRegion'] ?? null) === null
-        && ($optionalRegionProfile['location'] ?? null) === 'Saint-Gilles, Belgium',
+        && ($optionalRegionProfile['location'] ?? null) === 'Paris, France',
         'Professional profiles must accept city and country when a state or region does not apply.'
     );
     [$localeStatus, $localizedProfile] = $request(
@@ -946,7 +1034,7 @@ if ($adminPassword !== '') {
         'A completed VIP selection must add one star count without exposing a score.'
     );
     $assert(
-        $viewsAfterSelection === $viewsAfterDetail,
+        $viewsAfterSelection === $viewsAfterRelocation,
         'Validating and registering a selection must not create profile visits.'
     );
     [$contactStatus, $contact] = $request('GET', "/api/listings/{$id}/contact", null, $visitorCookie);
@@ -977,7 +1065,7 @@ if ($adminPassword !== '') {
         && $reviewedListingStatus === 200
         && (float) ($reviewedListing['averageRating'] ?? 0) > 0
         && count($reviewedListing['reviews'] ?? []) > 0
-        && (int) ($reviewedListing['viewsCount'] ?? 0) === $viewsAfterDetail + 1,
+        && (int) ($reviewedListing['viewsCount'] ?? 0) === $viewsAfterRelocation + 1,
         'A completed selection must allow one rated comment and update the public average.'
     );
     [$conversationStatus, $conversation] = $request(

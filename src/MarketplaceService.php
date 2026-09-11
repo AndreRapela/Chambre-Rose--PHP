@@ -275,6 +275,9 @@ final class MarketplaceService
             }
         }
         $errors = [];
+        if ($type === 'ESCORT' && trim((string) ($user['address'] ?? '')) === '') {
+            $errors['address'] = 'is required for companion accounts';
+        }
         $display = trim((string)($input['displayName'] ?? ''));
         if ($display === '' || self::len($display) > 120) {
             $errors['displayName'] = 'must contain between 1 and 120 characters';

@@ -329,6 +329,13 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-22-private-location-history',
+                'file' => dirname(__DIR__) . '/database/migrations/022-private-location-history.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 

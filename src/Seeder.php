@@ -229,8 +229,8 @@ final class Seeder
             $location = "{$city}, {$region}, France";
             $email = 'demo-companion-' . ($index + 1) . '@chambre-rose.invalid';
             $user = $this->users->findByEmail($email) ?? $this->users->create([
-                'firstName' => $name, 'lastName' => '', 'email' => $email, 'phone' => '', 'address' => '',
-                'city' => $city, 'country' => 'France', 'postalCode' => '',
+                'firstName' => $name, 'lastName' => '', 'email' => $email, 'phone' => '', 'address' => 'Private demo address ' . ($index + 1),
+                'city' => $city, 'region' => $region, 'country' => 'France', 'postalCode' => '',
             ], password_hash(bin2hex(random_bytes(24)), PASSWORD_BCRYPT, ['cost' => 12]), 'ESCORT', 'APPROVED', 'fr');
             $userId = (int) $user['id'];
             if ($this->profiles->findByUser($userId) === null) {

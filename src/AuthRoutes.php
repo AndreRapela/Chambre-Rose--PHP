@@ -117,6 +117,12 @@ final class AuthRoutes implements RouteHandler
 
             return ApiResponder::json($this->auth->updateLocale($identity['sub'], $request->json()));
         }
+        if ($method === 'PATCH' && $path === '/api/auth/location') {
+            $identity = $this->guard->authenticate($request);
+            $this->guard->requireJson($request);
+
+            return ApiResponder::json($this->auth->updateLocation($identity['sub'], $request->json()));
+        }
 
         return null;
     }

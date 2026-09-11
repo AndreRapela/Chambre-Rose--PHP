@@ -14,6 +14,7 @@ final class IntegrationDataCleanup
         'profile',
         'store-profile',
         'weak-password',
+        'missing-address',
         'future-profile',
         'unsafe-website',
     ];

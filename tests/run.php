@@ -9,6 +9,7 @@ putenv('APP_ENV=production');
 require dirname(__DIR__) . '/bootstrap.php';
 
 use ChambreRose\ApiException;
+use ChambreRose\ApiResponder;
 use ChambreRose\AdminUserService;
 use ChambreRose\App;
 use ChambreRose\AuthSessionCookie;
@@ -35,6 +36,8 @@ use ChambreRose\ResponsiveImageService;
 use ChambreRose\ResponsiveImageVariantRepository;
 use ChambreRose\Request;
 use ChambreRose\Response;
+use ChambreRose\SeoRoutes;
+use ChambreRose\SeoSitemapService;
 use ChambreRose\UploadedFile;
 use ChambreRose\UserRepository;
 use ChambreRose\UserNotificationService;
@@ -147,6 +150,65 @@ $assert(
     && in_array('brasil', LocationNormalizer::countryKeys('Brazil'), true),
     'Common translated country names must share one ranking key.'
 );
+
+if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    $seoDatabase = new PDO('sqlite::memory:');
+    $seoDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $seoDatabase->exec(
+        'CREATE TABLE users ('
+        . 'id INTEGER PRIMARY KEY,role TEXT NOT NULL,approval_status TEXT NOT NULL,updated_at TEXT NOT NULL)'
+    );
+    $seoDatabase->exec(
+        'CREATE TABLE professional_profiles ('
+        . 'user_id INTEGER PRIMARY KEY,updated_at TEXT NOT NULL)'
+    );
+    $seoDatabase->exec(
+        'CREATE TABLE products ('
+        . 'id INTEGER PRIMARY KEY,is_active INTEGER NOT NULL,updated_at TEXT NOT NULL)'
+    );
+    $seoDatabase->exec(
+        "INSERT INTO users (id,role,approval_status,updated_at) VALUES
+         (4,'ESCORT','APPROVED','2026-08-03 12:00:00'),
+         (5,'STORE','PENDING','2026-08-04 12:00:00'),
+         (6,'VISITOR','APPROVED','2026-08-05 12:00:00')"
+    );
+    $seoDatabase->exec(
+        "INSERT INTO professional_profiles (user_id,updated_at) VALUES
+         (4,'2026-08-02 12:00:00'),(5,'2026-08-04 12:00:00'),(6,'2026-08-05 12:00:00')"
+    );
+    $seoDatabase->exec(
+        "INSERT INTO products (id,is_active,updated_at) VALUES
+         (21,1,'2026-08-06 12:00:00'),(22,0,'2026-08-07 12:00:00')"
+    );
+
+    $sitemap = new SeoSitemapService($seoDatabase, 'https://WWW.Chambre-Rose.com/');
+    $sitemapXml = $sitemap->xml();
+    $assert(
+        str_contains($sitemapXml, '<loc>https://www.chambre-rose.com/catalogue/perfil/4</loc>')
+        && str_contains($sitemapXml, '<lastmod>2026-08-03</lastmod>')
+        && str_contains($sitemapXml, '<loc>https://www.chambre-rose.com/catalogue/produto/21</loc>')
+        && !str_contains($sitemapXml, '/perfil/5')
+        && !str_contains($sitemapXml, '/perfil/6')
+        && !str_contains($sitemapXml, '/produto/22'),
+        'The dynamic sitemap must expose only approved professional profiles and active products.'
+    );
+    $sitemapRequest = new Request('GET', '/api/seo/sitemap.xml', [], []);
+    $sitemapResponse = (new SeoRoutes($sitemap))->handle($sitemapRequest);
+    $assert(
+        $sitemapResponse?->status === 200
+        && ($sitemapResponse->headers['Content-Type'] ?? '') === 'application/xml; charset=utf-8'
+        && isset($sitemapResponse->headers['ETag'])
+        && ($sitemapResponse->headers['Cache-Control'] ?? '') === 'public, max-age=3600, must-revalidate',
+        'The dynamic sitemap endpoint must be cacheable XML with a strong validator.'
+    );
+    $cachedSitemap = (new SeoRoutes($sitemap))->handle(new Request(
+        'GET',
+        '/api/seo/sitemap.xml',
+        ['if-none-match' => (string) $sitemapResponse?->headers['ETag']],
+        []
+    ));
+    $assert($cachedSitemap?->status === 304, 'An unchanged dynamic sitemap must support conditional requests.');
+}
 
 $memoryOutbox = new MemoryNotificationOutbox();
 $controlledPush = new ControlledPushSender();
@@ -279,7 +341,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         CREATE TABLE users (
           id INTEGER PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL,
           first_name TEXT NOT NULL, last_name TEXT NOT NULL, phone TEXT NOT NULL,
-          address TEXT NOT NULL, city TEXT NOT NULL, country TEXT NOT NULL, postal_code TEXT NOT NULL,
+          address TEXT NOT NULL, city TEXT NOT NULL, region TEXT NOT NULL, country TEXT NOT NULL, postal_code TEXT NOT NULL,
           role TEXT NOT NULL, approval_status TEXT NOT NULL, approval_reason TEXT NULL,
           review_deadline TEXT NULL, approved_at TEXT NULL, locale TEXT NOT NULL,
           vip_active INTEGER NOT NULL, vip_since TEXT NULL, vip_until TEXT NULL,
@@ -292,10 +354,10 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         );
         SQL);
     $adminUserInsert = $adminDatabase->prepare(
-        'INSERT INTO users (id,email,password_hash,first_name,last_name,phone,address,city,country,'
+        'INSERT INTO users (id,email,password_hash,first_name,last_name,phone,address,city,region,country,'
         . 'postal_code,role,approval_status,approval_reason,review_deadline,approved_at,locale,'
         . 'vip_active,vip_since,vip_until,created_at,updated_at) VALUES '
-        . '(:id,:email,:password_hash,:first_name,:last_name,:phone,:address,:city,:country,'
+        . '(:id,:email,:password_hash,:first_name,:last_name,:phone,:address,:city,:region,:country,'
         . ':postal_code,:role,:approval_status,NULL,NULL,NULL,:locale,0,NULL,NULL,:created_at,:updated_at)'
     );
     $adminProfileInsert = $adminDatabase->prepare(
@@ -314,6 +376,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
             'phone' => '12345678',
             'address' => '',
             'city' => 'Brussels',
+            'region' => 'Brussels-Capital',
             'country' => 'Belgium',
             'postal_code' => '',
             'role' => 'ESCORT',
@@ -631,6 +694,28 @@ try {
 try {
     Validator::register([
         'firstName' => 'Ana', 'lastName' => 'Silva', 'email' => 'ana@example.com',
+        'phone' => '+33 6 12 34 56 78', 'password' => 'Strong9!pass',
+        'city' => 'Paris', 'country' => 'France',
+    ], true, 'ESCORT');
+    $assert(false, 'Companion registration without an exact private address must fail.');
+} catch (ApiException $exception) {
+    $assert(isset($exception->fields['address']), 'Companion address validation must report the address field.');
+}
+
+$privateLocation = Validator::location([
+    'address' => '  Rue de Rivoli  33 ', 'city' => ' Paris ', 'region' => ' Île-de-France ',
+    'country' => ' France ', 'postalCode' => ' 75001 ',
+], 'ESCORT');
+$assert(
+    $privateLocation['address'] === 'Rue de Rivoli 33'
+    && $privateLocation['city'] === 'Paris'
+    && $privateLocation['region'] === 'Île-de-France',
+    'Private locations must be normalized before they are stored.'
+);
+
+try {
+    Validator::register([
+        'firstName' => 'Ana', 'lastName' => 'Silva', 'email' => 'ana@example.com',
         'phone' => '12345', 'password' => 'Strong9!pass',
     ]);
     $assert(false, 'A short phone number must fail registration.');
@@ -864,6 +949,23 @@ $assert(
     str_contains($headers['Access-Control-Allow-Headers'] ?? '', 'Range')
     && str_contains($headers['Access-Control-Expose-Headers'] ?? '', 'Content-Range'),
     'CORS must allow byte-range requests and expose ranged response metadata.'
+);
+$etag = ApiResponder::etag('compressed representation');
+$assert(
+    ApiResponder::etagMatches(new Request('GET', '/api/test', ['if-none-match' => $etag], []), $etag)
+    && ApiResponder::etagMatches(new Request(
+        'GET',
+        '/api/test',
+        ['if-none-match' => substr($etag, 0, -1) . '-gzip"'],
+        []
+    ), $etag),
+    'Conditional requests must accept original and Apache-compressed ETag variants.'
+);
+$assert(
+    ($headers['X-Robots-Tag'] ?? '') === 'noindex, nofollow, nosnippet'
+    && !isset(App::commonHeaders(new Request('GET', '/api/seo/sitemap.xml', [], []))['X-Robots-Tag'])
+    && !isset(App::commonHeaders(new Request('GET', '/api/products/4/images/main/320.webp', [], []))['X-Robots-Tag']),
+    'API documents must be excluded from search while sitemaps and public media remain indexable.'
 );
 $assert(
     Request::resolveClientIp('172.20.0.3', '203.0.113.20, 172.20.0.2', '172.16.0.0/12') === '203.0.113.20',

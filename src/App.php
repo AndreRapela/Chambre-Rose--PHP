@@ -54,6 +54,7 @@ final class App
         $auth = new AuthService($users, $jwt, $marketplace, $passwordResets, $mail, $userNotifications);
 
         $this->router = new ApiRouter([
+            new SeoRoutes(new SeoSitemapService($pdo)),
             new AuthRoutes($auth, $guard, $sessionCookie, $pushDeviceCookie, $rateLimiter, $userNotifications),
             new ListingRoutes($marketplace, $profiles, $profileMedia, $favorites, $products, $guard, $userNotifications),
             new ProductRoutes($productService, $products, $productImages, $guard, $userNotifications),
@@ -95,6 +96,9 @@ final class App
             'Content-Security-Policy' => "default-src 'self'; frame-ancestors 'none'",
             'Permissions-Policy' => 'camera=(), microphone=(), geolocation=()',
         ];
+        if (self::shouldPreventIndexing($request->path)) {
+            $headers['X-Robots-Tag'] = 'noindex, nofollow, nosnippet';
+        }
 
         $origin = $request->header('origin');
         $allowed = array_values(array_filter(array_map(
@@ -114,6 +118,18 @@ final class App
         $headers['Access-Control-Max-Age'] = '3600';
 
         return $headers;
+    }
+
+    private static function shouldPreventIndexing(string $path): bool
+    {
+        if (!str_starts_with($path, '/api/')) {
+            return false;
+        }
+        if (in_array($path, ['/api/brand/logo', '/api/seo/sitemap.xml'], true)) {
+            return false;
+        }
+
+        return preg_match('#^/api/(?:profiles/\d+/media/\d+(?:/\d+\.webp)?|products/\d+/images/(?:main|secondary)(?:/\d+\.webp)?)$#', $path) !== 1;
     }
 
     private function brandLogo(Request $request): Response

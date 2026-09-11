@@ -11,7 +11,7 @@ use PDO;
 final class UserRepository
 {
     private const SELECT_COLUMNS = <<<'SQL'
-        users.id, email, password_hash, first_name, last_name, phone, address, city, country,
+        users.id, email, password_hash, first_name, last_name, phone, address, city, region, country,
         postal_code, role, approval_status, approval_reason, review_deadline, approved_at, locale,
         vip_active, vip_since, vip_until, created_at, updated_at
         SQL;
@@ -74,11 +74,11 @@ final class UserRepository
         $approvalStatus = strtoupper($approvalStatus);
         $sql = <<<'SQL'
             INSERT INTO users (
-              email, password_hash, first_name, last_name, phone, address, city, country,
+              email, password_hash, first_name, last_name, phone, address, city, region, country,
               postal_code, role, approval_status, review_deadline, approved_at, locale,
               vip_active, created_at, updated_at
             ) VALUES (
-              :email, :password_hash, :first_name, :last_name, :phone, :address, :city,
+              :email, :password_hash, :first_name, :last_name, :phone, :address, :city, :region,
               :country, :postal_code, :role, :approval_status, :review_deadline, :approved_at,
               :locale, FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
@@ -101,6 +101,7 @@ final class UserRepository
                 'phone' => trim($user['phone']),
                 'address' => trim($user['address']),
                 'city' => trim($user['city']),
+                'region' => trim((string) ($user['region'] ?? '')),
                 'country' => trim($user['country']),
                 'postal_code' => trim($user['postalCode']),
                 'role' => $role,
@@ -114,6 +115,7 @@ final class UserRepository
             $id = $this->isMySql() ? (int) $this->pdo->lastInsertId() : (int) $statement->fetchColumn();
 
             $created = $this->find($id) ?? throw new ApiException(500, 'Unable to create user.');
+            $this->archiveLocationIfChanged(null, $created, 'REGISTRATION');
             if ($ownsTransaction) {
                 $this->pdo->commit();
             }
@@ -141,9 +143,10 @@ final class UserRepository
      */
     public function updateProfile(int $id, array $user): array
     {
+        $before = $this->find($id);
         $statement = $this->pdo->prepare(<<<'SQL'
             UPDATE users SET email = :email, first_name = :first_name, last_name = :last_name,
-              phone = :phone, address = :address, city = :city, country = :country,
+              phone = :phone, address = :address, city = :city, region = :region, country = :country,
               postal_code = :postal_code, updated_at = CURRENT_TIMESTAMP
             WHERE id = :id
             SQL);
@@ -155,11 +158,44 @@ final class UserRepository
             'phone' => trim($user['phone']),
             'address' => trim($user['address']),
             'city' => trim($user['city']),
+            'region' => trim($user['region']),
             'country' => trim($user['country']),
             'postal_code' => trim($user['postalCode']),
         ]);
 
-        return $this->find($id) ?? throw new ApiException(404, 'User profile not found.');
+        $updated = $this->find($id) ?? throw new ApiException(404, 'User profile not found.');
+        $this->archiveLocationIfChanged($before, $updated, 'PROFILE_EDIT');
+
+        return $updated;
+    }
+
+    /**
+     * @param array{address:string,city:string,region:string,country:string,postalCode:string} $location
+     * @return array<string, mixed>
+     */
+    public function updateLocation(int $id, array $location): array
+    {
+        $before = $this->find($id);
+        if ($before === null) {
+            throw new ApiException(404, 'User profile not found.');
+        }
+        $statement = $this->pdo->prepare(<<<'SQL'
+            UPDATE users SET address=:address,city=:city,region=:region,country=:country,
+              postal_code=:postal_code,updated_at=CURRENT_TIMESTAMP
+            WHERE id=:id
+            SQL);
+        $statement->execute([
+            'id' => $id,
+            'address' => $location['address'],
+            'city' => $location['city'],
+            'region' => $location['region'],
+            'country' => $location['country'],
+            'postal_code' => $location['postalCode'],
+        ]);
+        $updated = $this->find($id) ?? throw new ApiException(404, 'User profile not found.');
+        $this->archiveLocationIfChanged($before, $updated, 'LOCATION_PICKER', $location['region']);
+
+        return $updated;
     }
 
     /** @return array<string, mixed> */
@@ -171,6 +207,53 @@ final class UserRepository
         $statement->execute(['id' => $id, 'locale' => $locale]);
 
         return $this->find($id) ?? throw new ApiException(404, 'User profile not found.');
+    }
+
+    /**
+     * Exact location history is deliberately kept outside every public profile
+     * query. It exists only for internal personalization and administrator audit.
+     *
+     * @param array<string, mixed>|null $before
+     * @param array<string, mixed> $after
+     */
+    private function archiveLocationIfChanged(?array $before, array $after, string $source, string $region = ''): void
+    {
+        $fields = ['address', 'city', 'region', 'country', 'postalCode'];
+        if ($before === null && array_reduce(
+            $fields,
+            static fn (bool $hasValue, string $field): bool => $hasValue || trim((string) ($after[$field] ?? '')) !== '',
+            false
+        ) === false) {
+            return;
+        }
+        if ($before !== null) {
+            $changed = false;
+            foreach ($fields as $field) {
+                if (trim((string) ($before[$field] ?? '')) !== trim((string) ($after[$field] ?? ''))) {
+                    $changed = true;
+                    break;
+                }
+            }
+            if (!$changed) {
+                return;
+            }
+        }
+
+        $this->pdo->prepare(<<<'SQL'
+            INSERT INTO user_location_history (
+              user_id,address,city,region,country,postal_code,source,created_at
+            ) VALUES (
+              :user_id,:address,:city,:region,:country,:postal_code,:source,CURRENT_TIMESTAMP
+            )
+            SQL)->execute([
+                'user_id' => (int) $after['id'],
+                'address' => trim((string) ($after['address'] ?? '')),
+                'city' => trim((string) ($after['city'] ?? '')),
+                'region' => trim($region !== '' ? $region : (string) ($after['region'] ?? '')),
+                'country' => trim((string) ($after['country'] ?? '')),
+                'postal_code' => trim((string) ($after['postalCode'] ?? '')),
+                'source' => $source,
+            ]);
     }
 
     /** @return array{items:list<array<string, mixed>>,page:int,pageSize:int,total:int,totalPages:int} */
@@ -335,6 +418,7 @@ final class UserRepository
             'phone' => (string) $row['phone'],
             'address' => (string) $row['address'],
             'city' => (string) $row['city'],
+            'region' => (string) $row['region'],
             'country' => (string) $row['country'],
             'postalCode' => (string) $row['postal_code'],
             'role' => (string) $row['role'],
