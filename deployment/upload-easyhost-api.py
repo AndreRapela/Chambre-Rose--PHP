@@ -17,6 +17,7 @@ FILES = (
     "bin/process-notification-outbox.php",
     "database/migrations/023-native-push-devices.mysql.sql",
     "database/migrations/023-native-push-devices.pgsql.sql",
+    "src/AccountRecovery.php",
     "src/AdminModerationRoutes.php",
     "src/AdminModerationService.php",
     "src/CompositePushNotificationSender.php",
@@ -24,7 +25,9 @@ FILES = (
     "src/NativePushNotificationService.php",
     "src/NotificationRepository.php",
     "src/NotificationRoutes.php",
+    "src/Repositories.php",
     "src/ResponsiveImageProcessor.php",
+    "src/Services.php",
     "src/App.php",
 )
 
@@ -175,7 +178,7 @@ def main() -> int:
         print(f"Falha no deploy da API: {error}", file=sys.stderr)
         return 1
 
-    print(f"API publicada: {changed} arquivos alterados; migration 023 aplicada; .env restaurado.")
+    print(f"API publicada: {changed} arquivos alterados; migracoes pendentes aplicadas; .env restaurado.")
     print(f"Backup dos arquivos substituidos: {backup_root}")
     return 0
 
