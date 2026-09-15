@@ -215,12 +215,30 @@ try {
     'email' => $cleanup->email('visitor'), 'phone' => '12345678',
     'password' => 'Integration9!pass', 'accountType' => 'VISITOR',
 ]);
+$visitorReviewDeadline = strtotime((string) ($visitor['reviewDeadline'] ?? ''));
 $assert(
     $visitorStatus === 201
-    && is_string($visitorCookie)
-    && str_starts_with($visitorCookie, 'chambre_rose_session=')
+    && $visitorCookie === 'chambre_rose_session='
+    && ($visitor['approvalStatus'] ?? null) === 'PENDING'
+    && ($visitor['pendingApproval'] ?? false) === true
+    && in_array($visitor['emailStatus'] ?? null, ['SENT', 'LOGGED'], true)
+    && str_contains((string) ($visitor['message'] ?? ''), '48')
+    && is_int($visitorReviewDeadline)
+    && $visitorReviewDeadline >= time() + (47 * 60 * 60)
+    && $visitorReviewDeadline <= time() + (49 * 60 * 60)
     && !array_key_exists('token', $visitor),
-    'Visitor registration must create an HttpOnly server session without exposing the JWT.'
+    'Visitor registration must remain signed out while awaiting the 48-hour administrator review.'
+);
+$visitorRegistrationEmail = Database::connection()->prepare(
+    'SELECT delivery_status, body FROM email_outbox WHERE recipient = :recipient AND template = :template ORDER BY id DESC LIMIT 1'
+);
+$visitorRegistrationEmail->execute(['recipient' => $cleanup->email('visitor'), 'template' => 'account_created']);
+$visitorRegistrationEmailRow = $visitorRegistrationEmail->fetch();
+$assert(
+    is_array($visitorRegistrationEmailRow)
+    && in_array($visitorRegistrationEmailRow['delivery_status'] ?? null, ['SENT', 'LOGGED'], true)
+    && str_contains((string) ($visitorRegistrationEmailRow['body'] ?? ''), '48'),
+    'Visitor registration must send an email explaining the 48-hour administrator review.'
 );
 
 [$forgotStatus, $forgotBody] = $request('POST', '/api/auth/forgot-password', [
@@ -329,8 +347,8 @@ $assert(
     $professionalStatus === 201
     && ($professional['approvalStatus'] ?? null) === 'PENDING'
     && ($professional['pendingApproval'] ?? false) === true
-    && str_contains((string) ($professional['message'] ?? ''), '24'),
-    'Companion registration must succeed with one public location, remain pending and explain the 24-hour review.'
+    && str_contains((string) ($professional['message'] ?? ''), '48'),
+    'Companion registration must succeed with one public location, remain pending and explain the 48-hour review.'
 );
 $professionalEmail = Database::connection()->prepare(
     'SELECT delivery_status, body FROM email_outbox WHERE recipient = :recipient AND template = :template ORDER BY id DESC LIMIT 1'
@@ -340,7 +358,7 @@ $professionalEmailRow = $professionalEmail->fetch();
 $assert(
     is_array($professionalEmailRow)
     && in_array($professionalEmailRow['delivery_status'] ?? null, ['SENT', 'LOGGED'], true)
-    && str_contains((string) ($professionalEmailRow['body'] ?? ''), '24'),
+    && str_contains((string) ($professionalEmailRow['body'] ?? ''), '48'),
     'Professional registration must queue a confirmation email containing the review deadline.'
 );
 $pendingToken = (new Jwt())->generate($cleanup->email('profile'), 'ESCORT');
@@ -464,6 +482,42 @@ $assert($pendingStatus === 403, 'Pending professional login must be blocked.');
 if ($adminPassword !== '') {
     [$adminStatus, $admin, $adminCookie] = $request('POST', '/api/auth/login', ['email' => $adminEmail, 'password' => $adminPassword]);
     $assert($adminStatus === 200 && is_string($adminCookie), 'Admin login must create a cookie-backed session.');
+    [$visitorListStatus, $visitorList] = $request(
+        'GET',
+        '/api/admin/users?email=' . rawurlencode($cleanup->email('visitor')) . '&role=VISITOR&page=1&pageSize=10',
+        null,
+        $adminCookie
+    );
+    $visitorMatches = is_array($visitorList['items'] ?? null) ? $visitorList['items'] : [];
+    $visitorId = (int) ($visitorMatches[0]['id'] ?? 0);
+    [$visitorApprovalStatus, $visitorApproval] = $request(
+        'PATCH',
+        "/api/admin/users/{$visitorId}/approval",
+        ['status' => 'APPROVED'],
+        $adminCookie
+    );
+    $visitorApprovalEmail = Database::connection()->prepare(
+        'SELECT delivery_status, body FROM email_outbox WHERE recipient = :recipient AND template = :template ORDER BY id DESC LIMIT 1'
+    );
+    $visitorApprovalEmail->execute(['recipient' => $cleanup->email('visitor'), 'template' => 'account_approved']);
+    $visitorApprovalEmailRow = $visitorApprovalEmail->fetch();
+    [$visitorLoginStatus, , $visitorCookie] = $request('POST', '/api/auth/login', [
+        'email' => $cleanup->email('visitor'),
+        'password' => 'Reset9!pass',
+    ]);
+    $assert(
+        $visitorListStatus === 200
+        && $visitorId > 0
+        && $visitorApprovalStatus === 200
+        && ($visitorApproval['approvalStatus'] ?? null) === 'APPROVED'
+        && in_array($visitorApproval['approvalEmailStatus'] ?? null, ['SENT', 'LOGGED'], true)
+        && is_array($visitorApprovalEmailRow)
+        && in_array($visitorApprovalEmailRow['delivery_status'] ?? null, ['SENT', 'LOGGED'], true)
+        && str_contains((string) ($visitorApprovalEmailRow['body'] ?? ''), '/auth/login')
+        && $visitorLoginStatus === 200
+        && is_string($visitorCookie),
+        'Admin approval must activate visitors, send the approval email and allow sign-in.'
+    );
     [$productCreateStatus, $testProduct] = $request('POST', '/api/products', [
         'name' => $cleanup->productName(),
         'category' => 'wellness',

@@ -10,6 +10,8 @@ use PDO;
 
 final class UserRepository
 {
+    private const REVIEW_WINDOW_SECONDS = 48 * 60 * 60;
+
     private const SELECT_COLUMNS = <<<'SQL'
         users.id, email, password_hash, first_name, last_name, phone, address, city, region, country,
         postal_code, role, approval_status, approval_reason, review_deadline, approved_at, locale,
@@ -107,7 +109,7 @@ final class UserRepository
                 'role' => $role,
                 'approval_status' => $approvalStatus,
                 'review_deadline' => $approvalStatus === 'PENDING'
-                    ? gmdate('Y-m-d H:i:s', time() + 86400)
+                    ? gmdate('Y-m-d H:i:s', time() + self::REVIEW_WINDOW_SECONDS)
                     : null,
                 'approved_at' => $approvalStatus === 'APPROVED' ? gmdate('Y-m-d H:i:s') : null,
                 'locale' => in_array(strtolower($locale), ['fr', 'en', 'pt'], true) ? strtolower($locale) : 'fr',
@@ -339,9 +341,10 @@ final class UserRepository
         }
         $statement = $this->pdo->prepare(<<<'SQL'
             UPDATE users SET approval_status = :status, approval_reason = :reason,
+              review_deadline = NULL,
               approved_at = CASE WHEN :approval_check = 'APPROVED' THEN CURRENT_TIMESTAMP ELSE NULL END,
               updated_at = CURRENT_TIMESTAMP
-            WHERE id = :id AND role IN ('ESCORT', 'STORE')
+            WHERE id = :id AND role IN ('VISITOR', 'ESCORT', 'STORE')
             SQL);
         $statement->execute([
             'id' => $id,
@@ -354,8 +357,8 @@ final class UserRepository
             if ($existing === null) {
                 throw new ApiException(404, 'User not found.');
             }
-            if (!in_array($existing['role'], ['ESCORT', 'STORE'], true)) {
-                throw new ApiException(409, 'Only professional accounts require approval.');
+            if (!in_array($existing['role'], ['VISITOR', 'ESCORT', 'STORE'], true)) {
+                throw new ApiException(409, 'This account type does not use administrator approval.');
             }
         }
 
@@ -379,7 +382,9 @@ final class UserRepository
         $approval = in_array($role, ['ADMIN', 'VISITOR'], true)
             ? 'APPROVED'
             : ($existing['role'] === $role ? $existing['approvalStatus'] : 'PENDING');
-        $reviewDeadline = $approval === 'PENDING' ? gmdate('Y-m-d H:i:s', time() + 86400) : null;
+        $reviewDeadline = $approval === 'PENDING'
+            ? gmdate('Y-m-d H:i:s', time() + self::REVIEW_WINDOW_SECONDS)
+            : null;
         $statement = $this->pdo->prepare(<<<'SQL'
             UPDATE users SET role = :role, approval_status = :approval,
               review_deadline = :review_deadline,

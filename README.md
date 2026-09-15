@@ -5,7 +5,7 @@ Backend PHP 8.2+ do marketplace Chambre Rose. Ele suporta MySQL na EasyHost e Po
 ## O que esta implementado
 
 - login, cadastro de visitante, acompanhante ou loja e edicao do proprio perfil;
-- aprovacao administrativa de contas profissionais, com prazo informado de 24 horas;
+- aprovacao administrativa de novos cadastros, com prazo informado de 48 horas;
 - ate 15 fotos e 3 videos reais por perfil, armazenados no banco;
 - autenticacao JWT HS256 em cookie HttpOnly, SameSite estrito e Secure em producao, com senhas BCrypt;
 - papeis `VISITOR`, `ESCORT`, `STORE` e `ADMIN` (`USER` legado e migrado para `VISITOR`);
@@ -126,7 +126,7 @@ Invoke-RestMethod http://localhost:8080/api/health
 
 ### Contas, perfis profissionais e mensagens
 
-- `POST /api/auth/register`: cria `VISITOR`, `ESCORT` ou `STORE`. Contas profissionais ficam `PENDING` para revisao em ate 24 horas.
+- `POST /api/auth/register`: cria `VISITOR`, `ESCORT` ou `STORE`. Novas contas ficam `PENDING` para revisao em ate 48 horas e recebem um e-mail quando o cadastro e quando a decisao administrativa sao registrados.
 - `POST /api/auth/login` e `POST /api/auth/logout`: criam e encerram a sessao em cookie HttpOnly; o logout revoga somente o Push do navegador atual.
 - `POST /api/auth/forgot-password`, `POST /api/auth/verify-reset-code` e `POST /api/auth/reset-password`: recuperacao por codigo de seis digitos enviado por email, com desafio temporario valido por uma hora.
 - `GET|PUT /api/profiles/me`: consulta e edita o proprio perfil profissional.

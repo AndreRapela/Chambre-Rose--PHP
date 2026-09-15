@@ -38,7 +38,7 @@ final class AuthService
             throw new ApiException(401, 'Invalid email or password.');
         }
         if ($user['approvalStatus'] === 'PENDING') {
-            throw new ApiException(403, 'Your account is awaiting administrator approval. Reviews are completed within 24 hours.', [
+            throw new ApiException(403, 'Your account is awaiting administrator approval. Reviews are completed within 48 hours.', [
                 'approvalStatus' => 'PENDING',
                 'reviewDeadline' => $user['reviewDeadline'],
             ]);
@@ -96,7 +96,7 @@ final class AuthService
                 $data,
                 password_hash($data['password'], PASSWORD_BCRYPT, ['cost' => 12]),
                 $type,
-                in_array($type, ['ESCORT', 'STORE'], true) ? 'PENDING' : 'APPROVED',
+                'PENDING',
                 $locale
             );
             if (in_array($type, ['ESCORT', 'STORE'], true)) {
@@ -119,37 +119,33 @@ final class AuthService
 
             throw $exception;
         }
-        if (in_array($type, ['ESCORT', 'STORE'], true)) {
-            $emailStatus = 'FAILED';
-            try {
-                $emailStatus = $this->mail->send($user['email'], 'account_created', $locale, [
-                    'name' => $user['firstName'],
-                ]);
-            } catch (\Throwable $exception) {
-                // A transient mail/database problem must not turn a valid
-                // registration into a misleading server error. The account
-                // remains pending and the failure is available in the log.
-                error_log('[Chambre Rose API] Registration email could not be queued: ' . $exception->getMessage());
-            }
-
-            $message = match ($locale) {
-                'pt' => 'Cadastro recebido. Sua conta foi criada, mas permanece inativa até o administrador aprovar seu perfil. A análise será concluída em até 24 horas e você receberá um email com a decisão.',
-                'en' => 'Registration received. Your account was created, but it remains inactive until an administrator approves your profile. The review will be completed within 24 hours and you will receive an email with the decision.',
-                default => 'Inscription reçue. Votre compte a été créé, mais reste inactif jusqu’à la validation de votre profil par un administrateur. L’examen sera terminé sous 24 heures et vous recevrez un e-mail avec la décision.',
-            };
-
-            return [
-                'pendingApproval' => true,
-                'approvalStatus' => 'PENDING',
-                'reviewDeadline' => $user['reviewDeadline'],
-                'role' => $user['role'],
-                'message' => $message,
-                'emailStatus' => $emailStatus,
-                'profile' => self::profileFromUser($user),
-            ];
+        $emailStatus = 'FAILED';
+        try {
+            $emailStatus = $this->mail->send($user['email'], 'account_created', $locale, [
+                'name' => $user['firstName'],
+            ]);
+        } catch (\Throwable $exception) {
+            // A transient mail/database problem must not turn a valid
+            // registration into a misleading server error. The account
+            // remains pending and the failure is available in the log.
+            error_log('[Chambre Rose API] Registration email could not be queued: ' . $exception->getMessage());
         }
 
-        return $this->authenticationResponse($user);
+        $message = match ($locale) {
+            'pt' => 'Cadastro recebido. Sua conta foi criada, mas permanece inativa até a aprovação de um administrador. A análise será concluída em até 48 horas e você receberá um email com a decisão.',
+            'en' => 'Registration received. Your account was created, but it remains inactive until an administrator approves it. The review will be completed within 48 hours and you will receive an email with the decision.',
+            default => 'Inscription reçue. Votre compte a été créé, mais reste inactif jusqu’à sa validation par un administrateur. L’examen sera terminé sous 48 heures et vous recevrez un e-mail avec la décision.',
+        };
+
+        return [
+            'pendingApproval' => true,
+            'approvalStatus' => 'PENDING',
+            'reviewDeadline' => $user['reviewDeadline'],
+            'role' => $user['role'],
+            'message' => $message,
+            'emailStatus' => $emailStatus,
+            'profile' => self::profileFromUser($user),
+        ];
     }
 
     /** @return array<string, mixed> */
