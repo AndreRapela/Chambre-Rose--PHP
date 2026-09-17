@@ -274,6 +274,14 @@ arquivos PHP/SQL/imagens: 644
 
 Nunca coloque `.env`, senha do banco ou `JWT_SECRET` dentro de `public_html`, no Git ou em prints.
 
+## Paginação de buscas
+
+Produtos e perfis aceitam `page` e `pageSize`, retornando `items`, `page`, `pageSize`, `total` e `totalPages`. Os filtros são aplicados antes da contagem e do recorte. Páginas acima do último resultado são normalizadas para a última página; buscas vazias retornam página 1. A ordenação inclui um identificador de desempate para evitar repetição em dados estáveis.
+
+O teste `php tests/search-pagination.php` percorre produtos, acompanhantes e lojas sem criar ou modificar dados. Configure `TEST_API_URL` para apontar ao ambiente local de testes.
+
+Releases sem novas migrations podem usar `python deployment/upload-easyhost-api.py --skip-migrations`, preservando o `.env` de produção sem ativar o migrator. O uploader mantém backup dos arquivos substituídos e verifica a saúde da API.
+
 ## Adicionando migrations
 
 Migrations novas ficam em `database/migrations`, com um arquivo para MySQL e outro

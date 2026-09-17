@@ -43,6 +43,7 @@ use ChambreRose\UploadedFile;
 use ChambreRose\UserRepository;
 use ChambreRose\UserNotificationService;
 use ChambreRose\Validator;
+use ChambreRose\SearchPagination;
 
 final class MemoryNotificationOutbox implements NotificationOutboxStore
 {
@@ -1079,4 +1080,10 @@ try {
     $assert($exception->status === 413, 'Oversized requests must return 413.');
 }
 
+$assert(SearchPagination::resolve(9, 1, 8) === ['page' => 1, 'pageSize' => 8, 'totalPages' => 2, 'offset' => 0], 'Nine results must have two pages of eight.');
+$assert(SearchPagination::resolve(9, 2, 8)['offset'] === 8, 'The second page must start at the ninth result.');
+$assert(SearchPagination::resolve(9, PHP_INT_MAX, 8)['page'] === 2, 'Out-of-range pages must resolve to the last real page without offset overflow.');
+$assert(SearchPagination::resolve(0, 8, 8) === ['page' => 1, 'pageSize' => 8, 'totalPages' => 0, 'offset' => 0], 'Empty searches must resolve to page one.');
+$assert(SearchPagination::resolve(20, -2, 500, 48)['pageSize'] === 48, 'Search page quantities must stay bounded.');
+$assert(SearchPagination::resolve(20, null, null)['pageSize'] === 20, 'Existing API default quantities must remain compatible.');
 fwrite(STDOUT, "OK - {$tests} assertions\n");

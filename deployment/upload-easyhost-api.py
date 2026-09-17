@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ftplib
+import argparse
 import io
 import os
 from pathlib import Path, PurePosixPath
@@ -14,10 +15,14 @@ FTP_HOST = "ftp.chambre-rosecom.webhosting.be"
 FTP_ROOT = PurePosixPath("/chambre-rose-api")
 HEALTH_URL = "https://chambre-rose.com/api/health"
 FILES = (
+    "src/SearchPagination.php",
     "bin/process-notification-outbox.php",
     "database/migrations/023-native-push-devices.mysql.sql",
     "database/migrations/023-native-push-devices.pgsql.sql",
     "src/AccountRecovery.php",
+    "src/ApiRequestGuard.php",
+    "src/AuthRateLimiter.php",
+    "src/AuthRoutes.php",
     "src/AdminModerationRoutes.php",
     "src/AdminModerationService.php",
     "src/CompositePushNotificationSender.php",
@@ -28,6 +33,10 @@ FILES = (
     "src/Repositories.php",
     "src/ResponsiveImageProcessor.php",
     "src/Services.php",
+    "src/Validator.php",
+    "src/ProductRepository.php",
+    "src/ProfessionalProfileSearch.php",
+    "resources/brand/brand-logo.png",
     "src/App.php",
 )
 
@@ -126,6 +135,9 @@ def check_health(release: str) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Publish the API with backups and a health check.")
+    parser.add_argument("--skip-migrations", action="store_true", help="Preserve .env unchanged when the release has no new database migrations.")
+    options = parser.parse_args()
     workspace = Path(__file__).resolve().parent.parent
     user = os.getenv("EASYHOST_FTP_USERNAME", "").strip()
     password = os.getenv("EASYHOST_FTP_PASSWORD", "")
@@ -162,7 +174,7 @@ def main() -> int:
             original_environment = read_remote(ftp, environment_path)
             if original_environment is None:
                 raise RuntimeError("O .env de producao nao foi encontrado.")
-            migration_environment = enable_auto_migrate(original_environment)
+            migration_environment = original_environment if options.skip_migrations else enable_auto_migrate(original_environment)
             try:
                 replace_file(ftp, environment_path, migration_environment, release, None)
                 check_health(release)
@@ -178,7 +190,8 @@ def main() -> int:
         print(f"Falha no deploy da API: {error}", file=sys.stderr)
         return 1
 
-    print(f"API publicada: {changed} arquivos alterados; migracoes pendentes aplicadas; .env restaurado.")
+    migration_status = "migracoes nao solicitadas" if options.skip_migrations else "migracoes pendentes aplicadas"
+    print(f"API publicada: {changed} arquivos alterados; {migration_status}; .env preservado.")
     print(f"Backup dos arquivos substituidos: {backup_root}")
     return 0
 

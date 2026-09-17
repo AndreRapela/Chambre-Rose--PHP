@@ -26,6 +26,9 @@ final class AdminModerationService
         $where = $normalizedStatus === null ? '' : ' WHERE r.status=:status';
         $count = $this->pdo->prepare('SELECT COUNT(*) FROM user_reports r' . $where);
         $normalizedStatus === null ? $count->execute() : $count->execute(['status' => $normalizedStatus]);
+        $total = (int) $count->fetchColumn();
+        $pagination = SearchPagination::resolve($total, $page, $pageSize, 100);
+        $page = $pagination['page'];
 
         $statement = $this->pdo->prepare(
             'SELECT r.id,r.reason,r.details,r.status,r.created_at,'
@@ -37,12 +40,12 @@ final class AdminModerationService
         );
         if ($normalizedStatus !== null) $statement->bindValue(':status', $normalizedStatus);
         $statement->bindValue(':limit', $pageSize, PDO::PARAM_INT);
-        $statement->bindValue(':offset', ($page - 1) * $pageSize, PDO::PARAM_INT);
+        $statement->bindValue(':offset', $pagination['offset'], PDO::PARAM_INT);
         $statement->execute();
 
         return [
             'items' => array_map([self::class, 'map'], $statement->fetchAll()),
-            'total' => (int) $count->fetchColumn(),
+            'total' => $total,
             'page' => $page,
             'pageSize' => $pageSize,
         ];

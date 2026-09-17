@@ -90,12 +90,12 @@ final class ProfessionalProfileSearch
             $where[] = 'p.verified = TRUE';
         }
 
-        $page = max(1, (int) ($filters['page'] ?? 1));
-        $pageSize = min(50, max(1, (int) ($filters['pageSize'] ?? 20)));
         $whereSql = implode(' AND ', $where);
         $count = $this->pdo->prepare('SELECT COUNT(*) FROM professional_profiles p JOIN users u ON u.id=p.user_id WHERE ' . $whereSql);
         $count->execute($params);
         $total = (int) $count->fetchColumn();
+        $pagination = SearchPagination::resolve($total, $filters['page'] ?? null, $filters['pageSize'] ?? null);
+        ['page' => $page, 'pageSize' => $pageSize] = $pagination;
 
         [$proximityOrder, $proximityParams] = $this->proximityOrder($filters);
         $contentOrder = strtolower((string) ($filters['sort'] ?? '')) === 'newest'
@@ -109,7 +109,7 @@ final class ProfessionalProfileSearch
             $statement->bindValue(':' . $key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
         }
         $statement->bindValue(':limit', $pageSize, PDO::PARAM_INT);
-        $statement->bindValue(':offset', ($page - 1) * $pageSize, PDO::PARAM_INT);
+        $statement->bindValue(':offset', $pagination['offset'], PDO::PARAM_INT);
         $statement->execute();
 
         return [
@@ -120,7 +120,7 @@ final class ProfessionalProfileSearch
             'page' => $page,
             'pageSize' => $pageSize,
             'total' => $total,
-            'totalPages' => $total === 0 ? 0 : (int) ceil($total / $pageSize),
+            'totalPages' => $pagination['totalPages'],
         ];
     }
 

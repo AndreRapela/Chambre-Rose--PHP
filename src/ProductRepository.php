@@ -56,8 +56,6 @@ final class ProductRepository
             }
         }
 
-        $page = max(1, (int) ($filters['page'] ?? 1));
-        $pageSize = min(48, max(1, (int) ($filters['pageSize'] ?? 20)));
         $sort = (string) ($filters['sort'] ?? 'popular');
         $order = match ($sort) {
             'newest' => 'created_at DESC, id DESC',
@@ -77,13 +75,15 @@ final class ProductRepository
         $count = $this->pdo->prepare('SELECT COUNT(*) FROM products WHERE ' . $whereSql);
         $count->execute($params);
         $total = (int) $count->fetchColumn();
+        $pagination = SearchPagination::resolve($total, $filters['page'] ?? null, $filters['pageSize'] ?? null, 48);
+        ['page' => $page, 'pageSize' => $pageSize] = $pagination;
 
         $query = $this->pdo->prepare('SELECT ' . self::COLUMNS . ' FROM products WHERE ' . $whereSql . " ORDER BY {$order} LIMIT :limit OFFSET :offset");
         foreach ($params + $orderParams as $key => $value) {
             $query->bindValue(':' . $key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
         }
         $query->bindValue(':limit', $pageSize, PDO::PARAM_INT);
-        $query->bindValue(':offset', ($page - 1) * $pageSize, PDO::PARAM_INT);
+        $query->bindValue(':offset', $pagination['offset'], PDO::PARAM_INT);
         $query->execute();
 
         $items = array_map(self::map(...), $query->fetchAll());
@@ -93,7 +93,7 @@ final class ProductRepository
             'page' => $page,
             'pageSize' => $pageSize,
             'total' => $total,
-            'totalPages' => $total === 0 ? 0 : (int) ceil($total / $pageSize),
+            'totalPages' => $pagination['totalPages'],
         ];
     }
 
