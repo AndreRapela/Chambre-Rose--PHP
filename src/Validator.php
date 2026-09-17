@@ -151,6 +151,17 @@ final class Validator
         return $password;
     }
 
+    /** @param array<string,mixed> $data */
+    public static function registrationEmail(array $data): string
+    {
+        $errors = [];
+        self::requiredString($data, 'email', 1, 160, $errors);
+        self::email($data, 'email', $errors);
+        self::throwIfInvalid($errors);
+
+        return strtolower(trim((string) $data['email']));
+    }
+
     /**
      * @param array<string, mixed> $data
      * @param array<string, string> $errors

@@ -41,6 +41,13 @@ final class AuthRoutes implements RouteHandler
 
             return $this->authenticatedResponse($response);
         }
+        if ($method === 'POST' && $path === '/api/auth/check-registration-email') {
+            $this->guard->requireJson($request);
+            $this->rateLimiter->consumeRegistrationEmailCheck($request->clientIp);
+            $this->auth->checkRegistrationEmail($request->json());
+
+            return ApiResponder::json(['available' => true]);
+        }
         if ($method === 'POST' && $path === '/api/auth/register') {
             if ($request->contentType() === 'application/json') {
                 return $this->authenticatedResponse($this->auth->register($request->json()), 201, true);
@@ -92,6 +99,9 @@ final class AuthRoutes implements RouteHandler
             return ApiResponder::empty()->withHeaders(['Set-Cookie' => $this->sessionCookie->clear()]);
         }
         if ($method === 'GET' && $path === '/api/auth/me') {
+            if (!$this->guard->hasAuthenticationCredentials($request)) {
+                return ApiResponder::json(null);
+            }
             $identity = $this->guard->authenticate($request);
 
             return ApiResponder::json($this->auth->profile($identity['sub']));

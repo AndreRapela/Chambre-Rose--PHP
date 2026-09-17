@@ -276,22 +276,22 @@ final class MailService
                 ],
                 'account_approved' => [
                     'subject' => 'Your Chambre Rose account is approved',
-                    'eyebrow' => 'ACCESS GRANTED',
-                    'title' => 'You are ready to sign in',
-                    'intro' => 'Your Chambre Rose account has been approved by an administrator.',
-                    'instructions' => 'Sign in to complete your profile, discover approved profiles and use private messaging.',
-                    'security' => 'Keep your login details private and never share your password.',
-                    'cta' => 'Sign in to Chambre Rose',
+                    'eyebrow' => 'WELCOME TO CHAMBRE ROSE',
+                    'title' => 'You’re approved — welcome aboard!',
+                    'intro' => 'Great news! Your account is approved, and we’re delighted to welcome you to Chambre Rose.',
+                    'instructions' => 'Your space is ready. Sign in to add the finishing touches to your profile, discover our community and start private conversations at your own pace.',
+                    'security' => 'Enjoy your new space, and keep your login details just for you.',
+                    'cta' => 'Discover my space',
                     'footer' => 'Chambre Rose team',
                 ],
                 'account_rejected' => [
                     'subject' => 'Update on your Chambre Rose application',
                     'eyebrow' => 'APPLICATION UPDATE',
-                    'title' => 'Your application needs attention',
-                    'intro' => 'Your professional profile was not approved at this time.',
-                    'instructions' => 'Please contact support if you need more information or would like help with your next steps.',
-                    'security' => 'Thank you for your interest in Chambre Rose.',
-                    'cta' => 'Contact support',
+                    'title' => 'An update on your application',
+                    'intro' => 'Thank you for applying to Chambre Rose. After careful review, we’re unable to approve your application at this time.',
+                    'instructions' => 'If you would like to understand the decision or prepare a new application, our support team is here to help with your next steps.',
+                    'security' => 'We appreciate the time you invested and hope we can welcome you in the future.',
+                    'cta' => 'Talk to support',
                     'footer' => 'Chambre Rose team',
                 ],
             ],
@@ -319,22 +319,22 @@ final class MailService
                 ],
                 'account_approved' => [
                     'subject' => 'Votre compte Chambre Rose est approuvé',
-                    'eyebrow' => 'ACCÈS AUTORISÉ',
-                    'title' => 'Vous pouvez vous connecter',
-                    'intro' => 'Votre compte Chambre Rose a été approuvé par un administrateur.',
-                    'instructions' => 'Connectez-vous pour terminer votre profil, découvrir les profils approuvés et utiliser la messagerie privée.',
-                    'security' => 'Gardez vos identifiants privés et ne partagez jamais votre mot de passe.',
-                    'cta' => 'Se connecter à Chambre Rose',
+                    'eyebrow' => 'BIENVENUE SUR CHAMBRE ROSE',
+                    'title' => 'Votre compte est approuvé — bienvenue !',
+                    'intro' => 'Bonne nouvelle ! Votre compte est approuvé, et nous sommes ravis de vous accueillir sur Chambre Rose.',
+                    'instructions' => 'Votre espace est prêt. Connectez-vous pour apporter la touche finale à votre profil, découvrir notre communauté et commencer des conversations privées à votre rythme.',
+                    'security' => 'Profitez de votre nouvel espace et gardez vos identifiants rien que pour vous.',
+                    'cta' => 'Découvrir mon espace',
                     'footer' => 'Équipe Chambre Rose',
                 ],
                 'account_rejected' => [
                     'subject' => 'Mise à jour de votre demande Chambre Rose',
                     'eyebrow' => 'MISE À JOUR DE LA DEMANDE',
-                    'title' => 'Votre demande nécessite votre attention',
-                    'intro' => 'Votre profil professionnel n’a pas été approuvé pour le moment.',
-                    'instructions' => 'Contactez le support si vous souhaitez davantage d’informations ou de l’aide pour la suite.',
-                    'security' => 'Merci de votre intérêt pour Chambre Rose.',
-                    'cta' => 'Contacter le support',
+                    'title' => 'Des nouvelles de votre candidature',
+                    'intro' => 'Merci d’avoir candidaté à Chambre Rose. Après un examen attentif, nous ne pouvons pas approuver votre candidature pour le moment.',
+                    'instructions' => 'Si vous souhaitez comprendre cette décision ou préparer une nouvelle candidature, notre équipe support est là pour vous accompagner.',
+                    'security' => 'Nous vous remercions du temps consacré et espérons vous accueillir à l’avenir.',
+                    'cta' => 'Parler au support',
                     'footer' => 'Équipe Chambre Rose',
                 ],
             ],
@@ -352,16 +352,16 @@ final class MailService
         }
         $text .= "\n\n" . $entry['security'] . "\n\n" . $entry['footer'];
 
-        $content = '<p style="margin:0 0 20px;color:#4d3a40;font-size:16px;line-height:1.65;">'
+        $content = '<p style="margin:0 0 16px;color:#4d3a40;font-size:15px;line-height:1.55;">'
             . self::escape($entry['intro']) . '</p>';
         if ($isReset) {
-            $content .= '<div style="margin:26px 0 24px;padding:22px 18px;border:1px solid #f1c5d1;border-radius:18px;background:#fff5f7;text-align:center;">'
+            $content .= '<div style="margin:20px 0 18px;padding:18px 16px;border:1px solid #f1c5d1;border-radius:16px;background:#fff5f7;text-align:center;">'
                 . '<div style="color:#922843;font-size:12px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;">'
                 . self::escape($entry['code_label']) . '</div>'
-                . '<div style="margin-top:12px;color:#9e173b;font-size:36px;font-weight:800;letter-spacing:9px;line-height:1.1;">'
+                . '<div style="margin-top:10px;color:#9e173b;font-size:32px;font-weight:800;letter-spacing:7px;line-height:1.1;">'
                 . self::escape($code) . '</div></div>';
         }
-        $content .= '<p style="margin:0 0 16px;color:#4d3a40;font-size:16px;line-height:1.65;">'
+        $content .= '<p style="margin:0 0 14px;color:#4d3a40;font-size:15px;line-height:1.55;">'
             . self::escape($entry['instructions']) . '</p>'
             . '<div style="margin:22px 0;padding:14px 16px;border-left:4px solid #c53a5d;border-radius:8px;background:#fff8fa;color:#6b4b55;font-size:14px;line-height:1.55;">'
             . '<span style="color:#9e173b;font-weight:800;">✦ </span>' . self::escape($entry['security']) . '</div>';
@@ -390,10 +390,10 @@ final class MailService
         string $locale
     ): string {
         $siteUrl = rtrim(Config::get('APP_FRONTEND_URL', 'https://www.chambre-rose.com') ?? 'https://www.chambre-rose.com', '/');
-        $assetBase = rtrim(Config::get('MAIL_ASSET_BASE_URL', 'https://www.chambre-rose.com') ?? 'https://www.chambre-rose.com', '/');
         $safeSiteUrl = self::escape($siteUrl);
+        $assetBase = rtrim(Config::get('MAIL_ASSET_BASE_URL', 'https://www.chambre-rose.com') ?? 'https://www.chambre-rose.com', '/');
+        $safeLogoUrl = self::escape($assetBase . '/api/brand/logo?format=png');
         $safeCtaUrl = self::escape($ctaUrl);
-        $safeLogoUrl = self::escape($assetBase . '/assets/brand-logo-84.webp');
         $safeEyebrow = self::escape($eyebrow);
         $safeTitle = self::escape($title);
         $safeCtaLabel = self::escape($ctaLabel);
@@ -404,23 +404,24 @@ final class MailService
             ? 'Ceci est un message automatique de Chambre Rose. Merci de ne pas répondre.'
             : 'This is an automated message from Chambre Rose. Please do not reply.';
 
-        return '<!doctype html><html lang="' . $lang . '"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>'
+        $responsive = '<style>@media only screen and (max-width:480px){.email-outer{padding:16px 8px!important}.email-head{padding:20px 18px!important}.email-body{padding:24px 20px!important}.email-footer{padding:18px 20px!important}.email-brand{font-size:19px!important}.email-tagline{font-size:10px!important;letter-spacing:.5px!important}.email-sparkle{display:none!important}.email-title{font-size:23px!important}}</style>';
+        return '<!doctype html><html lang="' . $lang . '"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">' . $responsive . '<title>'
             . $safeTitle . '</title></head><body style="margin:0;padding:0;background:#f8f0f2;color:#2d1b21;font-family:Arial,Helvetica,sans-serif;">'
             . '<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">' . $safeEyebrow . ' · ' . $safeTitle . '</div>'
-            . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#f8f0f2;"><tr><td align="center" style="padding:28px 12px;">'
+            . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#f8f0f2;"><tr><td class="email-outer" align="center" style="padding:28px 12px;">'
             . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:620px;overflow:hidden;border-radius:24px;background:#ffffff;box-shadow:0 18px 45px rgba(83,24,43,.14);">'
-            . '<tr><td style="padding:28px 32px;background:linear-gradient(135deg,#2a171e 0%,#4b1b2c 100%);">'
+            . '<tr><td class="email-head" style="padding:28px 32px;background:#361923;background:linear-gradient(135deg,#2a171e 0%,#4b1b2c 100%);">'
             . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr>'
-            . '<td width="48" valign="middle"><a href="' . $safeSiteUrl . '" style="text-decoration:none;"><img src="' . $safeLogoUrl . '" width="42" height="42" alt="Chambre Rose" style="display:block;width:42px;height:42px;border:0;outline:none;"></a></td>'
-            . '<td valign="middle" style="padding-left:12px;"><a href="' . $safeSiteUrl . '" style="color:#ffffff;text-decoration:none;font-size:21px;font-weight:800;letter-spacing:.2px;">Chambre Rose</a><div style="margin-top:3px;color:#f5cbd6;font-size:12px;letter-spacing:1.4px;text-transform:uppercase;">' . self::escape($tagline) . '</div></td>'
-            . '<td width="42" align="right" valign="middle" style="color:#f5cbd6;font-size:26px;">✦</td>'
+            . '<td width="48" valign="middle"><a href="' . $safeSiteUrl . '" aria-label="Chambre Rose" style="display:block;width:42px;padding:5px;border-radius:12px;background:#fff5f7;"><img src="' . $safeLogoUrl . '" width="32" height="38" alt="" style="display:block;width:32px;height:38px;margin:0 auto;border:0;"></a></td>'
+            . '<td valign="middle" style="padding-left:12px;"><a class="email-brand" href="' . $safeSiteUrl . '" style="color:#ffffff;text-decoration:none;font-size:21px;font-weight:800;letter-spacing:.2px;">Chambre Rose</a><div class="email-tagline" style="margin-top:3px;color:#f5cbd6;font-size:12px;letter-spacing:1.4px;text-transform:uppercase;">' . self::escape($tagline) . '</div></td>'
+            . '<td class="email-sparkle" width="42" align="right" valign="middle" style="color:#f5cbd6;font-size:26px;">✦</td>'
             . '</tr></table></td></tr>'
-            . '<tr><td style="padding:34px 34px 30px;background:#ffffff;"><div style="color:#c53a5d;font-size:12px;font-weight:800;letter-spacing:1.8px;">'
-            . $safeEyebrow . '</div><h1 style="margin:10px 0 16px;color:#2d1b21;font-size:30px;line-height:1.2;letter-spacing:-.4px;">'
+            . '<tr><td class="email-body" style="padding:34px 34px 30px;background:#ffffff;"><div style="color:#c53a5d;font-size:12px;font-weight:800;letter-spacing:1.8px;">'
+            . $safeEyebrow . '</div><h1 class="email-title" style="margin:9px 0 14px;color:#2d1b21;font-size:26px;line-height:1.2;letter-spacing:-.3px;">'
             . $safeTitle . '</h1>' . $content
-            . '<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:26px 0 8px;"><tr><td style="border-radius:999px;background:#c53a5d;"><a href="' . $safeCtaUrl . '" style="display:inline-block;padding:13px 21px;border:1px solid #c53a5d;border-radius:999px;color:#ffffff;font-size:15px;font-weight:800;text-decoration:none;">'
+            . '<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:22px 0 8px;"><tr><td style="border-radius:999px;background:#c53a5d;"><a href="' . $safeCtaUrl . '" style="display:inline-block;padding:10px 16px;border:1px solid #c53a5d;border-radius:999px;color:#ffffff;font-size:13px;font-weight:800;text-decoration:none;">'
             . $safeCtaLabel . ' <span aria-hidden="true">→</span></a></td></tr></table>'
-            . '</td></tr><tr><td style="padding:18px 34px 24px;border-top:1px solid #f2dde3;background:#fffafb;color:#7b626a;font-size:12px;line-height:1.6;">'
+            . '</td></tr><tr><td class="email-footer" style="padding:18px 34px 24px;border-top:1px solid #f2dde3;background:#fffafb;color:#7b626a;font-size:12px;line-height:1.6;">'
             . '<span style="color:#9e173b;font-size:16px;">♡</span> ' . $safeFooter . '<br><span style="color:#9a858b;">' . self::escape($automated) . '</span>'
             . '</td></tr></table></td></tr></table></body></html>';
     }

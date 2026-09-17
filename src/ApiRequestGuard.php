@@ -70,6 +70,11 @@ final class ApiRequestGuard
         }
     }
 
+    public function hasAuthenticationCredentials(Request $request): bool
+    {
+        return $this->bearerToken($request) !== null || $this->sessionCookie->hasToken($request);
+    }
+
     public function requireJson(Request $request): void
     {
         if ($request->contentType() !== 'application/json') {

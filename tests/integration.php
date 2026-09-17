@@ -210,6 +210,8 @@ try {
     $statement->execute($httpRateHashes);
 }
 
+[$availableEmailStatus, $availableEmail] = $request('POST', '/api/auth/check-registration-email', ['email' => $cleanup->email('visitor')]);
+$assert($availableEmailStatus === 200 && ($availableEmail['available'] ?? false) === true, 'A new registration email must pass preflight without an account being created.');
 [$visitorStatus, $visitor, $visitorCookie] = $request('POST', '/api/auth/register', [
     'firstName' => 'Visitor', 'lastName' => 'Integration',
     'email' => $cleanup->email('visitor'), 'phone' => '12345678',
@@ -229,6 +231,8 @@ $assert(
     && !array_key_exists('token', $visitor),
     'Visitor registration must remain signed out while awaiting the 48-hour administrator review.'
 );
+[$duplicateEmailStatus, $duplicateEmail] = $request('POST', '/api/auth/check-registration-email', ['email' => strtoupper($cleanup->email('visitor'))]);
+$assert($duplicateEmailStatus === 409 && str_contains($duplicateEmail['fields']['email'] ?? '', 'already registered'), 'Existing emails must be reported as duplicates before account-type selection, regardless of case.');
 $visitorRegistrationEmail = Database::connection()->prepare(
     'SELECT delivery_status, body FROM email_outbox WHERE recipient = :recipient AND template = :template ORDER BY id DESC LIMIT 1'
 );

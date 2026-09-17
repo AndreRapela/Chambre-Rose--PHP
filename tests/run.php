@@ -717,6 +717,13 @@ try {
 }
 
 $login = Validator::login(['email' => ' Test@Example.com ', 'password' => '123456']);
+$assert(Validator::registrationEmail(['email' => ' Test@Example.com ']) === 'test@example.com', 'Email preflight must trim and normalize the address.');
+try {
+    Validator::registrationEmail(['email' => 'bad@example']);
+    $assert(false, 'Email preflight must reject an incomplete domain.');
+} catch (ApiException $exception) {
+    $assert($exception->status === 400 && isset($exception->fields['email']), 'Email preflight must identify the malformed field.');
+}
 $assert($login['email'] === 'Test@Example.com', 'Login validator must trim email.');
 $invalidEmails = ['person@example', 'person @example.com', 'person..name@example.com', 'person@example..com'];
 foreach ($invalidEmails as $invalidEmail) {
@@ -1050,6 +1057,20 @@ $assert(
 );
 
 $oversized = new Request('POST', '/api/auth/register', ['content-length' => (string) (31 * 1024 * 1024)], []);
+
+$mailReflection = new ReflectionClass(ChambreRose\MailService::class);
+$mailPreview = $mailReflection->newInstanceWithoutConstructor();
+$renderMail = $mailReflection->getMethod('render');
+foreach (['en', 'fr'] as $mailLocale) {
+    foreach (['account_approved', 'account_rejected'] as $mailTemplate) {
+        [$subject, $text, $html] = $renderMail->invoke($mailPreview, $mailTemplate, $mailLocale, ['name' => 'Rose']);
+        $assert(str_contains($html, '/api/brand/logo?format=png'), 'Decision emails must use the transparent, email-compatible brand PNG.');
+        $assert(str_contains($html, 'font-size:13px') && str_contains($html, 'padding:10px 16px'), 'Decision email buttons must be compact.');
+        $assert($subject !== '' && $text !== '' && str_contains($html, 'lang="' . $mailLocale . '"'), 'Both decision emails must have localized text and HTML.');
+    }
+}
+$pngLogo = (new ReflectionMethod(App::class, 'brandLogo'))->invoke(new App(), new Request('GET', '/api/brand/logo', [], ['format' => 'png']));
+$assert($pngLogo->status === 200 && $pngLogo->headers['Content-Type'] === 'image/png', 'Email brand endpoint must support PNG without changing existing WebP requests.');
 
 try {
     (new App())->handle($oversized);
