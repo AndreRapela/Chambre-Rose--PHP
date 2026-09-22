@@ -56,6 +56,7 @@ final class App
         $auth = new AuthService($users, $jwt, $marketplace, $passwordResets, $mail, $userNotifications);
 
         $this->router = new ApiRouter([
+            new AddressSearchRoutes($guard, $rateLimiter),
             new SeoRoutes(new SeoSitemapService($pdo)),
             new AuthRoutes($auth, $guard, $sessionCookie, $pushDeviceCookie, $rateLimiter, $userNotifications),
             new ListingRoutes($marketplace, $profiles, $profileMedia, $favorites, $products, $guard, $userNotifications),

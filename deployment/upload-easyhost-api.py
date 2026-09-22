@@ -22,6 +22,7 @@ FILES = (
     "src/AccountRecovery.php",
     "src/ApiRequestGuard.php",
     "src/AuthRateLimiter.php",
+    "src/AddressSearchRoutes.php",
     "src/AuthRoutes.php",
     "src/AdminModerationRoutes.php",
     "src/AdminModerationService.php",

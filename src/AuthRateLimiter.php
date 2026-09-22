@@ -56,6 +56,11 @@ final class AuthRateLimiter
         $this->consume([[$this->policy('registration-email-ip', 'AUTH_REGISTRATION_EMAIL_ATTEMPTS', 30, 900, 900), $ip]]);
     }
 
+    public function consumeAddressSearch(string $ip): void
+    {
+        $this->consume([[$this->policy('address-search-ip', 'ADDRESS_SEARCH_ATTEMPTS', 40, 60, 60), $ip]]);
+    }
+
     public function consumePasswordResetAttempt(string $token, string $ip): void
     {
         $this->consume([

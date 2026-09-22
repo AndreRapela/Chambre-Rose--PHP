@@ -2,6 +2,10 @@
 
 Backend PHP 8.2+ do marketplace Chambre Rose. Ele suporta MySQL na EasyHost e PostgreSQL no desenvolvimento local.
 
+### Sugestões de endereço
+
+`POST /api/locations/search` recebe `query` e `language` (`en`/`fr`) e consulta Photon/OpenStreetMap. `ADDRESS_SEARCH_URL` permite configurar uma instância HTTPS própria; o padrão é `https://photon.komoot.io/api/`. O serviço público não oferece SLA: para tráfego elevado, use uma instância dedicada. Há limite de 40 buscas por IP/minuto, timeout e preenchimento manual no frontend. A consulta é enviada ao provedor, sem identidade da conta; a resposta não deve ser armazenada em cache. A rua continua privada no perfil. Atribuição OpenStreetMap é exibida junto à busca.
+
 ## O que esta implementado
 
 - login, cadastro de visitante, acompanhante ou loja e edicao do proprio perfil;

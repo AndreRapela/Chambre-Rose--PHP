@@ -1086,4 +1086,8 @@ $assert(SearchPagination::resolve(9, PHP_INT_MAX, 8)['page'] === 2, 'Out-of-rang
 $assert(SearchPagination::resolve(0, 8, 8) === ['page' => 1, 'pageSize' => 8, 'totalPages' => 0, 'offset' => 0], 'Empty searches must resolve to page one.');
 $assert(SearchPagination::resolve(20, -2, 500, 48)['pageSize'] === 48, 'Search page quantities must stay bounded.');
 $assert(SearchPagination::resolve(20, null, null)['pageSize'] === 20, 'Existing API default quantities must remain compatible.');
+$addressFeature = ['properties' => ['street' => 'Rue de Rivoli', 'housenumber' => '33', 'city' => 'Paris', 'state' => 'Île-de-France', 'country' => 'France', 'postcode' => '75001']];
+$addresses = \ChambreRose\AddressSearchRoutes::suggestions([$addressFeature, $addressFeature, ['properties' => ['name' => 'Unknown']]]);
+$assert(count($addresses) === 1, 'Address suggestions deduplicate and reject missing locality');
+$assert($addresses[0] === ['address' => 'Rue de Rivoli, 33', 'city' => 'Paris', 'region' => 'Île-de-France', 'country' => 'France', 'postalCode' => '75001'], 'Address suggestion preserves street and locality separately');
 fwrite(STDOUT, "OK - {$tests} assertions\n");
