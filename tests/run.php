@@ -14,7 +14,11 @@ use ChambreRose\AdminModerationService;
 use ChambreRose\AdminUserService;
 use ChambreRose\App;
 use ChambreRose\AuthSessionCookie;
+use ChambreRose\CompanyVerificationRepository;
+use ChambreRose\CompanyVerificationService;
 use ChambreRose\HttpByteRange;
+use ChambreRose\IdentityVerificationRepository;
+use ChambreRose\IdentityVerificationService;
 use ChambreRose\Jwt;
 use ChambreRose\LocationNormalizer;
 use ChambreRose\MultipartParser;
@@ -28,6 +32,7 @@ use ChambreRose\PushNotificationSender;
 use ChambreRose\PushNotificationWorker;
 use ChambreRose\PushDeviceCookie;
 use ChambreRose\ProductImageRepository;
+use ChambreRose\PrivateIdentityFileCipher;
 use ChambreRose\ProfessionalProfileRepository;
 use ChambreRose\ProfileMediaRepository;
 use ChambreRose\RealtimeEventRepository;
@@ -299,6 +304,93 @@ $token = $jwt->generate('admin@example.com', 'ADMIN');
 $claims = $jwt->verify($token);
 $assert($claims['sub'] === 'admin@example.com', 'JWT must preserve the subject.');
 $assert($claims['role'] === 'ADMIN', 'JWT must preserve the role.');
+
+if (function_exists('openssl_encrypt') && in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    $identityDatabase = new PDO('sqlite::memory:');
+    $identityDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $identityDatabase->exec(<<<'SQL'
+        CREATE TABLE user_identity_verifications (
+          user_id INTEGER PRIMARY KEY,document_type TEXT NOT NULL,document_name TEXT NOT NULL,
+          document_content_type TEXT NOT NULL,document_data BLOB NOT NULL,selfie_name TEXT NOT NULL,
+          selfie_content_type TEXT NOT NULL,selfie_data BLOB NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        SQL);
+    $identityRepository = new IdentityVerificationRepository($identityDatabase);
+    $identityService = new IdentityVerificationService(
+        $identityRepository,
+        new PrivateIdentityFileCipher('identity-test-secret-with-more-than-thirty-two-bytes')
+    );
+    $identityBytes = (string) file_get_contents(dirname(__DIR__) . '/resources/brand/brand-logo.png');
+    $identityFile = new UploadedFile('identity.png', 'image/png', strlen($identityBytes), null, $identityBytes);
+    $identitySelfie = new UploadedFile('selfie.png', 'image/png', strlen($identityBytes), null, $identityBytes);
+    $identityRegistration = $identityService->validateRegistration(
+        'VISITOR',
+        'PASSPORT',
+        $identityFile,
+        $identitySelfie
+    );
+    $assert(is_array($identityRegistration), 'Visitor registration must require an identity verification payload.');
+    $identityService->store(44, $identityRegistration);
+    $storedIdentity = $identityRepository->find(44);
+    $restoredIdentity = $identityService->file(44, 'DOCUMENT');
+    $identitySummary = $identityService->summariesByUserIds([44]);
+    $assert(
+        is_array($storedIdentity)
+        && $storedIdentity['document_data'] !== $identityBytes
+        && $restoredIdentity['bytes'] === $identityBytes
+        && ($identitySummary[44]['documentType'] ?? null) === 'PASSPORT'
+        && $identityService->validateRegistration('STORE', null, null, null) === null,
+        'Private identity files must be encrypted at rest, decryptable for admin use and omitted for stores.'
+    );
+    try {
+        $identityService->validateRegistration('ESCORT', 'IDENTITY_CARD', null, null);
+        $assert(false, 'Companion registration must reject missing identity images.');
+    } catch (ApiException $exception) {
+        $assert(
+            $exception->status === 400
+            && isset($exception->fields['identityDocument'], $exception->fields['identitySelfie']),
+            'Missing private identity images must return field-level validation errors.'
+        );
+    }
+
+    $identityDatabase->exec(<<<'SQL'
+        CREATE TABLE user_company_verifications (
+          user_id INTEGER PRIMARY KEY,company_number TEXT NOT NULL,registration_name TEXT NOT NULL,
+          registration_content_type TEXT NOT NULL,registration_data BLOB NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        SQL);
+    $companyRepository = new CompanyVerificationRepository($identityDatabase);
+    $companyService = new CompanyVerificationService(
+        $companyRepository,
+        new PrivateIdentityFileCipher('identity-test-secret-with-more-than-thirty-two-bytes')
+    );
+    $companyFile = new UploadedFile('company.png', 'image/png', strlen($identityBytes), null, $identityBytes);
+    $companyRegistration = $companyService->validateRegistration('STORE', 'BE 0123.456.789', $companyFile);
+    $assert(is_array($companyRegistration), 'Store registration must require a company verification payload.');
+    $companyService->store(45, $companyRegistration);
+    $storedCompany = $companyRepository->find(45);
+    $restoredCompany = $companyService->file(45);
+    $companySummary = $companyService->summariesByUserIds([45]);
+    $assert(
+        is_array($storedCompany)
+        && $storedCompany['registration_data'] !== $identityBytes
+        && $restoredCompany['bytes'] === $identityBytes
+        && ($companySummary[45]['companyNumber'] ?? null) === 'BE 0123.456.789'
+        && $companyService->validateRegistration('VISITOR', null, null) === null,
+        'Private company registration must be encrypted at rest, decryptable for admin use and required only for stores.'
+    );
+    try {
+        $companyService->validateRegistration('STORE', '', null);
+        $assert(false, 'Store registration must reject missing company verification.');
+    } catch (ApiException $exception) {
+        $assert(
+            $exception->status === 400
+            && isset($exception->fields['companyNumber'], $exception->fields['companyRegistration']),
+            'Missing company verification must return field-level validation errors.'
+        );
+    }
+}
 $sessionCookie = new AuthSessionCookie($jwt);
 $cookieHeader = $sessionCookie->issue($token);
 $assert(

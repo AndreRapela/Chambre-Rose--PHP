@@ -33,7 +33,10 @@ final class AddressSearchRoutes implements RouteHandler
         return ApiResponder::json(['items' => self::suggestions($data['features'])]);
     }
 
-    /** @return list<array<string,string>> */
+    /**
+     * @param array<array-key, mixed> $features
+     * @return list<array<string, string>>
+     */
     public static function suggestions(array $features): array
     {
         $items = [];

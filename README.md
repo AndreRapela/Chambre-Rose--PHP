@@ -50,6 +50,7 @@ DB_USERNAME=USUARIO_DO_BANCO
 DB_PASSWORD=SENHA_DO_BANCO
 DB_CHARSET=utf8mb4
 JWT_SECRET=SEGREDO_ALEATORIO_COM_PELO_MENOS_32_BYTES
+IDENTITY_DOCUMENT_SECRET=SEGREDO_ESTAVEL_E_EXCLUSIVO_COM_PELO_MENOS_32_BYTES
 JWT_EXPIRATION_MINUTES=180
 APP_ENV=production
 AUTH_COOKIE_SECURE=true
@@ -130,7 +131,7 @@ Invoke-RestMethod http://localhost:8080/api/health
 
 ### Contas, perfis profissionais e mensagens
 
-- `POST /api/auth/register`: cria `VISITOR`, `ESCORT` ou `STORE`. Novas contas ficam `PENDING` para revisao em ate 48 horas e recebem um e-mail quando o cadastro e quando a decisao administrativa sao registrados.
+- `POST /api/auth/register`: cria `VISITOR`, `ESCORT` ou `STORE`. `VISITOR` e `ESCORT` enviam `identityDocumentType`, `identityDocument` e `identitySelfie`; `STORE` envia `companyNumber` e `companyRegistration`. Esses dados privados sao enviados somente nesse cadastro. Novas contas ficam `PENDING` para revisao em ate 48 horas e recebem um e-mail quando o cadastro e quando a decisao administrativa sao registrados.
 - `POST /api/auth/login` e `POST /api/auth/logout`: criam e encerram a sessao em cookie HttpOnly; o logout revoga somente o Push do navegador atual.
 - `POST /api/auth/forgot-password`, `POST /api/auth/verify-reset-code` e `POST /api/auth/reset-password`: recuperacao por codigo de seis digitos enviado por email, com desafio temporario valido por uma hora.
 - `GET|PUT /api/profiles/me`: consulta e edita o proprio perfil profissional.
@@ -143,6 +144,10 @@ Invoke-RestMethod http://localhost:8080/api/health
 - `POST|DELETE /api/users/{userId}/block` e `POST /api/users/{userId}/reports`: bloqueio e denuncia.
 - `GET /api/favorites` e `POST|DELETE /api/favorites/{profileId}`: favoritos por usuario autenticado.
 - `PATCH /api/admin/users/{id}/approval`: aprovacao ou rejeicao por administrador.
+- `GET /api/admin/users/{id}/identity/document|selfie`: leitura sem cache dos arquivos privados, exclusiva para administradores.
+- `GET /api/admin/users/{id}/company/registration`: leitura sem cache do registro privado da empresa, exclusiva para administradores.
+
+Os documentos de identidade e de registro empresarial ficam em tabelas privadas com criptografia AES-256-GCM antes da gravacao. `IDENTITY_DOCUMENT_SECRET` deve ser estavel e mantido fora do repositorio; quando vazio, o backend usa `JWT_SECRET`. A troca do segredo sem recriptografar os registros existentes torna os arquivos ilegíveis.
 
 Fotos aceitam JPG, PNG e WebP ate 8 MB. Videos aceitam MP4 e WebM ate 25 MB. Para que o PHP nao descarte o arquivo antes da aplicacao valida-lo, configure no painel EasyHost (ou em `php.ini`/`.user.ini) `upload_max_filesize=26M` e `post_max_size=30M`, no minimo. A API limita o corpo completo a 30 MB e devolve HTTP 413 quando esse limite e excedido.
 
@@ -232,6 +237,8 @@ POST   /api/conversations
 DELETE /api/conversations/{id}
 
 GET    /api/admin/users
+GET    /api/admin/users/{id}/identity/document
+GET    /api/admin/users/{id}/identity/selfie
 PATCH  /api/admin/users/{id}/vip
 
 GET    /api/brand/logo

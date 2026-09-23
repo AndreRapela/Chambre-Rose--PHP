@@ -56,7 +56,13 @@ final class AuthRoutes implements RouteHandler
             $form = $request->multipart();
 
             return $this->authenticatedResponse(
-                $this->auth->register($form['fields'], $form['files']['establishmentPhoto'] ?? null),
+                $this->auth->register(
+                    $form['fields'],
+                    $form['files']['establishmentPhoto'] ?? null,
+                    $form['files']['identityDocument'] ?? null,
+                    $form['files']['identitySelfie'] ?? null,
+                    $form['files']['companyRegistration'] ?? null
+                ),
                 201,
                 true
             );

@@ -24,6 +24,14 @@ final class App
         $users = new UserRepository($pdo);
         $jwt = new Jwt();
         $profiles = new ProfessionalProfileRepository($pdo);
+        $identityVerification = new IdentityVerificationService(
+            new IdentityVerificationRepository($pdo),
+            new PrivateIdentityFileCipher()
+        );
+        $companyVerification = new CompanyVerificationService(
+            new CompanyVerificationRepository($pdo),
+            new PrivateIdentityFileCipher()
+        );
         $responsiveImages = new ResponsiveImageService(
             new ResponsiveImageProcessor(),
             new ResponsiveImageVariantRepository($pdo)
@@ -53,7 +61,16 @@ final class App
         $pushDeviceCookie = new PushDeviceCookie();
         $rateLimiter = new AuthRateLimiter($pdo);
         $guard = new ApiRequestGuard($users, $jwt, $sessionCookie);
-        $auth = new AuthService($users, $jwt, $marketplace, $passwordResets, $mail, $userNotifications);
+        $auth = new AuthService(
+            $users,
+            $jwt,
+            $marketplace,
+            $passwordResets,
+            $mail,
+            $userNotifications,
+            $identityVerification,
+            $companyVerification
+        );
 
         $this->router = new ApiRouter([
             new AddressSearchRoutes($guard, $rateLimiter),
@@ -63,7 +80,11 @@ final class App
             new ProductRoutes($productService, $products, $productImages, $guard, $userNotifications),
             new MessagingRoutes($messaging, $users, $guard, $userNotifications, $realtimeEvents),
             new NotificationRoutes($notificationRepository, $userNotifications, $guard, $pushDeviceCookie, $nativePushNotifications),
-            new AdminRoutes(new AdminUserService($users, $mail, $profiles), $guard, $userNotifications),
+            new AdminRoutes(
+                new AdminUserService($users, $mail, $profiles, $identityVerification, $companyVerification),
+                $guard,
+                $userNotifications
+            ),
             new AdminModerationRoutes(new AdminModerationService($pdo), $guard),
             new RealtimeRoutes($realtimeEvents, $guard),
         ]);

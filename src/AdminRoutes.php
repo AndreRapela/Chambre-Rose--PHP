@@ -31,6 +31,30 @@ final class AdminRoutes implements RouteHandler
                 self::queryInt($request, 'pageSize', 25)
             ));
         }
+        if ($method === 'GET' && preg_match('#^/api/admin/users/(\d+)/identity/(document|selfie)$#', $path, $match)) {
+            $this->guard->requireAdmin($request);
+            $file = $this->service->identityFile((int) $match[1], strtoupper($match[2]));
+            $safeName = preg_replace('/[^a-zA-Z0-9._-]+/', '-', basename($file['name'])) ?: strtolower($match[2]) . '.jpg';
+
+            return new Response(200, $file['bytes'], [
+                'Content-Type' => $file['contentType'],
+                'Content-Length' => (string) strlen($file['bytes']),
+                'Content-Disposition' => 'inline; filename="' . $safeName . '"',
+                'Cache-Control' => 'private, no-store, max-age=0',
+            ]);
+        }
+        if ($method === 'GET' && preg_match('#^/api/admin/users/(\d+)/company/registration$#', $path, $match)) {
+            $this->guard->requireAdmin($request);
+            $file = $this->service->companyRegistrationFile((int) $match[1]);
+            $safeName = preg_replace('/[^a-zA-Z0-9._-]+/', '-', basename($file['name'])) ?: 'company-registration';
+
+            return new Response(200, $file['bytes'], [
+                'Content-Type' => $file['contentType'],
+                'Content-Length' => (string) strlen($file['bytes']),
+                'Content-Disposition' => 'inline; filename="' . $safeName . '"',
+                'Cache-Control' => 'private, no-store, max-age=0',
+            ]);
+        }
         if ($method === 'PATCH' && preg_match('#^/api/admin/users/(\d+)/vip$#', $path, $match)) {
             $this->guard->requireAdmin($request);
             $this->guard->requireJson($request);

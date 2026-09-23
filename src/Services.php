@@ -17,7 +17,9 @@ final class AuthService
         private readonly MarketplaceService $marketplace,
         private readonly PasswordResetRepository $passwordResets,
         private readonly MailService $mail,
-        private readonly ?UserNotificationService $notifications = null
+        private readonly ?UserNotificationService $notifications = null,
+        private readonly ?IdentityVerificationService $identityVerification = null,
+        private readonly ?CompanyVerificationService $companyVerification = null
     ) {
     }
 
@@ -60,7 +62,13 @@ final class AuthService
      * @param array<string, mixed> $input
      * @return array<string, mixed>
      */
-    public function register(array $input, ?UploadedFile $registrationPhoto = null): array
+    public function register(
+        array $input,
+        ?UploadedFile $registrationPhoto = null,
+        ?UploadedFile $identityDocument = null,
+        ?UploadedFile $identitySelfie = null,
+        ?UploadedFile $companyRegistration = null
+    ): array
     {
         $type = Validator::accountType($input);
         $data = Validator::register($input, true, $type);
@@ -88,6 +96,23 @@ final class AuthService
             // Reject invalid professional data before an account row is inserted.
             $this->marketplace->validateProfileInput($type, $professionalProfile, $data);
         }
+        $identityVerification = $this->identityVerification?->validateRegistration(
+            $type,
+            $input['identityDocumentType'] ?? null,
+            $identityDocument,
+            $identitySelfie
+        );
+        if ($this->identityVerification === null && in_array($type, ['VISITOR', 'ESCORT'], true)) {
+            throw new ApiException(503, 'Private identity verification is temporarily unavailable.');
+        }
+        $companyVerification = $this->companyVerification?->validateRegistration(
+            $type,
+            $input['companyNumber'] ?? null,
+            $companyRegistration
+        );
+        if ($this->companyVerification === null && $type === 'STORE') {
+            throw new ApiException(503, 'Private company verification is temporarily unavailable.');
+        }
 
         $user = null;
 
@@ -104,6 +129,12 @@ final class AuthService
                 if ($registrationPhoto !== null) {
                     $this->marketplace->upload((int) $user['id'], $registrationPhoto, 0);
                 }
+            }
+            if ($identityVerification !== null) {
+                $this->identityVerification->store((int) $user['id'], $identityVerification);
+            }
+            if ($companyVerification !== null) {
+                $this->companyVerification->store((int) $user['id'], $companyVerification);
             }
             $user = $this->users->find($user['id'])
                 ?? throw new ApiException(500, 'Unable to load the new account.');
@@ -433,7 +464,9 @@ final class AdminUserService
     public function __construct(
         private readonly UserRepository $users,
         private readonly ?MailService $mail = null,
-        private readonly ?ProfessionalProfileRepository $profiles = null
+        private readonly ?ProfessionalProfileRepository $profiles = null,
+        private readonly ?IdentityVerificationService $identityVerification = null,
+        private readonly ?CompanyVerificationService $companyVerification = null
     ) {
     }
 
@@ -468,11 +501,30 @@ final class AdminUserService
             )
         ));
         $professionalProfiles = $this->profiles?->findAdminSummariesByUserIds($professionalIds) ?? [];
-        $result['items'] = array_map(function (array $user) use ($professionalProfiles): array {
+        $verificationIds = array_values(array_map(
+            static fn (array $user): int => (int) $user['id'],
+            array_filter(
+                $result['items'],
+                static fn (array $user): bool => in_array($user['role'], ['VISITOR', 'ESCORT'], true)
+            )
+        ));
+        $identityVerifications = $this->identityVerification?->summariesByUserIds($verificationIds) ?? [];
+        $storeIds = array_values(array_map(
+            static fn (array $user): int => (int) $user['id'],
+            array_filter($result['items'], static fn (array $user): bool => $user['role'] === 'STORE')
+        ));
+        $companyVerifications = $this->companyVerification?->summariesByUserIds($storeIds) ?? [];
+        $result['items'] = array_map(function (array $user) use ($professionalProfiles, $identityVerifications, $companyVerifications): array {
             $summary = self::summary($user);
             $userId = (int) $user['id'];
             if (isset($professionalProfiles[$userId])) {
                 $summary['professionalProfile'] = $professionalProfiles[$userId];
+            }
+            if (isset($identityVerifications[$userId])) {
+                $summary['identityVerification'] = $identityVerifications[$userId];
+            }
+            if (isset($companyVerifications[$userId])) {
+                $summary['companyVerification'] = $companyVerifications[$userId];
             }
 
             return $summary;
@@ -491,6 +543,9 @@ final class AdminUserService
     public function updateApproval(int $id, string $status, ?string $reason): array
     {
         $user = $this->users->setApproval($id, $status, $reason);
+        if ($this->profiles !== null && $user['role'] === 'ESCORT') {
+            $this->profiles->setVerifiedForUser((int) $user['id'], $user['approvalStatus'] === 'APPROVED');
+        }
         $emailStatus = 'FAILED';
         if ($this->mail !== null) {
             try {
@@ -515,6 +570,36 @@ final class AdminUserService
         $summary['approvalEmailStatus'] = $emailStatus;
 
         return $summary;
+    }
+
+    /** @return array{name:string,contentType:string,bytes:string} */
+    public function identityFile(int $userId, string $kind): array
+    {
+        if ($this->users->find($userId) === null) {
+            throw new ApiException(404, 'User not found.');
+        }
+        if ($this->identityVerification === null) {
+            throw new ApiException(503, 'Private identity verification is temporarily unavailable.');
+        }
+
+        return $this->identityVerification->file($userId, $kind);
+    }
+
+    /** @return array{name:string,contentType:string,bytes:string} */
+    public function companyRegistrationFile(int $userId): array
+    {
+        $user = $this->users->find($userId);
+        if ($user === null) {
+            throw new ApiException(404, 'User not found.');
+        }
+        if ($user['role'] !== 'STORE') {
+            throw new ApiException(404, 'Company registration document not found.');
+        }
+        if ($this->companyVerification === null) {
+            throw new ApiException(503, 'Private company verification is temporarily unavailable.');
+        }
+
+        return $this->companyVerification->file($userId);
     }
 
     /** @return array<string, mixed> */

@@ -120,6 +120,40 @@ $binaryRequest = static function (string $method, string $path, array $headers =
     return [(int) ($statusMatch[1] ?? 0), is_string($raw) ? $raw : '', $headerMap];
 };
 
+$multipartRequest = static function (string $path, array $fields, array $files) use ($base): array {
+    $boundary = 'integration-form-' . bin2hex(random_bytes(12));
+    $parts = [];
+    foreach ($fields as $name => $value) {
+        $parts[] = "--{$boundary}\r\nContent-Disposition: form-data; name=\"{$name}\"\r\n\r\n{$value}\r\n";
+    }
+    foreach ($files as $field => $file) {
+        $parts[] = "--{$boundary}\r\nContent-Disposition: form-data; name=\"{$field}\"; filename=\"{$file['name']}\"\r\n"
+            . "Content-Type: {$file['contentType']}\r\n\r\n{$file['bytes']}\r\n";
+    }
+    $parts[] = "--{$boundary}--\r\n";
+    $multipart = implode('', $parts);
+    $context = stream_context_create(['http' => [
+        'method' => 'POST',
+        'header' => "Accept: application/json\r\nContent-Type: multipart/form-data; boundary={$boundary}\r\nContent-Length: " . strlen($multipart),
+        'content' => $multipart,
+        'ignore_errors' => true,
+    ]]);
+    $raw = file_get_contents($base . $path, false, $context);
+    preg_match('/\s(\d{3})\s/', $http_response_header[0] ?? '', $statusMatch);
+    $responseCookie = null;
+    foreach ($http_response_header ?? [] as $header) {
+        if (preg_match('/^Set-Cookie:\s*([^;]+)/i', $header, $cookieMatch)) {
+            $responseCookie = $cookieMatch[1];
+        }
+    }
+
+    return [
+        (int) ($statusMatch[1] ?? 0),
+        is_string($raw) && $raw !== '' ? json_decode($raw, true, 512, JSON_THROW_ON_ERROR) : null,
+        $responseCookie,
+    ];
+};
+
 putenv('AUTH_LOGIN_ACCOUNT_ATTEMPTS=3');
 putenv('AUTH_LOGIN_IP_ATTEMPTS=50');
 putenv('AUTH_RECOVERY_ACCOUNT_ATTEMPTS=2');
@@ -212,10 +246,14 @@ try {
 
 [$availableEmailStatus, $availableEmail] = $request('POST', '/api/auth/check-registration-email', ['email' => $cleanup->email('visitor')]);
 $assert($availableEmailStatus === 200 && ($availableEmail['available'] ?? false) === true, 'A new registration email must pass preflight without an account being created.');
-[$visitorStatus, $visitor, $visitorCookie] = $request('POST', '/api/auth/register', [
+[$visitorStatus, $visitor, $visitorCookie] = $multipartRequest('/api/auth/register', [
     'firstName' => 'Visitor', 'lastName' => 'Integration',
     'email' => $cleanup->email('visitor'), 'phone' => '12345678',
     'password' => 'Integration9!pass', 'accountType' => 'VISITOR',
+    'identityDocumentType' => 'IDENTITY_CARD',
+], [
+    'identityDocument' => ['name' => 'identity.png', 'contentType' => 'image/png', 'bytes' => file_get_contents($fixture)],
+    'identitySelfie' => ['name' => 'selfie.png', 'contentType' => 'image/png', 'bytes' => file_get_contents($fixture)],
 ]);
 $visitorReviewDeadline = strtotime((string) ($visitor['reviewDeadline'] ?? ''));
 $assert(
@@ -329,12 +367,15 @@ $fields = [
     'address' => 'Rue Integration 33', 'city' => 'Saint-Gilles',
     'region' => 'Brussels-Capital', 'country' => 'Belgium', 'postalCode' => '1060',
     'password' => 'Integration9!pass', 'accountType' => 'ESCORT', 'locale' => 'pt', 'profile' => $profile,
+    'identityDocumentType' => 'PASSPORT',
 ];
 $parts = [];
 foreach ($fields as $name => $value) {
     $parts[] = "--{$boundary}\r\nContent-Disposition: form-data; name=\"{$name}\"\r\n\r\n{$value}\r\n";
 }
 $parts[] = "--{$boundary}\r\nContent-Disposition: form-data; name=\"establishmentPhoto\"; filename=\"profile.png\"\r\nContent-Type: image/png\r\n\r\n" . file_get_contents($fixture) . "\r\n";
+$parts[] = "--{$boundary}\r\nContent-Disposition: form-data; name=\"identityDocument\"; filename=\"passport.png\"\r\nContent-Type: image/png\r\n\r\n" . file_get_contents($fixture) . "\r\n";
+$parts[] = "--{$boundary}\r\nContent-Disposition: form-data; name=\"identitySelfie\"; filename=\"selfie.png\"\r\nContent-Type: image/png\r\n\r\n" . file_get_contents($fixture) . "\r\n";
 $parts[] = "--{$boundary}--\r\n";
 $multipart = implode('', $parts);
 $context = stream_context_create(['http' => [
@@ -392,6 +433,7 @@ $storeFields = [
     'firstName' => 'Store', 'lastName' => 'Integration',
     'email' => $cleanup->email('store-profile'), 'phone' => '12345678',
     'password' => 'Integration9!pass', 'accountType' => 'STORE', 'locale' => 'fr',
+    'companyNumber' => 'BE 0123.456.789',
     'profile' => $storeProfile,
 ];
 $storeParts = [];
@@ -399,6 +441,7 @@ foreach ($storeFields as $name => $value) {
     $storeParts[] = "--{$storeBoundary}\r\nContent-Disposition: form-data; name=\"{$name}\"\r\n\r\n{$value}\r\n";
 }
 $storeParts[] = "--{$storeBoundary}\r\nContent-Disposition: form-data; name=\"establishmentPhoto\"; filename=\"store.png\"\r\nContent-Type: image/png\r\n\r\n" . file_get_contents($fixture) . "\r\n";
+$storeParts[] = "--{$storeBoundary}\r\nContent-Disposition: form-data; name=\"companyRegistration\"; filename=\"company-registration.png\"\r\nContent-Type: image/png\r\n\r\n" . file_get_contents($fixture) . "\r\n";
 $storeParts[] = "--{$storeBoundary}--\r\n";
 $storeMultipart = implode('', $storeParts);
 $storeContext = stream_context_create(['http' => [
@@ -412,7 +455,7 @@ preg_match('/\s(\d{3})\s/', $http_response_header[0] ?? '', $storeStatusMatch);
 $storeBody = json_decode((string) $storeRaw, true);
 $assert(
     (int) ($storeStatusMatch[1] ?? 0) === 201 && ($storeBody['approvalStatus'] ?? null) === 'PENDING',
-    'Store registration must succeed without a duplicate account address or unnecessary business fields.'
+    'Store registration must succeed with its private company number and registration document.'
 );
 
 $futureProfile = json_encode([
@@ -494,6 +537,66 @@ if ($adminPassword !== '') {
     );
     $visitorMatches = is_array($visitorList['items'] ?? null) ? $visitorList['items'] : [];
     $visitorId = (int) ($visitorMatches[0]['id'] ?? 0);
+    [$identityDocumentStatus, $identityDocumentBytes, $identityDocumentHeaders] = $binaryRequest(
+        'GET',
+        "/api/admin/users/{$visitorId}/identity/document",
+        ['Cookie: ' . $adminCookie]
+    );
+    [$identitySelfieStatus, $identitySelfieBytes] = $binaryRequest(
+        'GET',
+        "/api/admin/users/{$visitorId}/identity/selfie",
+        ['Cookie: ' . $adminCookie]
+    );
+    [$anonymousIdentityStatus] = $binaryRequest('GET', "/api/admin/users/{$visitorId}/identity/document");
+    $encryptedIdentity = Database::connection()->prepare(
+        'SELECT document_data,selfie_data FROM user_identity_verifications WHERE user_id=:id'
+    );
+    $encryptedIdentity->execute(['id' => $visitorId]);
+    $encryptedIdentityRow = $encryptedIdentity->fetch();
+    $fixtureBytes = file_get_contents($fixture);
+    $assert(
+        ($visitorMatches[0]['identityVerification']['documentType'] ?? null) === 'IDENTITY_CARD'
+        && $identityDocumentStatus === 200
+        && $identitySelfieStatus === 200
+        && $identityDocumentBytes === $fixtureBytes
+        && $identitySelfieBytes === $fixtureBytes
+        && str_contains(strtolower((string) ($identityDocumentHeaders['cache-control'] ?? '')), 'no-store')
+        && $anonymousIdentityStatus === 401
+        && is_array($encryptedIdentityRow)
+        && $encryptedIdentityRow['document_data'] !== $fixtureBytes
+        && $encryptedIdentityRow['selfie_data'] !== $fixtureBytes,
+        'Identity files must be encrypted at rest and readable only through the administrator endpoint.'
+    );
+    [$storeListStatus, $storeList] = $request(
+        'GET',
+        '/api/admin/users?email=' . rawurlencode($cleanup->email('store-profile')) . '&role=STORE&page=1&pageSize=10',
+        null,
+        $adminCookie
+    );
+    $storeMatches = is_array($storeList['items'] ?? null) ? $storeList['items'] : [];
+    $storeId = (int) ($storeMatches[0]['id'] ?? 0);
+    [$companyRegistrationStatus, $companyRegistrationBytes, $companyRegistrationHeaders] = $binaryRequest(
+        'GET',
+        "/api/admin/users/{$storeId}/company/registration",
+        ['Cookie: ' . $adminCookie]
+    );
+    [$anonymousCompanyStatus] = $binaryRequest('GET', "/api/admin/users/{$storeId}/company/registration");
+    $encryptedCompany = Database::connection()->prepare(
+        'SELECT registration_data FROM user_company_verifications WHERE user_id=:id'
+    );
+    $encryptedCompany->execute(['id' => $storeId]);
+    $encryptedCompanyBytes = $encryptedCompany->fetchColumn();
+    $assert(
+        $storeListStatus === 200
+        && ($storeMatches[0]['companyVerification']['companyNumber'] ?? null) === 'BE 0123.456.789'
+        && $companyRegistrationStatus === 200
+        && $companyRegistrationBytes === $fixtureBytes
+        && str_contains(strtolower((string) ($companyRegistrationHeaders['cache-control'] ?? '')), 'no-store')
+        && $anonymousCompanyStatus === 401
+        && $encryptedCompanyBytes !== false
+        && $encryptedCompanyBytes !== $fixtureBytes,
+        'Company verification must be encrypted at rest and readable only through the administrator endpoint.'
+    );
     [$visitorApprovalStatus, $visitorApproval] = $request(
         'PATCH',
         "/api/admin/users/{$visitorId}/approval",

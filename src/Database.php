@@ -343,6 +343,20 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-24-private-identity-verification',
+                'file' => dirname(__DIR__) . '/database/migrations/024-private-identity-verification.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-25-private-company-verification',
+                'file' => dirname(__DIR__) . '/database/migrations/025-private-company-verification.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 

@@ -190,6 +190,16 @@ final class ProfessionalProfileRepository
         $statement->execute(['id' => $userId, 'type' => $type]);
     }
 
+    public function setVerifiedForUser(int $userId, bool $verified): void
+    {
+        $statement = $this->pdo->prepare(
+            'UPDATE professional_profiles SET verified=:verified,updated_at=CURRENT_TIMESTAMP WHERE user_id=:id'
+        );
+        $statement->bindValue(':id', $userId, PDO::PARAM_INT);
+        $statement->bindValue(':verified', $verified, PDO::PARAM_BOOL);
+        $statement->execute();
+    }
+
     public function incrementViews(int $userId): void
     {
         $this->pdo->prepare('UPDATE professional_profiles SET views_count=views_count+1 WHERE user_id=:id')
