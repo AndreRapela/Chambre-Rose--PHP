@@ -6,4 +6,7 @@
 /.idea/
 /.vscode/
 *.log
+__pycache__/
+*.py[cod]
+/deployment/*.zip
 

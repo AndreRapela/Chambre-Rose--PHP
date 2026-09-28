@@ -45,6 +45,11 @@ final class ProductService
         }
         $store = $actorRole === 'STORE' ? $this->users->find($actorId) : null;
         $data = $this->validate(array_replace($existing ?? [], $input));
+        // Popularity and engagement metrics are server-owned. Accepting these
+        // fields from a product editor would let a store forge its ranking.
+        $data['reviews'] = (int) ($existing['reviews'] ?? 0);
+        $data['purchaseCount'] = (int) ($existing['purchaseCount'] ?? 0);
+        $data['likes'] = (int) ($existing['likes'] ?? 0);
         if ($actorRole === 'STORE') {
             $data['storeUserId'] = $actorId;
             $data['storeName'] = $data['storeName'] ?: trim(($store['firstName'] ?? '') . ' ' . ($store['lastName'] ?? ''));

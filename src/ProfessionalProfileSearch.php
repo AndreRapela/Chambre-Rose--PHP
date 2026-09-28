@@ -25,6 +25,14 @@ final class ProfessionalProfileSearch
         }
         $where = ["u.approval_status='APPROVED'", "u.role IN ('ESCORT','STORE')"];
         $params = [];
+        $viewerId = filter_var($filters['_viewerId'] ?? null, FILTER_VALIDATE_INT);
+        if ($viewerId !== false && $viewerId > 0) {
+            $where[] = 'NOT EXISTS (SELECT 1 FROM user_exclusions exclusion WHERE '
+                . '(exclusion.owner_id=:viewer_owner AND exclusion.excluded_user_id=u.id) OR '
+                . '(exclusion.owner_id=u.id AND exclusion.excluded_user_id=:viewer_target))';
+            $params['viewer_owner'] = $viewerId;
+            $params['viewer_target'] = $viewerId;
+        }
         foreach (['type' => 'p.profile_type', 'gender' => 'p.gender'] as $key => $column) {
             $value = self::limitedText($filters[$key] ?? '', 40);
             if ($value !== '') {
@@ -98,10 +106,16 @@ final class ProfessionalProfileSearch
         ['page' => $page, 'pageSize' => $pageSize] = $pagination;
 
         [$proximityOrder, $proximityParams] = $this->proximityOrder($filters);
-        $contentOrder = strtolower((string) ($filters['sort'] ?? '')) === 'newest'
-            ? 'p.created_at DESC, p.user_id DESC'
-            : 'u.vip_active DESC, p.updated_at DESC, p.user_id DESC';
-        $order = $proximityOrder === '' ? $contentOrder : $proximityOrder . ', ' . $contentOrder;
+        $newest = strtolower((string) ($filters['sort'] ?? '')) === 'newest';
+        $order = 'u.vip_active DESC';
+        if ($newest) {
+            $order .= ', p.created_at DESC, p.user_id DESC';
+        } else {
+            if ($proximityOrder !== '') {
+                $order .= ', ' . $proximityOrder;
+            }
+            $order .= ', p.updated_at DESC, p.user_id DESC';
+        }
         $sql = 'SELECT ' . $this->columns . ' FROM professional_profiles p JOIN users u ON u.id=p.user_id WHERE '
             . $whereSql . ' ORDER BY ' . $order . ' LIMIT :limit OFFSET :offset';
         $statement = $this->pdo->prepare($sql);

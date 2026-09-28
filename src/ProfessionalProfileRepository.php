@@ -125,6 +125,32 @@ final class ProfessionalProfileRepository
     }
 
     /**
+     * Returns only the fields required to authorize public profile media.
+     *
+     * @return array{userId: int, type: string, vipActive: bool}|null
+     */
+    public function findPublicMediaAccess(int $userId): ?array
+    {
+        $statement = $this->pdo->prepare(
+            "SELECT p.user_id,p.profile_type,u.vip_active"
+            . " FROM professional_profiles p JOIN users u ON u.id=p.user_id"
+            . " WHERE p.user_id=:id AND u.approval_status='APPROVED'"
+            . " AND u.role IN ('ESCORT','STORE') LIMIT 1"
+        );
+        $statement->execute(['id' => $userId]);
+        $row = $statement->fetch();
+        if (!is_array($row)) {
+            return null;
+        }
+
+        return [
+            'userId' => (int) $row['user_id'],
+            'type' => (string) $row['profile_type'],
+            'vipActive' => in_array($row['vip_active'], [true, 1, '1', 't', 'true'], true),
+        ];
+    }
+
+    /**
      * @param list<int> $userIds
      * @return list<array<string, mixed>>
      */

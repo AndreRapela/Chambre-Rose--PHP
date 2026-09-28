@@ -26,7 +26,7 @@ Backend PHP 8.2+ do marketplace Chambre Rose. Ele suporta MySQL na EasyHost e Po
 ## Requisitos
 
 - PHP 8.2 ou superior (8.3 recomendado);
-- extensoes `pdo`, `pdo_mysql`, `fileinfo` e `json` na EasyHost;
+- extensoes `pdo`, `pdo_mysql`, `curl`, `fileinfo`, `gd`, `json` e `openssl` na EasyHost;
 - banco MySQL criado no painel da hospedagem;
 - Apache com `mod_rewrite` para producao;
 - `mbstring` e Composer sao recomendados, mas nao obrigatorios.
@@ -55,6 +55,7 @@ JWT_EXPIRATION_MINUTES=180
 APP_ENV=production
 AUTH_COOKIE_SECURE=true
 RATE_LIMIT_SECRET=OUTRO_SEGREDO_ALEATORIO_COM_PELO_MENOS_32_BYTES
+AUTH_REGISTRATION_IP_ATTEMPTS=10
 APP_TRUSTED_PROXIES=
 APP_CORS_ALLOWED_ORIGINS=http://localhost:4200,https://seu-dominio.com
 APP_AUTO_MIGRATE=true
@@ -74,7 +75,9 @@ Para PostgreSQL local, use `DB_DRIVER=pgsql` com `DB_SSLMODE`, ou mantenha as va
 
 O navegador recebe a sessao apenas no cookie `chambre_rose_session`; o JWT nao faz
 parte do JSON e nao deve ser salvo em `localStorage`. O backend aceita temporariamente
-o cabecalho Bearer para integracoes existentes. Login e recuperacao devolvem HTTP 429
+o cabecalho Bearer para integracoes existentes. Mutacoes autenticadas por cookie devem
+enviar `X-Requested-With: XMLHttpRequest`; o frontend faz isso automaticamente, inclusive
+em uploads multipart, para impedir formularios de outras origens. Login e recuperacao devolvem HTTP 429
 e `Retry-After` quando os limites configurados em `.env.example` forem excedidos.
 Se a API estiver atras de proxy reverso, `APP_TRUSTED_PROXIES` deve listar somente
 enderecos ou redes CIDR controladas; cabecalhos encaminhados de outros clientes sao ignorados.
@@ -131,7 +134,7 @@ Invoke-RestMethod http://localhost:8080/api/health
 
 ### Contas, perfis profissionais e mensagens
 
-- `POST /api/auth/register`: cria `VISITOR`, `ESCORT` ou `STORE`. `VISITOR` e `ESCORT` enviam `identityDocumentType`, `identityDocument` e `identitySelfie`; `STORE` envia `companyNumber` e `companyRegistration`. Esses dados privados sao enviados somente nesse cadastro. Novas contas ficam `PENDING` para revisao em ate 48 horas e recebem um e-mail quando o cadastro e quando a decisao administrativa sao registrados.
+- `POST /api/auth/register`: cria `VISITOR`, `ESCORT` ou `STORE`. `VISITOR` e `ESCORT` enviam `identityDocumentType`, `identityDocument` e `identitySelfie`; `STORE` envia `companyNumber` e `companyRegistration`. Esses dados privados sao enviados somente nesse cadastro. Novas contas ficam `PENDING` para revisao em ate 48 horas, o candidato recebe a confirmacao do cadastro e todos os administradores aprovados recebem um e-mail com link direto para a analise. O candidato recebe outro e-mail quando a decisao administrativa e registrada.
 - `POST /api/auth/login` e `POST /api/auth/logout`: criam e encerram a sessao em cookie HttpOnly; o logout revoga somente o Push do navegador atual.
 - `POST /api/auth/forgot-password`, `POST /api/auth/verify-reset-code` e `POST /api/auth/reset-password`: recuperacao por codigo de seis digitos enviado por email, com desafio temporario valido por uma hora.
 - `GET|PUT /api/profiles/me`: consulta e edita o proprio perfil profissional.

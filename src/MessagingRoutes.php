@@ -59,7 +59,7 @@ final class MessagingRoutes implements RouteHandler
                     $recipientId,
                     UserNotificationService::DIRECT_MESSAGE,
                     'MESSAGE_RECEIVED',
-                    '/mensagens/' . $conversationId,
+                    '/conta/mensagens/' . $conversationId,
                     'message:' . (int) $message['id'],
                     ['senderName' => $senderName]
                 );
@@ -127,6 +127,23 @@ final class MessagingRoutes implements RouteHandler
 
             return ApiResponder::empty();
         }
+        if ($method === 'DELETE' && preg_match('#^/api/users/(\d+)/relationship$#', $path, $match)) {
+            $user = $this->guard->currentUser($request);
+            $targetId = (int) $match[1];
+            if ($this->users->find($targetId) === null) {
+                throw new ApiException(404, 'User not found.');
+            }
+            $userId = (int) $user['id'];
+            $this->realtimeEvents->transaction(function () use ($userId, $targetId): void {
+                $this->messaging->removeMemberPermanently($userId, $targetId);
+                $this->realtimeEvents->publishForUsers(
+                    [$userId, $targetId],
+                    RealtimeEventType::INBOX_UPDATED
+                );
+            });
+
+            return ApiResponder::empty();
+        }
         if ($method === 'POST' && preg_match('#^/api/users/(\d+)/reports$#', $path, $match)) {
             return $this->report($request, (int) $match[1]);
         }
@@ -183,6 +200,7 @@ final class MessagingRoutes implements RouteHandler
     private function block(Request $request, int $target): Response
     {
         $user = $this->guard->currentUser($request);
+        $this->guard->requireJson($request);
         if ($this->users->find($target) === null) {
             throw new ApiException(404, 'User not found.');
         }

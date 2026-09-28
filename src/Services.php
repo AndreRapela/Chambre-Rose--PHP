@@ -161,6 +161,7 @@ final class AuthService
             // remains pending and the failure is available in the log.
             error_log('[Chambre Rose API] Registration email could not be queued: ' . $exception->getMessage());
         }
+        $this->notifyAdministratorsOfRegistration($user);
 
         $message = match ($locale) {
             'pt' => 'Cadastro recebido. Sua conta foi criada, mas permanece inativa até a aprovação de um administrador. A análise será concluída em até 48 horas e você receberá um email com a decisão.',
@@ -177,6 +178,43 @@ final class AuthService
             'emailStatus' => $emailStatus,
             'profile' => self::profileFromUser($user),
         ];
+    }
+
+    /** @param array<string,mixed> $user */
+    private function notifyAdministratorsOfRegistration(array $user): void
+    {
+        $frontend = rtrim(
+            Config::get('APP_FRONTEND_URL', 'http://localhost:4200') ?? 'http://localhost:4200',
+            '/'
+        );
+        $applicantName = trim((string) $user['firstName'] . ' ' . (string) $user['lastName']);
+        foreach ($this->users->approvedAdministrators() as $administrator) {
+            $locale = strtolower($administrator['locale']) === 'fr' ? 'fr' : 'en';
+            $accountType = match ((string) $user['role']) {
+                'ESCORT' => $locale === 'fr' ? 'accompagnante' : 'companion',
+                'STORE' => $locale === 'fr' ? 'établissement' : 'store',
+                default => $locale === 'fr' ? 'client' : 'client',
+            };
+            try {
+                $this->mail->send(
+                    $administrator['email'],
+                    'admin_account_pending',
+                    $locale,
+                    [
+                        'name' => $administrator['firstName'],
+                        'applicantName' => $applicantName,
+                        'applicantEmail' => (string) $user['email'],
+                        'accountType' => $accountType,
+                        'url' => $frontend . '/conta/usuarios?email=' . rawurlencode((string) $user['email']),
+                    ]
+                );
+            } catch (\Throwable $exception) {
+                // Registration is already complete. Preserve it and leave the
+                // notification failure available to operational logs.
+                error_log('[Chambre Rose API] Administrator registration email could not be queued: '
+                    . $exception->getMessage());
+            }
+        }
     }
 
     /** @return array<string, mixed> */
@@ -220,7 +258,7 @@ final class AuthService
             (int) $updated['id'],
             UserNotificationService::ACCOUNT,
             'PROFILE_UPDATED',
-            '/espace-prive/perfil',
+            '/conta/perfil',
             null
         );
 
@@ -418,11 +456,13 @@ final class AuthService
             throw new ApiException(400, 'Invalid or expired password reset request.');
         }
         Validator::password($password);
-        $userId = $this->passwordResets->consume($token);
+        $passwordHash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+        $userId = $this->passwordResets->consume($token, function (int $id) use ($passwordHash): void {
+            $this->users->updatePassword($id, $passwordHash);
+        });
         if ($userId === null) {
             throw new ApiException(400, 'Invalid or expired password reset request.');
         }
-        $this->users->updatePassword($userId, password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]));
         $this->notifications?->notify(
             $userId,
             UserNotificationService::SECURITY,
@@ -451,7 +491,7 @@ final class AuthService
         $profile = self::profileFromUser($user);
 
         return [
-            'token' => $this->jwt->generate($user['email'], $user['role']),
+            'token' => $this->jwt->generate($user['email'], $user['role'], $user['passwordHash']),
             'userEmail' => $user['email'],
             'role' => $user['role'],
             'profile' => $profile,

@@ -20,13 +20,14 @@ final class Jwt
         $this->expirationMinutes = max(1, Config::int('JWT_EXPIRATION_MINUTES', 180));
     }
 
-    public function generate(string $email, string $role): string
+    public function generate(string $email, string $role, string $passwordHash): string
     {
         $now = time();
         $header = ['alg' => 'HS256', 'typ' => 'JWT'];
         $payload = [
             'sub' => $email,
             'role' => strtoupper($role),
+            'pwd' => $this->credentialFingerprint($passwordHash),
             'iat' => $now,
             'exp' => $now + ($this->expirationMinutes * 60),
         ];
@@ -42,7 +43,7 @@ final class Jwt
         return $this->expirationMinutes * 60;
     }
 
-    /** @return array{sub: string, role: string, iat?: int, exp: int} */
+    /** @return array{sub: string, role: string, pwd: string, iat?: int, exp: int} */
     public function verify(string $token): array
     {
         $parts = explode('.', $token);
@@ -69,8 +70,15 @@ final class Jwt
 
         $subject = $payload['sub'] ?? null;
         $role = $payload['role'] ?? null;
+        $passwordFingerprint = $payload['pwd'] ?? null;
         $expiration = $payload['exp'] ?? null;
-        if (!is_string($subject) || $subject === '' || !is_string($role) || !is_numeric($expiration)) {
+        if (!is_string($subject)
+            || $subject === ''
+            || !is_string($role)
+            || !is_string($passwordFingerprint)
+            || preg_match('/^[A-Za-z0-9_-]{43}$/', $passwordFingerprint) !== 1
+            || !is_numeric($expiration)
+        ) {
             throw new ApiException(401, 'Invalid or expired authentication token.');
         }
         if ((int) $expiration <= time()) {
@@ -80,9 +88,15 @@ final class Jwt
         return [
             'sub' => $subject,
             'role' => strtoupper($role),
+            'pwd' => $passwordFingerprint,
             'iat' => isset($payload['iat']) ? (int) $payload['iat'] : 0,
             'exp' => (int) $expiration,
         ];
+    }
+
+    public function matchesPasswordHash(string $fingerprint, string $passwordHash): bool
+    {
+        return hash_equals($this->credentialFingerprint($passwordHash), $fingerprint);
     }
 
     /** @param array<string, mixed> $value */
@@ -107,5 +121,15 @@ final class Jwt
         }
 
         return $decoded;
+    }
+
+    private function credentialFingerprint(string $passwordHash): string
+    {
+        return self::base64UrlEncode(hash_hmac(
+            'sha256',
+            "chambre-rose:credentials\0" . $passwordHash,
+            $this->secret,
+            true
+        ));
     }
 }

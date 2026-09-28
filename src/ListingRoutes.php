@@ -23,10 +23,16 @@ final class ListingRoutes implements RouteHandler
         $path = $request->path;
 
         if ($method === 'GET' && $path === '/api/listings') {
-            return ApiResponder::json($this->marketplace->listings($request->query));
+            return ApiResponder::json($this->marketplace->listings(
+                $request->query,
+                $this->guard->optionalCurrentUser($request)
+            ));
         }
         if ($method === 'GET' && preg_match('#^/api/listings/(\d+)$#', $path, $match)) {
-            return ApiResponder::json($this->marketplace->visitPublicProfile((int) $match[1]));
+            return ApiResponder::json($this->marketplace->visitPublicProfile(
+                (int) $match[1],
+                $this->guard->optionalCurrentUser($request)
+            ));
         }
         if ($method === 'GET' && preg_match('#^/api/listings/(\d+)/contact$#', $path, $match)) {
             return ApiResponder::json(
@@ -86,8 +92,19 @@ final class ListingRoutes implements RouteHandler
         if ($method === 'POST' && $path === '/api/profiles/me/media') {
             return $this->upload($request);
         }
+        if ($method === 'GET' && preg_match('#^/api/profiles/(\d+)/profile-photo/(320|640|960|1280)\.webp$#', $path, $match)) {
+            return $this->profilePhotoVariant($request, (int) $match[1], (int) $match[2]);
+        }
+        if (($method === 'GET' || $method === 'HEAD')
+            && preg_match('#^/api/profiles/(\d+)/profile-photo$#', $path, $match)
+        ) {
+            return $this->profilePhoto($request, (int) $match[1]);
+        }
         if ($method === 'GET' && preg_match('#^/api/profiles/(\d+)/media/(\d+)/(320|640|960|1280)\.webp$#', $path, $match)) {
             return $this->profileMediaVariant($request, (int) $match[1], (int) $match[2], (int) $match[3]);
+        }
+        if ($method === 'GET' && preg_match('#^/api/profiles/(\d+)/media/(\d+)/vip-preview\.webp$#', $path, $match)) {
+            return $this->vipMediaPreview($request, (int) $match[1], (int) $match[2]);
         }
         if (($method === 'GET' || $method === 'HEAD')
             && preg_match('#^/api/profiles/(\d+)/media/(\d+)$#', $path, $match)
@@ -119,7 +136,7 @@ final class ListingRoutes implements RouteHandler
         if (!$user['vipActive']) {
             throw new ApiException(403, 'VIP membership is required to select a companion.', ['vipRequired' => 'true']);
         }
-        $profile = $this->marketplace->publicProfile($profileId);
+        $profile = $this->marketplace->publicProfile($profileId, $user);
         if ($profile['type'] !== 'ESCORT') {
             throw new ApiException(400, 'Only companion profiles can receive this purchase type.');
         }
@@ -139,7 +156,7 @@ final class ListingRoutes implements RouteHandler
             ['memberName' => $buyerName]
         );
 
-        return ApiResponder::json($this->marketplace->publicProfile($profileId), 201);
+        return ApiResponder::json($this->marketplace->publicProfile($profileId, $user), 201);
     }
 
     private function updateListing(Request $request, int $target): Response
@@ -197,13 +214,15 @@ final class ListingRoutes implements RouteHandler
         if ($method === 'GET' && $path === '/api/favorites') {
             return ApiResponder::json([
                 'items' => $this->marketplace->publicListingsByUserIds(
-                    $this->favorites->ids((int) $user['id'])
+                    $this->favorites->ids((int) $user['id']),
+                    $user
                 ),
             ]);
         }
         if ($method === 'POST' && preg_match('#^/api/favorites/(\d+)$#', $path, $match)) {
+            $this->guard->requireJson($request);
             $target = (int) $match[1];
-            $this->marketplace->publicProfile($target);
+            $this->marketplace->publicProfile($target, $user);
             $this->favorites->add((int) $user['id'], $target);
             $this->notifications->notify(
                 $target,
@@ -226,7 +245,7 @@ final class ListingRoutes implements RouteHandler
 
     private function profileMedia(Request $request, int $userId, int $mediaId): Response
     {
-        $this->authorizeProfileMedia($request, $userId);
+        $this->authorizeProfileMedia($request, $userId, $mediaId);
         $meta = $this->media->metadata($userId, $mediaId);
         if ($meta === null) {
             throw new ApiException(404, 'Media not found.');
@@ -329,7 +348,7 @@ final class ListingRoutes implements RouteHandler
 
     private function profileMediaVariant(Request $request, int $userId, int $mediaId, int $width): Response
     {
-        $isPublic = $this->authorizeProfileMedia($request, $userId);
+        $isPublic = $this->authorizeProfileMedia($request, $userId, $mediaId);
         $image = $this->marketplace->responsivePhoto($userId, $mediaId, $width);
         $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $image['sourceHash'] . '|' . $width);
         $cache = $isPublic ? 'public, max-age=86400, must-revalidate' : 'private, no-store';
@@ -346,13 +365,116 @@ final class ListingRoutes implements RouteHandler
         ]);
     }
 
-    private function authorizeProfileMedia(Request $request, int $userId): bool
+    private function profilePhoto(Request $request, int $userId): Response
     {
-        if ($this->profiles->findByUser($userId, true) !== null) {
+        $isPublic = $this->authorizeProfilePhoto($request, $userId);
+        $photo = $this->media->profilePhotoForUser($userId);
+        if ($photo === null) {
+            throw new ApiException(404, 'Profile photo not found.');
+        }
+
+        $mediaId = (int) $photo['id'];
+        $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $photo['size'] . '|' . $photo['createdAt'] . '|profile-photo');
+        $headers = [
+            'Content-Type' => (string) $photo['contentType'],
+            'Content-Disposition' => 'inline; filename="profile-photo-' . $userId . '"',
+            'Cache-Control' => $isPublic ? 'public, max-age=86400, must-revalidate' : 'private, no-store',
+            'ETag' => $etag,
+        ];
+        if (ApiResponder::etagMatches($request, $etag)) {
+            return new Response(304, '', $headers);
+        }
+        if ($request->method === 'HEAD') {
+            return new Response(200, '', ['Content-Length' => (string) $photo['size']] + $headers);
+        }
+
+        $bytes = $this->media->data($userId, $mediaId);
+        if ($bytes === null) {
+            throw new ApiException(404, 'Profile photo not found.');
+        }
+
+        return new Response(200, $bytes, [
+            'Content-Length' => (string) strlen($bytes),
+        ] + $headers);
+    }
+
+    private function profilePhotoVariant(Request $request, int $userId, int $width): Response
+    {
+        $isPublic = $this->authorizeProfilePhoto($request, $userId);
+        $mediaId = $this->media->profilePhotoIdForUser($userId);
+        if ($mediaId === null) {
+            throw new ApiException(404, 'Profile photo not found.');
+        }
+
+        $image = $this->marketplace->responsivePhoto($userId, $mediaId, $width);
+        $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $image['sourceHash'] . '|' . $width . '|profile-photo');
+        $cache = $isPublic ? 'public, max-age=86400, must-revalidate' : 'private, no-store';
+        if (ApiResponder::etagMatches($request, $etag)) {
+            return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
+        }
+
+        return new Response(200, $image['bytes'], [
+            'Content-Type' => $image['contentType'],
+            'Content-Length' => (string) $image['size'],
+            'Content-Disposition' => 'inline; filename="profile-photo-' . $userId . '-' . $width . '.webp"',
+            'Cache-Control' => $cache,
+            'ETag' => $etag,
+        ]);
+    }
+
+    private function authorizeProfilePhoto(Request $request, int $userId): bool
+    {
+        $viewer = $this->guard->optionalCurrentUser($request);
+        if ($this->marketplace->publicMediaAccess($userId, $viewer) !== null) {
             return true;
         }
 
+        if ($viewer === null || ((int) $viewer['id'] !== $userId && $viewer['role'] !== 'ADMIN')) {
+            throw new ApiException(404, 'Profile photo not found.');
+        }
+
+        return false;
+    }
+
+    private function vipMediaPreview(Request $request, int $userId, int $mediaId): Response
+    {
         $viewer = $this->guard->optionalCurrentUser($request);
+        $profile = $this->marketplace->publicProfile($userId, $viewer);
+        if (($profile['type'] ?? '') !== 'ESCORT' || ($profile['vipActive'] ?? false) !== true) {
+            throw new ApiException(404, 'VIP photo preview not found.');
+        }
+        $image = $this->marketplace->vipPhotoPreview($userId, $mediaId);
+        $etag = ApiResponder::etag(
+            $userId . '|' . $mediaId . '|' . $image['sourceHash'] . '|vip-preview-v1'
+        );
+        $cache = 'public, max-age=86400, must-revalidate';
+        if (ApiResponder::etagMatches($request, $etag)) {
+            return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
+        }
+
+        return new Response(200, $image['bytes'], [
+            'Content-Type' => $image['contentType'],
+            'Content-Length' => (string) $image['size'],
+            'Content-Disposition' => 'inline; filename="vip-photo-preview-' . $mediaId . '.webp"',
+            'Cache-Control' => $cache,
+            'ETag' => $etag,
+        ]);
+    }
+
+    private function authorizeProfileMedia(Request $request, int $userId, int $mediaId): bool
+    {
+        $viewer = $this->guard->optionalCurrentUser($request);
+        $access = $this->marketplace->publicMediaAccess($userId, $viewer);
+        if ($access !== null) {
+            if ($access['mediaLocked']) {
+                throw new ApiException(403, 'VIP membership is required to access these photos.', [
+                    'vipRequired' => 'true',
+                ]);
+            }
+
+            return $access['publiclyCacheable'];
+        }
+
         if ($viewer === null || ((int) $viewer['id'] !== $userId && $viewer['role'] !== 'ADMIN')) {
             throw new ApiException(404, 'Media not found.');
         }

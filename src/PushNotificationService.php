@@ -95,7 +95,7 @@ final class PushNotificationService implements PushNotificationSender
                         'onActionClick' => [
                             'default' => [
                                 'operation' => 'navigateLastFocusedOrOpen',
-                                'url' => (string) ($notification['targetUrl'] ?? '/espace-prive/notificacoes'),
+                                'url' => (string) ($notification['targetUrl'] ?? '/conta/notificacoes'),
                             ],
                         ],
                     ],

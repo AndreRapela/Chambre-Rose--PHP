@@ -49,6 +49,7 @@ final class AuthRoutes implements RouteHandler
             return ApiResponder::json(['available' => true]);
         }
         if ($method === 'POST' && $path === '/api/auth/register') {
+            $this->rateLimiter->consumeRegistration($request->clientIp);
             if ($request->contentType() === 'application/json') {
                 return $this->authenticatedResponse($this->auth->register($request->json()), 201, true);
             }
@@ -96,6 +97,9 @@ final class AuthRoutes implements RouteHandler
             return ApiResponder::json($response);
         }
         if ($method === 'POST' && $path === '/api/auth/logout') {
+            if ($this->sessionCookie->hasToken($request)) {
+                $this->guard->requireCookieMutationHeader($request);
+            }
             $user = $this->guard->optionalCurrentUser($request);
             $endpointHash = $this->pushDeviceCookie->endpointHash($request);
             if ($user !== null && $endpointHash !== null) {

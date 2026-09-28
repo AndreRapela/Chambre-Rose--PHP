@@ -120,4 +120,86 @@ final class ResponsiveImageProcessor
 
         return $variants;
     }
+
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string} */
+    public function blurredPreview(string $sourceBytes): array
+    {
+        if (!function_exists('imagecreatefromstring')
+            || !function_exists('imagefilter')
+            || !function_exists('imagewebp')
+        ) {
+            throw new ApiException(503, 'VIP image preview processing is unavailable.');
+        }
+
+        $dimensions = @getimagesizefromstring($sourceBytes);
+        if (!is_array($dimensions)) {
+            throw new ApiException(400, 'The uploaded image is invalid or corrupted.');
+        }
+        $sourceWidth = (int) $dimensions[0];
+        $sourceHeight = (int) $dimensions[1];
+        if ($sourceWidth < 1 || $sourceHeight < 1 || $sourceWidth * $sourceHeight > self::MAX_PIXELS) {
+            throw new ApiException(413, 'The image dimensions are too large.');
+        }
+        $aspectRatio = max($sourceWidth / $sourceHeight, $sourceHeight / $sourceWidth);
+        if ($aspectRatio > self::MAX_ASPECT_RATIO) {
+            throw new ApiException(413, 'The image aspect ratio is too large for preview processing.');
+        }
+
+        $source = @imagecreatefromstring($sourceBytes);
+        if (!$source instanceof GdImage) {
+            throw new ApiException(400, 'The uploaded image could not be decoded.');
+        }
+
+        $targetWidth = min(160, $sourceWidth);
+        $targetHeight = max(1, (int) round($sourceHeight * ($targetWidth / $sourceWidth)));
+        $target = imagecreatetruecolor($targetWidth, $targetHeight);
+        if (!$target instanceof GdImage) {
+            unset($source);
+            throw new ApiException(503, 'Unable to allocate the VIP image preview.');
+        }
+
+        try {
+            imagealphablending($target, false);
+            imagesavealpha($target, true);
+            $transparent = imagecolorallocatealpha($target, 0, 0, 0, 127);
+            imagefilledrectangle($target, 0, 0, $targetWidth, $targetHeight, $transparent);
+            imagecopyresampled(
+                $target,
+                $source,
+                0,
+                0,
+                0,
+                0,
+                $targetWidth,
+                $targetHeight,
+                $sourceWidth,
+                $sourceHeight
+            );
+            for ($pass = 0; $pass < 5; $pass++) {
+                imagefilter($target, IMG_FILTER_GAUSSIAN_BLUR);
+            }
+            imagefilter($target, IMG_FILTER_COLORIZE, 28, 18, 22, 18);
+
+            ob_start();
+            try {
+                $encoded = imagewebp($target, null, 52);
+                $bytes = ob_get_contents();
+            } finally {
+                ob_end_clean();
+            }
+            if (!$encoded || !is_string($bytes) || $bytes === '') {
+                throw new ApiException(503, 'Unable to encode the VIP image preview.');
+            }
+
+            return [
+                'width' => $targetWidth,
+                'height' => $targetHeight,
+                'contentType' => 'image/webp',
+                'size' => strlen($bytes),
+                'bytes' => $bytes,
+            ];
+        } finally {
+            unset($target, $source);
+        }
+    }
 }

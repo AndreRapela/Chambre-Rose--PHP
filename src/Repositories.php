@@ -317,6 +317,25 @@ final class UserRepository
         return (int)$this->pdo->query("SELECT COUNT(*) FROM users WHERE role = 'ADMIN'")->fetchColumn();
     }
 
+    /** @return list<array{id:int,email:string,firstName:string,locale:string}> */
+    public function approvedAdministrators(): array
+    {
+        $statement = $this->pdo->query(
+            "SELECT id,email,first_name,locale FROM users "
+            . "WHERE role='ADMIN' AND approval_status='APPROVED' ORDER BY id"
+        );
+
+        return array_map(
+            static fn (array $row): array => [
+                'id' => (int) $row['id'],
+                'email' => (string) $row['email'],
+                'firstName' => (string) $row['first_name'],
+                'locale' => (string) $row['locale'],
+            ],
+            $statement->fetchAll()
+        );
+    }
+
     /** @return array<string, mixed> */
     public function setVip(int $id, bool $active): array
     {

@@ -15,7 +15,8 @@ final class MarketplaceService
         private readonly UserRepository $users,
         private readonly ProfessionalProfileRepository $profiles,
         private readonly ProfileMediaRepository $media,
-        private readonly ResponsiveImageService $responsiveImages
+        private readonly ResponsiveImageService $responsiveImages,
+        private readonly ?UserExclusionRepository $exclusions = null
     ) {
     }
 
@@ -52,19 +53,46 @@ final class MarketplaceService
         return $this->withMedia($profile);
     }
 
-    /** @return array<string, mixed> */
-    public function publicProfile(int $userId): array
+    /** @param array<string,mixed>|null $viewer
+     *  @return array<string, mixed>
+     */
+    public function publicProfile(int $userId, ?array $viewer = null): array
     {
+        $this->assertProfileAccess($userId, $viewer);
         $profile = $this->profiles->findByUser($userId, true) ?? throw new ApiException(404, 'Listing not found.');
         $profile['reviews'] = $this->profiles->reviews($userId);
 
-        return $this->withMedia($profile, true);
+        return $this->withPublicMedia($profile, $viewer);
     }
 
-    /** @return array<string, mixed> */
-    public function visitPublicProfile(int $userId): array
+    /**
+     * Loads the minimal projection needed by image endpoints, avoiding a full
+     * profile, review and gallery hydration for every responsive image request.
+     *
+     * @param array<string,mixed>|null $viewer
+     * @return array{userId: int, type: string, vipActive: bool, mediaLocked: bool, publiclyCacheable: bool}|null
+     */
+    public function publicMediaAccess(int $userId, ?array $viewer = null): ?array
     {
-        $profile = $this->publicProfile($userId);
+        $this->assertProfileAccess($userId, $viewer);
+        $profile = $this->profiles->findPublicMediaAccess($userId);
+        if ($profile === null) {
+            return null;
+        }
+
+        return $profile + [
+            'mediaLocked' => $this->mediaLocked($profile, $viewer),
+            'publiclyCacheable' => $profile['type'] !== 'ESCORT'
+                || $profile['vipActive'] !== true,
+        ];
+    }
+
+    /** @param array<string,mixed>|null $viewer
+     *  @return array<string, mixed>
+     */
+    public function visitPublicProfile(int $userId, ?array $viewer = null): array
+    {
+        $profile = $this->publicProfile($userId, $viewer);
         $this->profiles->incrementViews($userId);
         $profile['viewsCount'] = (int) ($profile['viewsCount'] ?? 0) + 1;
 
@@ -73,9 +101,10 @@ final class MarketplaceService
 
     /**
      * @param list<int> $userIds
+     * @param array<string,mixed>|null $viewer
      * @return list<array<string, mixed>>
      */
-    public function publicListingsByUserIds(array $userIds): array
+    public function publicListingsByUserIds(array $userIds, ?array $viewer = null): array
     {
         $userIds = array_values(array_unique(array_filter(
             $userIds,
@@ -84,23 +113,30 @@ final class MarketplaceService
         if ($userIds === []) {
             return [];
         }
+        $viewerId = (int) ($viewer['id'] ?? 0);
+        if ($viewerId > 0 && $this->exclusions !== null) {
+            $userIds = array_values(array_filter(
+                $userIds,
+                fn (int $userId): bool => !$this->exclusions->existsBetween($viewerId, $userId)
+            ));
+        }
+        if ($userIds === []) {
+            return [];
+        }
 
         $profilesByUser = [];
         foreach ($this->profiles->findPublicListingsByUserIds($userIds) as $profile) {
             $profilesByUser[(int) $profile['userId']] = $profile;
         }
-        $mediaByUser = $this->media->firstPhotosForUsers($userIds, true);
         $result = [];
         foreach ($userIds as $userId) {
             if (!isset($profilesByUser[$userId])) {
                 continue;
             }
-            $profile = $profilesByUser[$userId];
-            $profile['media'] = $mediaByUser[$userId] ?? [];
-            $result[] = $profile;
+            $result[] = $profilesByUser[$userId];
         }
 
-        return $result;
+        return $this->withPublicCovers($result, $viewer);
     }
 
     /**
@@ -109,12 +145,14 @@ final class MarketplaceService
      */
     public function contactDetails(int $profileUserId, array $requester): array
     {
+        $this->assertProfileAccess($profileUserId, $requester);
         $profile = $this->profiles->findByUser($profileUserId)
             ?? throw new ApiException(404, 'Listing not found.');
         if (($profile['approvalStatus'] ?? '') !== 'APPROVED') {
             throw new ApiException(404, 'Listing not found.');
         }
         if ($profile['type'] === 'ESCORT'
+            && ($profile['vipActive'] ?? false) === true
             && ($requester['role'] ?? '') === 'VISITOR'
             && ($requester['vipActive'] ?? false) !== true
         ) {
@@ -135,6 +173,7 @@ final class MarketplaceService
      */
     public function submitReview(int $profileUserId, array $reviewer, array $input): array
     {
+        $this->assertProfileAccess($profileUserId, $reviewer);
         $profile = $this->profiles->findByUser($profileUserId, true)
             ?? throw new ApiException(404, 'Listing not found.');
         if ($profile['type'] !== 'ESCORT') {
@@ -168,24 +207,17 @@ final class MarketplaceService
 
     /**
      * @param array<string, mixed> $filters
+     * @param array<string,mixed>|null $viewer
      * @return array<string, mixed>
      */
-    public function listings(array $filters): array
+    public function listings(array $filters, ?array $viewer = null): array
     {
+        $viewerId = (int) ($viewer['id'] ?? 0);
+        if ($viewerId > 0) {
+            $filters['_viewerId'] = $viewerId;
+        }
         $result = $this->profiles->search($filters);
-        $userIds = array_map(
-            static fn (array $profile): int => (int) $profile['userId'],
-            $result['items']
-        );
-        $mediaByUser = $this->media->firstPhotosForUsers($userIds, true);
-        $result['items'] = array_map(
-            static function (array $profile) use ($mediaByUser): array {
-                $profile['media'] = $mediaByUser[(int) $profile['userId']] ?? [];
-
-                return $profile;
-            },
-            $result['items']
-        );
+        $result['items'] = $this->withPublicCovers($result['items'], $viewer);
 
         return $result;
     }
@@ -259,6 +291,21 @@ final class MarketplaceService
         }
 
         return $this->responsiveImages->variant('PROFILE', $mediaId, $bytes, $width);
+    }
+
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string} */
+    public function vipPhotoPreview(int $userId, int $mediaId): array
+    {
+        $meta = $this->media->metadata($userId, $mediaId);
+        if ($meta === null || ($meta['type'] ?? '') !== 'PHOTO') {
+            throw new ApiException(404, 'VIP photo preview not found.');
+        }
+        $bytes = $this->media->data($userId, $mediaId);
+        if ($bytes === null) {
+            throw new ApiException(404, 'VIP photo preview not found.');
+        }
+
+        return $this->responsiveImages->blurredPreview($bytes);
     }
 
     /**
@@ -418,8 +465,137 @@ final class MarketplaceService
     private function withMedia(array $profile, bool $public = false): array
     {
         $profile['media'] = $this->media->listFor((int) $profile['userId'], $public);
+        $this->applyProfileImage($profile, $profile['media']);
 
         return $profile;
+    }
+
+    /** @param array<string,mixed> $profile
+     *  @param array<string,mixed>|null $viewer
+     *  @return array<string,mixed>
+     */
+    private function withPublicMedia(array $profile, ?array $viewer): array
+    {
+        if ($this->mediaLocked($profile, $viewer)) {
+            $photos = array_values(array_filter(
+                $this->media->listFor((int) $profile['userId'], true),
+                static fn (array $media): bool => ($media['type'] ?? '') === 'PHOTO'
+            ));
+            $this->applyProfileImage($profile, $photos);
+            $profile['media'] = array_map(
+                static function (array $media) use ($profile): array {
+                    $media['url'] = '/api/profiles/' . (int) $profile['userId'] . '/media/'
+                        . (int) $media['id'] . '/vip-preview.webp';
+                    $media['contentType'] = 'image/webp';
+                    $media['locked'] = true;
+                    unset($media['srcSet']);
+
+                    return $media;
+                },
+                $photos
+            );
+            $profile['mediaLocked'] = true;
+            $profile['lockedMediaCount'] = count($photos);
+
+            return $profile;
+        }
+
+        $profile['media'] = $this->media->listFor((int) $profile['userId'], true);
+        $profile['mediaLocked'] = false;
+        $profile['lockedMediaCount'] = 0;
+        $this->applyProfileImage($profile, $profile['media']);
+
+        return $profile;
+    }
+
+    /**
+     * @param list<array<string,mixed>> $profiles
+     * @param array<string,mixed>|null $viewer
+     * @return list<array<string,mixed>>
+     */
+    private function withPublicCovers(array $profiles, ?array $viewer): array
+    {
+        if ($profiles === []) {
+            return [];
+        }
+
+        $profilesByUser = [];
+        foreach ($profiles as $profile) {
+            $profilesByUser[(int) $profile['userId']] = $profile;
+        }
+        $userIds = array_keys($profilesByUser);
+        $covers = $this->media->firstPhotosForUsers($userIds, true);
+        $lockedUserIds = array_values(array_filter(
+            $userIds,
+            fn (int $userId): bool => $this->mediaLocked($profilesByUser[$userId], $viewer)
+        ));
+        $lockedPhotoCounts = $this->media->countTypeForUsers($lockedUserIds, 'PHOTO');
+
+        return array_map(function (array $profile) use ($covers, $lockedPhotoCounts, $viewer): array {
+            $userId = (int) $profile['userId'];
+            $profileCover = $covers[$userId] ?? [];
+            $locked = $this->mediaLocked($profile, $viewer);
+            $profile['media'] = $locked ? [] : $profileCover;
+            $profile['mediaLocked'] = $locked;
+            $profile['lockedMediaCount'] = $locked ? ($lockedPhotoCounts[$userId] ?? 0) : 0;
+            $this->applyProfileImage($profile, $profileCover);
+
+            return $profile;
+        }, $profiles);
+    }
+
+    /**
+     * @param array<string,mixed> $profile
+     * @param list<array<string,mixed>> $media
+     */
+    private function applyProfileImage(array &$profile, array $media): void
+    {
+        $photo = null;
+        foreach ($media as $item) {
+            if (($item['type'] ?? '') === 'PHOTO') {
+                $photo = $item;
+                break;
+            }
+        }
+        if ($photo === null) {
+            unset($profile['profileImageUrl'], $profile['profileImageSrcSet']);
+            return;
+        }
+
+        $mediaUrl = (string) ($photo['url'] ?? '');
+        $profileUrl = '/api/profiles/' . (int) $profile['userId'] . '/profile-photo';
+        $profile['profileImageUrl'] = $profileUrl;
+        $profile['profileImageSrcSet'] = isset($photo['srcSet']) && is_string($photo['srcSet'])
+            ? str_replace($mediaUrl . '/', $profileUrl . '/', $photo['srcSet'])
+            : null;
+    }
+
+    /** @param array<string,mixed> $profile
+     *  @param array<string,mixed>|null $viewer
+     */
+    private function mediaLocked(array $profile, ?array $viewer): bool
+    {
+        if (($profile['type'] ?? '') !== 'ESCORT' || ($profile['vipActive'] ?? false) !== true) {
+            return false;
+        }
+
+        return $viewer === null || (
+            (int) ($viewer['id'] ?? 0) !== (int) $profile['userId']
+            && ($viewer['role'] ?? '') !== 'ADMIN'
+            && ($viewer['vipActive'] ?? false) !== true
+        );
+    }
+
+    /** @param array<string,mixed>|null $viewer */
+    private function assertProfileAccess(int $profileUserId, ?array $viewer): void
+    {
+        $viewerId = (int) ($viewer['id'] ?? 0);
+        if ($viewerId > 0
+            && $viewerId !== $profileUserId
+            && $this->exclusions?->existsBetween($viewerId, $profileUserId)
+        ) {
+            throw new ApiException(404, 'Listing not found.');
+        }
     }
     private static function len(string $value): int
     {

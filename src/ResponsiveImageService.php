@@ -58,6 +58,14 @@ final class ResponsiveImageService
         return $this->variants->find($ownerType, $ownerId, $width);
     }
 
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string} */
+    public function blurredPreview(string $sourceBytes): array
+    {
+        return $this->processor->blurredPreview($sourceBytes) + [
+            'sourceHash' => hash('sha256', $sourceBytes),
+        ];
+    }
+
     /** @param list<int>|null $widths */
     public static function srcSet(string $baseUrl, ?array $widths = null): string
     {

@@ -10,6 +10,7 @@ require dirname(__DIR__) . '/bootstrap.php';
 
 use ChambreRose\ApiException;
 use ChambreRose\ApiResponder;
+use ChambreRose\ApiRequestGuard;
 use ChambreRose\AdminModerationService;
 use ChambreRose\AdminUserService;
 use ChambreRose\App;
@@ -28,10 +29,13 @@ use ChambreRose\NotificationOutboxRepository;
 use ChambreRose\NotificationDeliverySchedule;
 use ChambreRose\NotificationMessageCatalog;
 use ChambreRose\NotificationRetentionService;
+use ChambreRose\PasswordResetRepository;
 use ChambreRose\PushNotificationSender;
 use ChambreRose\PushNotificationWorker;
 use ChambreRose\PushDeviceCookie;
 use ChambreRose\ProductImageRepository;
+use ChambreRose\ProductRepository;
+use ChambreRose\ProductService;
 use ChambreRose\PrivateIdentityFileCipher;
 use ChambreRose\ProfessionalProfileRepository;
 use ChambreRose\ProfileMediaRepository;
@@ -69,7 +73,7 @@ final class MemoryNotificationOutbox implements NotificationOutboxStore
             'event_type' => 'MESSAGE_RECEIVED',
             'title' => 'New message',
             'body' => 'You received a message.',
-            'target_url' => '/mensagens/1',
+            'target_url' => '/conta/mensagens/1',
             'created_at' => '2026-09-06 12:00:00',
         ];
     }
@@ -300,10 +304,43 @@ $assert(
 );
 
 $jwt = new Jwt();
-$token = $jwt->generate('admin@example.com', 'ADMIN');
+$tokenPasswordHash = 'test-password-hash-v1';
+$token = $jwt->generate('admin@example.com', 'ADMIN', $tokenPasswordHash);
 $claims = $jwt->verify($token);
 $assert($claims['sub'] === 'admin@example.com', 'JWT must preserve the subject.');
 $assert($claims['role'] === 'ADMIN', 'JWT must preserve the role.');
+$assert(
+    $jwt->matchesPasswordHash($claims['pwd'], $tokenPasswordHash)
+    && !$jwt->matchesPasswordHash($claims['pwd'], 'test-password-hash-v2'),
+    'JWT credentials must become invalid when the account password hash changes.'
+);
+
+if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    $resetDatabase = new PDO('sqlite::memory:');
+    $resetDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $resetDatabase->exec(<<<'SQL'
+        CREATE TABLE password_reset_tokens (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,token_hash TEXT NOT NULL,
+          verification_code_hash TEXT NULL,verification_attempts INTEGER NOT NULL DEFAULT 0,
+          verified_at TEXT NULL,used_at TEXT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL
+        )
+        SQL);
+    $resetRepository = new PasswordResetRepository($resetDatabase);
+    $resetToken = $resetRepository->issue(41);
+    try {
+        $resetRepository->consume($resetToken, static function (): void {
+            throw new RuntimeException('Simulated password update failure.');
+        });
+        $assert(false, 'A failed password update must abort reset-token consumption.');
+    } catch (RuntimeException) {
+        $assert(true, 'A failed password update must roll back reset-token consumption.');
+    }
+    $assert(
+        $resetRepository->consume($resetToken) === 41
+        && $resetRepository->consume($resetToken) === null,
+        'A reset token must remain available after rollback and become single-use after commit.'
+    );
+}
 
 if (function_exists('openssl_encrypt') && in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     $identityDatabase = new PDO('sqlite::memory:');
@@ -529,6 +566,56 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         && isset($adminPage['items'][0]['professionalProfile']['displayName']),
         'Administrator accounts must use bounded pagination and one lightweight profile summary batch.'
     );
+    $adminDatabase->exec("UPDATE users SET approval_status='APPROVED',vip_active=1 WHERE id=2");
+    $publicMediaAccess = (new ProfessionalProfileRepository($adminDatabase))->findPublicMediaAccess(2);
+    $assert(
+        $publicMediaAccess === ['userId' => 2, 'type' => 'ESCORT', 'vipActive' => true],
+        'Public media authorization must use the lightweight profile access projection.'
+    );
+    $adminDatabase->exec("UPDATE users SET approval_status='PENDING',vip_active=0 WHERE id=2");
+    $adminDatabase->exec("UPDATE users SET approval_status='APPROVED' WHERE id=1");
+    $adminDatabase->exec("UPDATE users SET role='ADMIN' WHERE id=1");
+    $approvedAdministrators = $adminUsers->approvedAdministrators();
+    $assert(
+        count($approvedAdministrators) === 1
+        && $approvedAdministrators[0]['email'] === 'professional-1@example.test',
+        'Only approved administrator accounts must receive new-registration alerts.'
+    );
+    $sessionToken = $jwt->generate('professional-1@example.test', 'ESCORT', 'hash');
+    $sessionGuard = new ApiRequestGuard($adminUsers, $jwt, new AuthSessionCookie($jwt));
+    $sessionIdentity = $sessionGuard->authenticate(new Request('GET', '/api/auth/me', [
+        'authorization' => 'Bearer ' . $sessionToken,
+    ], []));
+    $assert(
+        $sessionIdentity['sub'] === 'professional-1@example.test',
+        'A session bound to the current password hash must authenticate.'
+    );
+    $sessionCookie = 'chambre_rose_session=' . rawurlencode($sessionToken);
+    try {
+        $sessionGuard->authenticate(new Request('POST', '/api/profiles/me/media', [
+            'cookie' => $sessionCookie,
+        ], []));
+        $assert(false, 'A cookie-authenticated mutation without the anti-CSRF header must be rejected.');
+    } catch (ApiException $exception) {
+        $assert($exception->status === 403, 'A forged cookie mutation must return 403.');
+    }
+    $cookieIdentity = $sessionGuard->authenticate(new Request('POST', '/api/profiles/me/media', [
+        'cookie' => $sessionCookie,
+        'x-requested-with' => 'XMLHttpRequest',
+    ], []));
+    $assert(
+        $cookieIdentity['sub'] === 'professional-1@example.test',
+        'A cookie mutation carrying the anti-CSRF header must authenticate.'
+    );
+    $adminDatabase->exec("UPDATE users SET password_hash='changed-hash' WHERE id=1");
+    try {
+        $sessionGuard->authenticate(new Request('GET', '/api/auth/me', [
+            'authorization' => 'Bearer ' . $sessionToken,
+        ], []));
+        $assert(false, 'A password change must revoke previously issued sessions.');
+    } catch (ApiException $exception) {
+        $assert($exception->status === 401, 'A revoked session must return 401.');
+    }
     $adminService->deleteUser(2, 1);
     $assert($adminUsers->find(2) === null, 'Administrators must be able to remove another account.');
     try {
@@ -536,6 +623,75 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         $assert(false, 'An administrator must not be able to remove their own account.');
     } catch (ApiException $exception) {
         $assert($exception->status === 403, 'Self-deletion from administrator controls must be rejected.');
+    }
+
+    $productDatabase = new PDO('sqlite::memory:');
+    $productDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $productDatabase->exec(<<<'SQL'
+        CREATE TABLE products (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,store_user_id INTEGER NULL,name TEXT NOT NULL,
+          category TEXT NOT NULL,price REAL NOT NULL,original_price REAL NULL,image_url TEXT NOT NULL,
+          secondary_image_url TEXT NULL,tag TEXT NULL,sale_label TEXT NULL,reviews INTEGER NOT NULL,
+          purchase_count INTEGER NOT NULL,likes INTEGER NOT NULL,description TEXT NULL,store_name TEXT NULL,
+          store_address TEXT NULL,store_city TEXT NULL,store_segment TEXT NULL,store_hours TEXT NULL,
+          product_type TEXT NULL,material TEXT NULL,available_sizes TEXT NULL,color_options TEXT NULL,
+          stock_status TEXT NULL,shipping_note TEXT NULL,care_instructions TEXT NULL,is_active INTEGER NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE product_reviews (
+          id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL,reviewer_name TEXT NOT NULL,
+          body TEXT NOT NULL,created_at TEXT NOT NULL
+        );
+        CREATE TABLE product_images (
+          id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL,role TEXT NOT NULL,content_type TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,image_data BLOB NOT NULL,updated_at TEXT NOT NULL
+        );
+        CREATE TABLE responsive_image_variants (
+          id INTEGER PRIMARY KEY,product_image_id INTEGER NULL,width INTEGER NOT NULL
+        );
+        SQL);
+    $productRepository = new ProductRepository($productDatabase);
+    $productService = new ProductService(
+        $productRepository,
+        new ProductImageRepository($productDatabase),
+        new UserRepository($productDatabase)
+    );
+    $createdProduct = $productService->save(null, 999, 'ADMIN', [
+        'name' => 'Protected metrics',
+        'category' => 'wellness',
+        'price' => 49.90,
+        'imageUrl' => '/catalog/product.jpg',
+        'reviews' => 900,
+        'purchaseCount' => 800,
+        'likes' => 700,
+    ], null, null);
+    $assert(
+        $createdProduct['reviews'] === 0
+        && $createdProduct['purchaseCount'] === 0
+        && $createdProduct['likes'] === 0,
+        'New products must ignore client-supplied engagement metrics.'
+    );
+    $productId = (int) $createdProduct['id'];
+    $productDatabase->exec(
+        "UPDATE products SET reviews=3,purchase_count=4,likes=5 WHERE id={$productId}"
+    );
+    $updatedProduct = $productService->save($productId, 999, 'ADMIN', [
+        'name' => 'Protected metrics updated',
+        'reviews' => 90,
+        'purchaseCount' => 80,
+        'likes' => 70,
+    ], null, null);
+    $assert(
+        $updatedProduct['reviews'] === 3
+        && $updatedProduct['purchaseCount'] === 4
+        && $updatedProduct['likes'] === 5,
+        'Product edits must preserve server-owned engagement metrics.'
+    );
+    try {
+        $productRepository->registerProfilePurchase(7, 7, null);
+        $assert(false, 'A member must not be able to select their own profile.');
+    } catch (ApiException $exception) {
+        $assert($exception->status === 403, 'Self-selection must return 403.');
     }
 
     $notificationDatabase = new PDO('sqlite::memory:');
@@ -704,7 +860,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         91,
         UserNotificationService::ACCOUNT,
         'PROFILE_UPDATED',
-        '/espace-prive/perfil',
+        '/conta/perfil',
         'preferences:account'
     );
     $digestFeed = $preferenceRepository->feed(91);
@@ -721,7 +877,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         91,
         UserNotificationService::MARKETPLACE,
         'PROFILE_FAVORITED',
-        '/favoritos',
+        '/conta/favoritos',
         'preferences:suppressed'
     );
     $assert(
@@ -734,7 +890,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         91,
         UserNotificationService::ACCOUNT,
         'PROFILE_UPDATED',
-        '/espace-prive/perfil',
+        '/conta/perfil',
         'preferences:required'
     );
     $assert(
@@ -751,7 +907,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         91,
         UserNotificationService::DIRECT_MESSAGE,
         'MESSAGE_RECEIVED',
-        '/mensagens/10',
+        '/conta/mensagens/10',
         'preferences:in-app',
         ['senderName' => 'Camille']
     );
@@ -770,7 +926,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         91,
         UserNotificationService::DIRECT_MESSAGE,
         'MESSAGE_RECEIVED',
-        '/mensagens/11',
+        '/conta/mensagens/11',
         'preferences:browser',
         ['senderName' => 'Morgan']
     );
@@ -931,6 +1087,7 @@ $widePng = ob_get_clean();
 unset($wideSource);
 $assert(is_string($widePng), 'Responsive image fixture must be encoded.');
 $responsiveVariants = $imageProcessor->generate($widePng);
+$blurredPreview = $imageProcessor->blurredPreview($widePng);
 $assert(
     $tinyVariants === []
     && array_column($responsiveVariants, 'width') === [320, 640]
@@ -943,6 +1100,16 @@ $assert(
         true
     ),
     'Responsive photos must create valid WebP variants without enlarging their source.'
+);
+$assert(
+    $blurredPreview['width'] === 160
+    && $blurredPreview['height'] === 80
+    && $blurredPreview['contentType'] === 'image/webp'
+    && $blurredPreview['size'] === strlen($blurredPreview['bytes'])
+    && str_starts_with($blurredPreview['bytes'], 'RIFF')
+    && substr($blurredPreview['bytes'], 8, 4) === 'WEBP'
+    && $blurredPreview['bytes'] !== $widePng,
+    'VIP previews must be reduced, blurred WebP representations instead of original photo bytes.'
 );
 $assert(
     ResponsiveImageService::srcSet('/api/profiles/9/media/2', [640, 320])
@@ -1054,6 +1221,8 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     );
     $profileMedia = new ProfileMediaRepository($mediaDatabase);
     $covers = $profileMedia->firstPhotosForUsers([7, 8, 99], true);
+    $photoCounts = $profileMedia->countTypeForUsers([7, 8, 99], 'PHOTO');
+    $profilePhoto = $profileMedia->profilePhotoForUser(7, true);
     $assert(
         count($covers[7]) === 1
         && (int) $covers[7][0]['id'] === 2
@@ -1062,6 +1231,26 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         && count($covers[8]) === 1
         && $covers[99] === [],
         'Listing cards must receive only each profile\'s first public photo and its available variants.'
+    );
+    $assert(
+        $photoCounts === [7 => 2, 8 => 1, 99 => 0]
+        && $profileMedia->countTypeForUsers([], 'PHOTO') === [],
+        'Profile media counts must be loaded for the full result set in one batch.'
+    );
+    $assert(
+        (int) ($profilePhoto['id'] ?? 0) === 2
+        && ($profilePhoto['url'] ?? '') === '/api/profiles/7/profile-photo'
+        && ($profilePhoto['srcSet'] ?? '') === '/api/profiles/7/profile-photo/320.webp 320w, /api/profiles/7/profile-photo/640.webp 640w'
+        && $profileMedia->profilePhotoIdForUser(7) === 2
+        && $profileMedia->profilePhotoIdForUser(99) === null
+        && $profileMedia->profilePhotoForUser(99, true) === null,
+        'A public profile photo must use independent paths and expose its ordered identifier without hydrating media metadata.'
+    );
+    $assert(
+        $profileMedia->isFirstPhoto(7, 2)
+        && !$profileMedia->isFirstPhoto(7, 1)
+        && !$profileMedia->isFirstPhoto(99, 2),
+        'Only the first ordered photo must be recognized as the public profile photo.'
     );
     $videoFixture = '0123456789abcdefghijklmnopqrstuvwxyz';
     $insertMedia = $mediaDatabase->prepare(
@@ -1161,6 +1350,25 @@ foreach (['en', 'fr'] as $mailLocale) {
         $assert(str_contains($html, 'font-size:13px') && str_contains($html, 'padding:10px 16px'), 'Decision email buttons must be compact.');
         $assert($subject !== '' && $text !== '' && str_contains($html, 'lang="' . $mailLocale . '"'), 'Both decision emails must have localized text and HTML.');
     }
+    [$adminSubject, $adminText, $adminHtml] = $renderMail->invoke(
+        $mailPreview,
+        'admin_account_pending',
+        $mailLocale,
+        [
+            'name' => 'Andre',
+            'applicantName' => 'New Member',
+            'applicantEmail' => 'member@example.com',
+            'accountType' => $mailLocale === 'fr' ? 'client' : 'client',
+            'url' => 'https://www.chambre-rose.com/conta/usuarios?email=member%40example.com',
+        ]
+    );
+    $assert(
+        $adminSubject !== ''
+        && str_contains($adminText, 'New Member')
+        && str_contains($adminText, 'member@example.com')
+        && str_contains($adminHtml, 'member%40example.com'),
+        'Administrator registration alerts must identify the applicant and link directly to account review.'
+    );
 }
 $pngLogo = (new ReflectionMethod(App::class, 'brandLogo'))->invoke(new App(), new Request('GET', '/api/brand/logo', [], ['format' => 'png']));
 $assert($pngLogo->status === 200 && $pngLogo->headers['Content-Type'] === 'image/png', 'Email brand endpoint must support PNG without changing existing WebP requests.');

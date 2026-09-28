@@ -76,7 +76,7 @@ final class NativePushNotificationService
                 'token' => $deviceToken,
                 'notification' => ['title' => $message['title'], 'body' => $message['body']],
                 'data' => [
-                    'targetUrl' => (string) ($notification['targetUrl'] ?? '/espace-prive/notificacoes'),
+                    'targetUrl' => (string) ($notification['targetUrl'] ?? '/conta/notificacoes'),
                     'notificationId' => (string) ((int) ($notification['id'] ?? 0)),
                     'category' => (string) ($notification['category'] ?? 'ACCOUNT'),
                 ],
@@ -115,7 +115,7 @@ final class NativePushNotificationService
                 'sound' => 'default',
                 'badge' => 1,
             ],
-            'targetUrl' => (string) ($notification['targetUrl'] ?? '/espace-prive/notificacoes'),
+            'targetUrl' => (string) ($notification['targetUrl'] ?? '/conta/notificacoes'),
             'notificationId' => (int) ($notification['id'] ?? 0),
         ];
         $production = Config::bool('APNS_PRODUCTION', true);

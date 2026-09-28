@@ -123,7 +123,8 @@ final class PasswordResetRepository
         }
     }
 
-    public function consume(string $raw): ?int
+    /** @param null|callable(int): void $onConsume */
+    public function consume(string $raw, ?callable $onConsume = null): ?int
     {
         $hash = hash('sha256', $raw);
         $this->pdo->beginTransaction();
@@ -147,9 +148,13 @@ final class PasswordResetRepository
                 'UPDATE password_reset_tokens SET used_at=CURRENT_TIMESTAMP WHERE id=:id'
             );
             $statement->execute(['id' => $r['id']]);
+            $userId = (int) $r['user_id'];
+            if ($onConsume !== null) {
+                $onConsume($userId);
+            }
             $this->pdo->commit();
 
-            return (int) $r['user_id'];
+            return $userId;
         } catch (\Throwable $e) {
             if ($this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
@@ -251,6 +256,11 @@ final class MailService
         $name = trim($v['name'] ?? '') ?: ($locale === 'fr' ? 'vous' : 'there');
         $url = trim($v['url'] ?? '');
         $code = trim($v['code'] ?? '');
+        $replacements = [
+            '{{applicantName}}' => trim($v['applicantName'] ?? ''),
+            '{{applicantEmail}}' => trim($v['applicantEmail'] ?? ''),
+            '{{accountType}}' => trim($v['accountType'] ?? ''),
+        ];
         $copy = [
             'en' => [
                 'password_reset' => [
@@ -273,6 +283,16 @@ final class MailService
                     'security' => 'You do not need to do anything else right now.',
                     'cta' => 'Visit Chambre Rose',
                     'footer' => 'Chambre Rose team',
+                ],
+                'admin_account_pending' => [
+                    'subject' => 'New Chambre Rose account awaiting approval',
+                    'eyebrow' => 'ACCOUNT REVIEW',
+                    'title' => 'A new account needs your review',
+                    'intro' => '{{applicantName}} registered a new {{accountType}} account.',
+                    'instructions' => 'Review the submitted account information and approve or reject it within 48 hours.',
+                    'security' => 'Applicant email: {{applicantEmail}}',
+                    'cta' => 'Review pending account',
+                    'footer' => 'Chambre Rose administration',
                 ],
                 'account_approved' => [
                     'subject' => 'Your Chambre Rose account is approved',
@@ -317,6 +337,16 @@ final class MailService
                     'cta' => 'Visiter Chambre Rose',
                     'footer' => 'Équipe Chambre Rose',
                 ],
+                'admin_account_pending' => [
+                    'subject' => 'Nouveau compte Chambre Rose en attente de validation',
+                    'eyebrow' => 'VALIDATION DU COMPTE',
+                    'title' => 'Un nouveau compte doit être examiné',
+                    'intro' => '{{applicantName}} a créé un nouveau compte {{accountType}}.',
+                    'instructions' => 'Examinez les informations transmises, puis approuvez ou refusez ce compte sous 48 heures.',
+                    'security' => 'E-mail du candidat : {{applicantEmail}}',
+                    'cta' => 'Examiner le compte',
+                    'footer' => 'Administration Chambre Rose',
+                ],
                 'account_approved' => [
                     'subject' => 'Votre compte Chambre Rose est approuvé',
                     'eyebrow' => 'BIENVENUE SUR CHAMBRE ROSE',
@@ -340,6 +370,10 @@ final class MailService
             ],
         ];
         $entry = $copy[$locale][$template] ?? throw new \RuntimeException('Unknown email template.');
+        $entry = array_map(
+            static fn (string $value): string => strtr($value, $replacements),
+            $entry
+        );
         $isReset = $template === 'password_reset';
         $displayName = $locale === 'fr' ? 'Bonjour ' . $name : 'Hello ' . $name;
         $text = $displayName . ",\n\n" . $entry['intro'] . "\n\n";

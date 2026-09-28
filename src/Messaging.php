@@ -8,8 +8,10 @@ use PDO;
 
 final class MessagingRepository
 {
-    public function __construct(private readonly PDO $pdo)
-    {
+    public function __construct(
+        private readonly PDO $pdo,
+        private readonly ?UserExclusionRepository $exclusions = null
+    ) {
     }
 
     /** @return array<string, mixed> */
@@ -17,6 +19,9 @@ final class MessagingRepository
     {
         if ($userId === $otherId) {
             throw new ApiException(400, 'A conversation requires another user.');
+        }
+        if ($this->isExcluded($userId, $otherId)) {
+            throw new ApiException(403, 'This member was permanently removed.');
         }
         if ($this->isBlocked($userId, $otherId)) {
             throw new ApiException(403, 'Messaging is unavailable between these users.');
@@ -57,6 +62,11 @@ final class MessagingRepository
     public function list(int $userId): array
     {
         return $this->summaries($userId);
+    }
+
+    public function restoreConversationMember(int $conversationId, int $userId): void
+    {
+        $this->addConversationMember($conversationId, $userId);
     }
 
     /** @return array<string, mixed> */
@@ -188,6 +198,9 @@ final class MessagingRepository
         if ($userId === $otherId) {
             throw new ApiException(400, 'You cannot block yourself.');
         }
+        if ($this->isExcluded($userId, $otherId)) {
+            throw new ApiException(403, 'This member was permanently removed.');
+        }
         $sql = $this->isMySql()
             ? 'INSERT IGNORE INTO blocked_users (blocker_id,blocked_id,created_at) '
                 . 'VALUES (:uid,:oid,CURRENT_TIMESTAMP(3))'
@@ -197,7 +210,69 @@ final class MessagingRepository
     }
     public function unblock(int $userId, int $otherId): void
     {
+        if ($this->isExcluded($userId, $otherId)) {
+            throw new ApiException(403, 'This member was permanently removed.');
+        }
         $this->pdo->prepare('DELETE FROM blocked_users WHERE blocker_id=:uid AND blocked_id=:oid')->execute(['uid' => $userId,'oid' => $otherId]);
+    }
+
+    public function removeMemberPermanently(int $userId, int $otherId): void
+    {
+        if ($userId === $otherId) {
+            throw new ApiException(400, 'You cannot remove yourself.');
+        }
+        if ($this->exclusions === null) {
+            throw new ApiException(503, 'Member removal is temporarily unavailable.');
+        }
+
+        $ownsTransaction = !$this->pdo->inTransaction();
+        if ($ownsTransaction) {
+            $this->pdo->beginTransaction();
+        }
+        try {
+            $this->exclusions->exclude($userId, $otherId);
+            $this->pdo->prepare(
+                'DELETE FROM favorites WHERE (user_id=:user_a AND profile_user_id=:other_a) '
+                . 'OR (user_id=:other_b AND profile_user_id=:user_b)'
+            )->execute([
+                'user_a' => $userId,
+                'other_a' => $otherId,
+                'other_b' => $otherId,
+                'user_b' => $userId,
+            ]);
+            $this->pdo->prepare(
+                'DELETE FROM blocked_users WHERE (blocker_id=:user_a AND blocked_id=:other_a) '
+                . 'OR (blocker_id=:other_b AND blocked_id=:user_b)'
+            )->execute([
+                'user_a' => $userId,
+                'other_a' => $otherId,
+                'other_b' => $otherId,
+                'user_b' => $userId,
+            ]);
+            $this->pdo->prepare(
+                'DELETE FROM conversation_members WHERE conversation_id IN ('
+                . 'SELECT id FROM conversations WHERE '
+                . '(participant_one_id=:user_one AND participant_two_id=:other_one) OR '
+                . '(participant_one_id=:other_two AND participant_two_id=:user_two))'
+            )->execute([
+                'user_one' => $userId,
+                'other_one' => $otherId,
+                'other_two' => $otherId,
+                'user_two' => $userId,
+            ]);
+            if ($ownsTransaction) {
+                $this->pdo->commit();
+            }
+        } catch (\Throwable $exception) {
+            if ($ownsTransaction) {
+                try {
+                    $this->pdo->rollBack();
+                } catch (\Throwable) {
+                    // Preserve the original failure.
+                }
+            }
+            throw $exception;
+        }
     }
     /** @return array{id: int, status: string} */
     public function report(int $userId, int $otherId, string $reason, ?string $details): array
@@ -232,6 +307,9 @@ final class MessagingRepository
 
     private function assertCanMessage(int $one, int $two): void
     {
+        if ($this->isExcluded($one, $two)) {
+            throw new ApiException(403, 'Messaging is permanently unavailable between these users.');
+        }
         $statement = $this->pdo->prepare(
             'SELECT id,role,approval_status,vip_active FROM users WHERE id IN (:one,:two)'
         );
@@ -249,9 +327,18 @@ final class MessagingRepository
             $escort = $user['role'] === 'ESCORT' ? $user : $escort;
             $visitor = $user['role'] === 'VISITOR' ? $user : $visitor;
         }
-        if ($escort !== null && $visitor !== null && !in_array($visitor['vip_active'], [true, 1, '1', 't', 'true'], true)) {
+        if ($escort !== null
+            && $visitor !== null
+            && in_array($escort['vip_active'], [true, 1, '1', 't', 'true'], true)
+            && !in_array($visitor['vip_active'], [true, 1, '1', 't', 'true'], true)
+        ) {
             throw new ApiException(403, 'VIP membership is required to contact a companion.', ['vipRequired' => 'true']);
         }
+    }
+
+    private function isExcluded(int $one, int $two): bool
+    {
+        return $this->exclusions?->existsBetween($one, $two) ?? false;
     }
     private function conversationMemberCount(int $conversationId): int
     {
@@ -295,7 +382,8 @@ final class MessagingRepository
         $sql = <<<'SQL'
             SELECT c.id,c.updated_at,cm.archived_at,
               other_user.id AS other_id,other_user.role AS other_role,
-              other_user.approval_status AS other_approval_status,other_member.last_read_at AS peer_read_at,
+              other_user.approval_status AS other_approval_status,other_user.vip_active AS other_vip_active,
+              other_member.last_read_at AS peer_read_at,
               COALESCE(profile.display_name,CONCAT(other_user.first_name,' ',other_user.last_name)) AS display_name,
               blocked.blocked_id AS blocked_id,
               (SELECT media.id FROM profile_media media
@@ -318,15 +406,22 @@ final class MessagingRepository
             LEFT JOIN messages last_message ON last_message.id=(
               SELECT MAX(latest.id) FROM messages latest WHERE latest.conversation_id=c.id
             )
+            WHERE NOT EXISTS (
+              SELECT 1 FROM user_exclusions exclusion
+              WHERE (exclusion.owner_id=:exclusion_user_a AND exclusion.excluded_user_id=other_user.id)
+                 OR (exclusion.owner_id=other_user.id AND exclusion.excluded_user_id=:exclusion_user_b)
+            )
             SQL;
         $params = [
             'unread_user_id' => $userId,
             'member_user_id' => $userId,
             'participant_user_id' => $userId,
             'blocker_user_id' => $userId,
+            'exclusion_user_a' => $userId,
+            'exclusion_user_b' => $userId,
         ];
         if ($conversationId !== null) {
-            $sql .= ' WHERE c.id=:conversation_id';
+            $sql .= ' AND c.id=:conversation_id';
             $params['conversation_id'] = $conversationId;
         }
         $sql .= ' ORDER BY c.updated_at DESC,c.id DESC';
@@ -352,6 +447,7 @@ final class MessagingRepository
                     'id' => (int) $row['other_id'],
                     'displayName' => trim((string) $row['display_name']),
                     'role' => (string) $row['other_role'],
+                    'vipActive' => in_array($row['other_vip_active'], [true, 1, '1', 't', 'true'], true),
                     'approvalStatus' => (string) $row['other_approval_status'],
                     'blocked' => $row['blocked_id'] !== null,
                     'avatarUrl' => $avatarUrl,

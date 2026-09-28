@@ -5,9 +5,11 @@
   "type": "project",
   "require": {
     "php": "^8.2",
+    "ext-curl": "*",
     "ext-fileinfo": "*",
     "ext-gd": "*",
     "ext-json": "*",
+    "ext-openssl": "*",
     "ext-pdo": "*",
     "minishlink/web-push": "^10.1"
   },
@@ -16,8 +18,6 @@
   },
   "suggest": {
     "ext-bcmath": "Recomendada para criptografia Web Push mais rápida.",
-    "ext-curl": "Necessaria para entregar notificacoes Push nativas.",
-    "ext-openssl": "Necessaria para assinar tokens FCM e APNs.",
     "ext-pdo_mysql": "Necessaria para usar o MySQL da EasyHost.",
     "ext-pdo_pgsql": "Necessaria somente para desenvolvimento com PostgreSQL."
   },

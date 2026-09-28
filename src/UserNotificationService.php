@@ -100,7 +100,7 @@ final class UserNotificationService
                     $userId,
                     self::ACCOUNT,
                     self::DAILY_DIGEST,
-                    '/espace-prive/notificacoes',
+                    '/conta/notificacoes',
                     'daily-digest:' . substr(hash('sha256', $digestAt), 0, 32),
                     false,
                     []
@@ -152,7 +152,7 @@ final class UserNotificationService
         $this->notifications->markReadForTarget(
             $userId,
             self::DIRECT_MESSAGE,
-            '/mensagens/' . $conversationId
+            '/conta/mensagens/' . $conversationId
         );
     }
 

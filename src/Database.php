@@ -357,6 +357,13 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-26-personal-area',
+                'file' => dirname(__DIR__) . '/database/migrations/026-personal-area.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 

@@ -13,17 +13,24 @@ final class ApiRequestGuard
     ) {
     }
 
-    /** @return array{sub: string, role: string, iat?: int, exp: int} */
+    /** @return array{sub: string, role: string, pwd: string, iat?: int, exp: int} */
     public function authenticate(Request $request): array
     {
-        $token = $this->bearerToken($request) ?? $this->sessionCookie->token($request);
+        $bearerToken = $this->bearerToken($request);
+        $token = $bearerToken ?? $this->sessionCookie->token($request);
         if ($token === null) {
             throw new ApiException(401, 'Authentication is required.');
+        }
+        if ($bearerToken === null) {
+            $this->requireCookieMutationHeader($request);
         }
         $identity = $this->jwt->verify($token);
         $user = $this->users->findByEmail(strtolower($identity['sub']));
         if ($user === null) {
             throw new ApiException(401, 'Authentication account no longer exists.');
+        }
+        if (!$this->jwt->matchesPasswordHash($identity['pwd'], (string) $user['passwordHash'])) {
+            throw new ApiException(401, 'Authentication session is no longer valid.');
         }
         if ($user['approvalStatus'] !== 'APPROVED') {
             throw new ApiException(403, 'This account is not approved.', ['approvalStatus' => $user['approvalStatus']]);
@@ -33,7 +40,7 @@ final class ApiRequestGuard
         return $identity;
     }
 
-    /** @return array{sub: string, role: string, iat?: int, exp: int} */
+    /** @return array{sub: string, role: string, pwd: string, iat?: int, exp: int} */
     public function requireAdmin(Request $request): array
     {
         $identity = $this->authenticate($request);
@@ -86,6 +93,16 @@ final class ApiRequestGuard
     {
         if ($request->contentType() !== 'multipart/form-data') {
             throw new ApiException(415, 'Content-Type must be multipart/form-data.');
+        }
+    }
+
+    public function requireCookieMutationHeader(Request $request): void
+    {
+        if (in_array($request->method, ['GET', 'HEAD', 'OPTIONS'], true)) {
+            return;
+        }
+        if (!hash_equals('XMLHttpRequest', $request->header('x-requested-with') ?? '')) {
+            throw new ApiException(403, 'Authenticated browser mutations require X-Requested-With.');
         }
     }
 

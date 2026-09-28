@@ -61,12 +61,91 @@ final class ProfileMediaRepository
         return $mediaByUser;
     }
 
+    /** @return array<string, mixed>|null */
+    public function profilePhotoForUser(int $userId, bool $public = false): ?array
+    {
+        $photos = $this->firstPhotosForUsers([$userId], $public);
+        $photo = $photos[$userId][0] ?? null;
+        if (!is_array($photo)) {
+            return null;
+        }
+
+        $mediaUrl = (string) ($photo['url'] ?? '');
+        $profileUrl = '/api/profiles/' . $userId . '/profile-photo';
+        $photo['url'] = $profileUrl;
+        if ($mediaUrl !== '' && isset($photo['srcSet']) && is_string($photo['srcSet'])) {
+            $photo['srcSet'] = str_replace($mediaUrl . '/', $profileUrl . '/', $photo['srcSet']);
+        }
+
+        return $photo;
+    }
+
+    public function profilePhotoIdForUser(int $userId): ?int
+    {
+        $statement = $this->pdo->prepare(
+            "SELECT id FROM profile_media WHERE user_id=:id AND media_type='PHOTO' ORDER BY position,id LIMIT 1"
+        );
+        $statement->execute(['id' => $userId]);
+        $mediaId = $statement->fetchColumn();
+
+        return $mediaId === false ? null : (int) $mediaId;
+    }
+
     public function countType(int $userId, string $type): int
     {
         $statement = $this->pdo->prepare('SELECT COUNT(*) FROM profile_media WHERE user_id=:id AND media_type=:type');
         $statement->execute(['id' => $userId, 'type' => $type]);
 
         return (int) $statement->fetchColumn();
+    }
+
+    /**
+     * Counts one media type for several profiles in a single query.
+     *
+     * @param list<int> $userIds
+     * @return array<int, int>
+     */
+    public function countTypeForUsers(array $userIds, string $type): array
+    {
+        $userIds = array_values(array_unique(array_filter(
+            array_map(static fn (int $userId): int => $userId, $userIds),
+            static fn (int $userId): bool => $userId > 0
+        )));
+        if ($userIds === []) {
+            return [];
+        }
+
+        $counts = array_fill_keys($userIds, 0);
+        $placeholders = array_map(
+            static fn (int $index): string => ':count_user_id_' . $index,
+            array_keys($userIds)
+        );
+        $statement = $this->pdo->prepare(
+            'SELECT user_id, COUNT(*) AS media_count FROM profile_media'
+            . ' WHERE media_type=:media_type AND user_id IN (' . implode(', ', $placeholders) . ')'
+            . ' GROUP BY user_id'
+        );
+        $statement->bindValue(':media_type', $type);
+        foreach ($userIds as $index => $userId) {
+            $statement->bindValue(':count_user_id_' . $index, $userId, PDO::PARAM_INT);
+        }
+        $statement->execute();
+
+        foreach ($statement->fetchAll() as $row) {
+            $counts[(int) $row['user_id']] = (int) $row['media_count'];
+        }
+
+        return $counts;
+    }
+
+    public function isFirstPhoto(int $userId, int $mediaId): bool
+    {
+        $statement = $this->pdo->prepare(
+            "SELECT id FROM profile_media WHERE user_id=:id AND media_type='PHOTO' ORDER BY position,id LIMIT 1"
+        );
+        $statement->execute(['id' => $userId]);
+
+        return (int) $statement->fetchColumn() === $mediaId;
     }
 
     /** @return array<string, mixed> */

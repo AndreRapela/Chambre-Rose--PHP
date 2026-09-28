@@ -168,6 +168,9 @@ final class ProductRepository
             if (!is_array($product) || !self::bool($product['is_active'])) {
                 throw new ApiException(404, 'Product not found.');
             }
+            if ($product['store_user_id'] !== null && (int) $product['store_user_id'] === $buyerUserId) {
+                throw new ApiException(403, 'A store cannot purchase its own product.');
+            }
             $this->pdo->prepare(
                 "INSERT INTO marketplace_orders (buyer_user_id,product_id,order_type,amount,status,created_at) VALUES (:buyer,:product,'PRODUCT',:amount,'COMPLETED',CURRENT_TIMESTAMP)"
             )->execute(['buyer' => $buyerUserId, 'product' => $id, 'amount' => $product['price']]);
@@ -190,6 +193,9 @@ final class ProductRepository
 
     public function registerProfilePurchase(int $profileUserId, int $buyerUserId, ?float $amount): void
     {
+        if ($profileUserId === $buyerUserId) {
+            throw new ApiException(403, 'You cannot select your own profile.');
+        }
         $this->pdo->beginTransaction();
         try {
             $lock = $this->pdo->prepare('SELECT user_id FROM professional_profiles WHERE user_id=:id FOR UPDATE');

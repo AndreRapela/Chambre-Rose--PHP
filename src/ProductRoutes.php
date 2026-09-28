@@ -35,6 +35,7 @@ final class ProductRoutes implements RouteHandler
         }
         if ($method === 'POST' && preg_match('#^/api/products/(\d+)/purchases$#', $path, $match)) {
             $user = $this->guard->currentUser($request);
+            $this->guard->requireJson($request);
             $productId = (int) $match[1];
             $product = $this->products->registerPurchase($productId, (int) $user['id']);
             $storeUserId = (int) ($product['storeUserId'] ?? 0);

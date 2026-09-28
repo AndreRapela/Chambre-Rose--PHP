@@ -65,6 +65,9 @@ $request = static function (
     }
     if ($sessionCookie !== null) {
         $headers[] = 'Cookie: ' . $sessionCookie;
+        if (!in_array(strtoupper($method), ['GET', 'HEAD', 'OPTIONS'], true)) {
+            $headers[] = 'X-Requested-With: XMLHttpRequest';
+        }
     }
     array_push($headers, ...$extraHeaders);
     $context = stream_context_create(['http' => [
@@ -156,6 +159,7 @@ $multipartRequest = static function (string $path, array $fields, array $files) 
 
 putenv('AUTH_LOGIN_ACCOUNT_ATTEMPTS=3');
 putenv('AUTH_LOGIN_IP_ATTEMPTS=50');
+putenv('AUTH_REGISTRATION_IP_ATTEMPTS=2');
 putenv('AUTH_RECOVERY_ACCOUNT_ATTEMPTS=2');
 putenv('AUTH_RECOVERY_IP_ATTEMPTS=50');
 putenv('AUTH_RESET_TOKEN_ATTEMPTS=2');
@@ -168,6 +172,7 @@ $rateSecret = Config::get('RATE_LIMIT_SECRET', Config::get('JWT_SECRET', '')) ??
 $rateIdentifiers = [
     ['login-account', $rateEmail],
     ['login-ip', $rateIp],
+    ['registration-ip', $rateIp],
     ['recovery-account', $rateEmail],
     ['recovery-ip', $rateIp],
     ['reset-token', $rateToken],
@@ -190,6 +195,15 @@ try {
         }
     }
     $assert($loginLimited, 'Login failures must be rate limited with Retry-After metadata.');
+
+    $rateLimiter->consumeRegistration($rateIp);
+    $rateLimiter->consumeRegistration($rateIp);
+    try {
+        $rateLimiter->consumeRegistration($rateIp);
+        $assert(false, 'Registration must reject requests above the configured IP limit.');
+    } catch (ApiException $exception) {
+        $assert($exception->status === 429, 'Registration must return 429 after its IP limit.');
+    }
 
     $rateLimiter->consumeRecoveryRequest($rateEmail, $rateIp);
     $rateLimiter->consumeRecoveryRequest($rateEmail, $rateIp);
@@ -281,6 +295,22 @@ $assert(
     && in_array($visitorRegistrationEmailRow['delivery_status'] ?? null, ['SENT', 'LOGGED'], true)
     && str_contains((string) ($visitorRegistrationEmailRow['body'] ?? ''), '48'),
     'Visitor registration must send an email explaining the 48-hour administrator review.'
+);
+$adminRegistrationEmail = Database::connection()->prepare(
+    'SELECT delivery_status, body FROM email_outbox '
+    . 'WHERE recipient = :recipient AND template = :template AND body LIKE :applicant ORDER BY id DESC LIMIT 1'
+);
+$adminRegistrationEmail->execute([
+    'recipient' => $adminEmail,
+    'template' => 'admin_account_pending',
+    'applicant' => '%' . $cleanup->email('visitor') . '%',
+]);
+$adminRegistrationEmailRow = $adminRegistrationEmail->fetch();
+$assert(
+    is_array($adminRegistrationEmailRow)
+    && in_array($adminRegistrationEmailRow['delivery_status'] ?? null, ['SENT', 'LOGGED'], true)
+    && str_contains((string) ($adminRegistrationEmailRow['body'] ?? ''), '/conta/usuarios?email='),
+    'Every new pending account must email the approved administrator with a direct review link.'
 );
 
 [$forgotStatus, $forgotBody] = $request('POST', '/api/auth/forgot-password', [
@@ -406,7 +436,13 @@ $assert(
     && str_contains((string) ($professionalEmailRow['body'] ?? ''), '48'),
     'Professional registration must queue a confirmation email containing the review deadline.'
 );
-$pendingToken = (new Jwt())->generate($cleanup->email('profile'), 'ESCORT');
+$pendingPassword = Database::connection()->prepare('SELECT password_hash FROM users WHERE email=:email');
+$pendingPassword->execute(['email' => $cleanup->email('profile')]);
+$pendingToken = (new Jwt())->generate(
+    $cleanup->email('profile'),
+    'ESCORT',
+    (string) $pendingPassword->fetchColumn()
+);
 [$pendingResourceStatus, $pendingResourceBody] = $request(
     'GET',
     '/api/auth/me',
@@ -625,6 +661,36 @@ if ($adminPassword !== '') {
         && is_string($visitorCookie),
         'Admin approval must activate visitors, send the approval email and allow sign-in.'
     );
+    [$invalidSupportStatus, $invalidSupportBody] = $request('POST', '/api/support/messages', [
+        'category' => 'UNKNOWN',
+        'subject' => '',
+        'body' => '',
+    ], $visitorCookie);
+    [$supportStatus, $supportMessage] = $request('POST', '/api/support/messages', [
+        'category' => 'ACCOUNT',
+        'subject' => 'Integration support request',
+        'body' => 'Please review this private in-app support message.',
+    ], $visitorCookie);
+    $supportConversationId = (int) ($supportMessage['conversationId'] ?? 0);
+    [$supportThreadStatus, $supportThread] = $request(
+        'GET',
+        "/api/conversations/{$supportConversationId}/messages",
+        null,
+        $visitorCookie
+    );
+    $supportItems = is_array($supportThread['items'] ?? null) ? $supportThread['items'] : [];
+    $supportBody = (string) ($supportItems[0]['body'] ?? '');
+    $assert(
+        $invalidSupportStatus === 400
+        && isset($invalidSupportBody['fields']['subject'], $invalidSupportBody['fields']['body'], $invalidSupportBody['fields']['category'])
+        && $supportStatus === 201
+        && $supportConversationId > 0
+        && (int) ($supportMessage['messageId'] ?? 0) > 0
+        && $supportThreadStatus === 200
+        && str_contains($supportBody, '[Support / ACCOUNT] Integration support request')
+        && str_contains($supportBody, 'private in-app support message'),
+        'Authenticated members must be able to start a validated private in-app conversation with support.'
+    );
     [$productCreateStatus, $testProduct] = $request('POST', '/api/products', [
         'name' => $cleanup->productName(),
         'category' => 'wellness',
@@ -657,7 +723,8 @@ if ($adminPassword !== '') {
         'method' => 'PUT',
         'header' => "Content-Type: multipart/form-data; boundary={$productBoundary}\r\n"
             . 'Content-Length: ' . strlen($productMultipart) . "\r\n"
-            . 'Cookie: ' . $adminCookie,
+            . 'Cookie: ' . $adminCookie . "\r\n"
+            . 'X-Requested-With: XMLHttpRequest',
         'content' => $productMultipart,
         'ignore_errors' => true,
     ]]);
@@ -837,6 +904,12 @@ if ($adminPassword !== '') {
             'data' => base64_encode($additionalPhoto),
         ]);
     }
+    $additionalPhotoStatement = $database->prepare(
+        "SELECT id FROM profile_media WHERE user_id=:user AND file_name='secondary-integration.png'"
+    );
+    $additionalPhotoStatement->execute(['user' => $id]);
+    $additionalPhotoId = (int) $additionalPhotoStatement->fetchColumn();
+    $assert($additionalPhotoId > 0, 'The protected secondary profile photo fixture must be persisted.');
     [$listingsStatus, $listings] = $request(
         'GET',
         '/api/listings?pageSize=50&q=' . rawurlencode($profileName)
@@ -862,10 +935,18 @@ if ($adminPassword !== '') {
         'GET',
         '/api/listings?type=ESCORT&pageSize=50&nearCity=saint%20gilles&nearRegion=brussels%20capital&nearCountry=Belgique'
     );
+    $nearbyNonVip = array_values(array_filter(
+        $nearbyListings['items'] ?? [],
+        static fn (array $item): bool => ($item['vipActive'] ?? false) !== true
+    ));
     $assert(
         $nearbyStatus === 200
-        && (int) ($nearbyListings['items'][0]['id'] ?? 0) === $id,
-        'Location ranking must ignore accents, punctuation, casing and common translated country names.'
+        && (int) ($nearbyNonVip[0]['id'] ?? 0) === $id
+        && (
+            (int) ($nearbyListings['items'][0]['id'] ?? 0) === $id
+            || ($nearbyListings['items'][0]['vipActive'] ?? false) === true
+        ),
+        'VIP profiles must lead the results while location ranking within the same tier ignores accents, punctuation, casing and common translated country names.'
     );
     [$companionLoginStatus, , $companionCookie] = $request('POST', '/api/auth/login', [
         'email' => $cleanup->email('profile'), 'password' => 'Integration9!pass',
@@ -1112,6 +1193,121 @@ if ($adminPassword !== '') {
         'email' => $cleanup->email('profile'), 'password' => 'Integration9!pass',
     ]);
     $assert($professionalLoginStatus === 200 && is_string($professionalCookie), 'Approved professional login must work.');
+    [$escortVipStatus] = $request(
+        'PATCH',
+        "/api/admin/users/{$id}/vip",
+        ['vipActive' => true],
+        $adminCookie
+    );
+    [$lockedMediaStatus, $lockedMediaProfile] = $request('GET', "/api/listings/{$id}", null, $visitorCookie);
+    $lockedPhotos = array_values(array_filter(
+        $lockedMediaProfile['media'] ?? [],
+        static fn (array $media): bool => ($media['type'] ?? '') === 'PHOTO'
+    ));
+    $lockedPreview = array_values(array_filter(
+        $lockedPhotos,
+        static fn (array $media): bool => (int) ($media['id'] ?? 0) === $additionalPhotoId
+    ));
+    $assert(
+        $escortVipStatus === 200
+        && $lockedMediaStatus === 200
+        && ($lockedMediaProfile['mediaLocked'] ?? false) === true
+        && (int) ($lockedMediaProfile['lockedMediaCount'] ?? 0) >= 2
+        && count($lockedPhotos) >= 2
+        && (int) ($lockedPhotos[0]['id'] ?? 0) === $mediaId
+        && ($lockedPhotos[0]['locked'] ?? false) === true
+        && ($lockedPhotos[0]['url'] ?? null) === "/api/profiles/{$id}/media/{$mediaId}/vip-preview.webp"
+        && ($lockedMediaProfile['profileImageUrl'] ?? null) === "/api/profiles/{$id}/profile-photo"
+        && count($lockedPreview) === 1
+        && ($lockedPreview[0]['locked'] ?? false) === true
+        && ($lockedPreview[0]['url'] ?? null) === "/api/profiles/{$id}/media/{$additionalPhotoId}/vip-preview.webp"
+        && !array_key_exists('srcSet', $lockedPreview[0]),
+        'A non-VIP visitor must receive the separate public profile photo and protected previews for every gallery photo.'
+    );
+    [$profilePhotoStatus, $profilePhotoBytes] = $binaryRequest(
+        'GET',
+        "/api/profiles/{$id}/profile-photo",
+        ['Cookie: ' . $visitorCookie]
+    );
+    [$vipCoverOriginalStatus] = $binaryRequest(
+        'GET',
+        "/api/profiles/{$id}/media/{$mediaId}",
+        ['Cookie: ' . $visitorCookie]
+    );
+    [$vipCoverPreviewStatus, $vipCoverPreviewBytes] = $binaryRequest(
+        'GET',
+        "/api/profiles/{$id}/media/{$mediaId}/vip-preview.webp",
+        ['Accept: image/webp', 'Cookie: ' . $visitorCookie]
+    );
+    [$vipOriginalStatus] = $binaryRequest(
+        'GET',
+        "/api/profiles/{$id}/media/{$additionalPhotoId}",
+        ['Cookie: ' . $visitorCookie]
+    );
+    [$vipPreviewStatus, $vipPreviewBytes, $vipPreviewHeaders] = $binaryRequest(
+        'GET',
+        "/api/profiles/{$id}/media/{$additionalPhotoId}/vip-preview.webp",
+        ['Accept: image/webp', 'Cookie: ' . $visitorCookie]
+    );
+    $vipPreviewDimensions = getimagesizefromstring($vipPreviewBytes);
+    $assert(
+        $profilePhotoStatus === 200
+        && $profilePhotoBytes !== ''
+        && $vipCoverOriginalStatus === 403
+        && $vipCoverPreviewStatus === 200
+        && $vipCoverPreviewBytes !== $profilePhotoBytes
+        && $vipOriginalStatus === 403
+        && $vipPreviewStatus === 200
+        && str_starts_with($vipPreviewBytes, 'RIFF')
+        && substr($vipPreviewBytes, 8, 4) === 'WEBP'
+        && $vipPreviewBytes !== $additionalPhoto
+        && is_array($vipPreviewDimensions)
+        && (int) $vipPreviewDimensions[0] <= 160
+        && ($vipPreviewHeaders['content-type'] ?? '') === 'image/webp'
+        && ($vipPreviewHeaders['cache-control'] ?? '') === 'public, max-age=86400, must-revalidate',
+        'The public profile photo must remain visible through its own path while every gallery original stays behind a safe blurred VIP preview.'
+    );
+    [$appointmentCreateStatus, $appointment] = $request('POST', '/api/calendar/appointments', [
+        'title' => 'Integration meeting',
+        'clientName' => 'Private client',
+        'startsAt' => '2026-10-10T18:00:00+00:00',
+        'endsAt' => '2026-10-10T20:00:00+00:00',
+        'location' => 'Private location',
+        'notes' => 'Private calendar note',
+        'status' => 'CONFIRMED',
+    ], $professionalCookie);
+    $appointmentId = (int) ($appointment['id'] ?? 0);
+    [$appointmentListStatus, $appointmentList] = $request('GET', '/api/calendar/appointments', null, $professionalCookie);
+    [$appointmentUpdateStatus, $updatedAppointment] = $request(
+        'PUT',
+        "/api/calendar/appointments/{$appointmentId}",
+        [
+            'title' => 'Updated integration meeting',
+            'clientName' => 'Private client',
+            'startsAt' => '2026-10-10T18:00:00+00:00',
+            'endsAt' => '2026-10-10T20:30:00+00:00',
+            'location' => '',
+            'notes' => '',
+            'status' => 'COMPLETED',
+        ],
+        $professionalCookie
+    );
+    [$appointmentDeleteStatus] = $request(
+        'DELETE',
+        "/api/calendar/appointments/{$appointmentId}",
+        null,
+        $professionalCookie
+    );
+    $assert(
+        $appointmentCreateStatus === 201
+        && $appointmentId > 0
+        && $appointmentListStatus === 200
+        && count($appointmentList['items'] ?? []) >= 1
+        && $appointmentUpdateStatus === 200
+        && ($updatedAppointment['status'] ?? null) === 'COMPLETED'
+        && $appointmentDeleteStatus === 204,
+        'A companion must be able to create, review, update and delete private appointments.'
+    );
     [$optionalRegionStatus, $optionalRegionProfile] = $request(
         'PUT',
         '/api/profiles/me',
@@ -1179,6 +1375,15 @@ if ($adminPassword !== '') {
         $adminCookie
     );
     $assert($visitorId > 0 && $vipStatus === 200, 'An administrator must be able to activate visitor VIP access.');
+    [$unlockedMediaStatus, $unlockedMediaProfile] = $request('GET', "/api/listings/{$id}", null, $visitorCookie);
+    $assert(
+        $unlockedMediaStatus === 200
+        && ($unlockedMediaProfile['mediaLocked'] ?? true) === false
+        && count($unlockedMediaProfile['media'] ?? []) >= 1,
+        'A VIP visitor must receive the protected companion photo gallery.'
+    );
+    $viewsStatement->execute(['id' => $id]);
+    $viewsBeforeSelection = (int) $viewsStatement->fetchColumn();
     $starsBeforeSelection = (int) ($listing['starCount'] ?? 0);
     [$selectionStatus, $selectedProfile] = $request(
         'POST',
@@ -1195,7 +1400,7 @@ if ($adminPassword !== '') {
         'A completed VIP selection must add one star count without exposing a score.'
     );
     $assert(
-        $viewsAfterSelection === $viewsAfterRelocation,
+        $viewsAfterSelection === $viewsBeforeSelection,
         'Validating and registering a selection must not create profile visits.'
     );
     [$contactStatus, $contact] = $request('GET', "/api/listings/{$id}/contact", null, $visitorCookie);
@@ -1226,7 +1431,7 @@ if ($adminPassword !== '') {
         && $reviewedListingStatus === 200
         && (float) ($reviewedListing['averageRating'] ?? 0) > 0
         && count($reviewedListing['reviews'] ?? []) > 0
-        && (int) ($reviewedListing['viewsCount'] ?? 0) === $viewsAfterRelocation + 1,
+        && (int) ($reviewedListing['viewsCount'] ?? 0) === $viewsBeforeSelection + 1,
         'A completed selection must allow one rated comment and update the public average.'
     );
     [$conversationStatus, $conversation] = $request(
@@ -1388,6 +1593,39 @@ if ($adminPassword !== '') {
         $professionalCookie
     );
     $assert($participantAccessStatus === 200, 'Deleting one inbox copy must preserve the other participant copy.');
+    [$recreatedConversationStatus] = $request(
+        'POST',
+        '/api/conversations',
+        ['recipientId' => $id],
+        $visitorCookie
+    );
+    [$permanentRemovalStatus] = $request(
+        'DELETE',
+        "/api/users/{$id}/relationship",
+        null,
+        $visitorCookie
+    );
+    [$removedProfileStatus] = $request('GET', "/api/listings/{$id}", null, $visitorCookie);
+    [$removedConversationStatus] = $request(
+        'POST',
+        '/api/conversations',
+        ['recipientId' => $id],
+        $visitorCookie
+    );
+    [$removedPeerConversationStatus] = $request(
+        'GET',
+        "/api/conversations/{$conversationId}/messages",
+        null,
+        $professionalCookie
+    );
+    $assert(
+        $recreatedConversationStatus === 201
+        && $permanentRemovalStatus === 204
+        && $removedProfileStatus === 404
+        && $removedConversationStatus === 403
+        && $removedPeerConversationStatus === 404,
+        'Permanently removing a member must irreversibly revoke profile and conversation access for both sides.'
+    );
     $currentDeviceEndpoint = 'https://push.example.invalid/current-' . rawurlencode($runId);
     $otherDeviceEndpoint = 'https://push.example.invalid/other-' . rawurlencode($runId);
     [$currentDeviceStatus, , $currentDeviceCookie] = $request('POST', '/api/push-subscriptions', [

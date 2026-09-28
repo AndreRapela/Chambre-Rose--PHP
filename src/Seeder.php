@@ -35,6 +35,20 @@ final class Seeder
             'Account',
             'VISITOR'
         );
+        $this->createProfessionalUserIfMissing(
+            Config::get('SEED_ESCORT_EMAIL', ''),
+            Config::get('SEED_ESCORT_PASSWORD'),
+            'Test',
+            'Companion',
+            'ESCORT'
+        );
+        $this->createProfessionalUserIfMissing(
+            Config::get('SEED_STORE_EMAIL', ''),
+            Config::get('SEED_STORE_PASSWORD'),
+            'Test',
+            'Store',
+            'STORE'
+        );
         $this->createUserIfMissing(
             Config::get('SEED_ADMIN_EMAIL', ''),
             Config::get('SEED_ADMIN_PASSWORD'),
@@ -314,15 +328,69 @@ final class Seeder
         }
     }
 
-    private function createUserIfMissing(?string $email, ?string $password, string $first, string $last, string $role): void
+    /** @return array<string, mixed>|null */
+    private function createUserIfMissing(?string $email, ?string $password, string $first, string $last, string $role): ?array
     {
         $email = strtolower(trim($email ?? ''));
-        if ($email === '' || $password === null || $password === '' || $this->users->findByEmail($email) !== null) {
-            return;
+        if ($email === '' || $password === null || $password === '') {
+            return null;
         }
-        $this->users->create([
+
+        $existing = $this->users->findByEmail($email);
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        return $this->users->create([
             'firstName' => $first, 'lastName' => $last, 'email' => $email, 'phone' => '', 'address' => '',
             'city' => '', 'country' => '', 'postalCode' => '',
         ], password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]), $role);
+    }
+
+    private function createProfessionalUserIfMissing(
+        ?string $email,
+        ?string $password,
+        string $first,
+        string $last,
+        string $role
+    ): void
+    {
+        $user = $this->createUserIfMissing($email, $password, $first, $last, $role);
+        if ($user === null || strtoupper((string) $user['role']) !== $role) {
+            return;
+        }
+
+        $userId = (int) $user['id'];
+        if ($this->profiles->findByUser($userId) !== null) {
+            return;
+        }
+
+        $isStore = $role === 'STORE';
+        $this->profiles->upsert($userId, $role, [
+            'displayName' => $isStore ? 'Test Store' : 'Test Companion',
+            'birthDate' => $isStore ? null : '1995-01-01',
+            'gender' => $isStore ? null : 'WOMAN',
+            'location' => 'Brussels, Belgium',
+            'locationCity' => 'Brussels',
+            'locationRegion' => 'Brussels-Capital',
+            'locationCountry' => 'Belgium',
+            'bio' => 'Local test profile for development.',
+            'languages' => ['French', 'English'],
+            'services' => $isStore ? ['Store pickup', 'Private advice'] : ['Private message', 'Video call'],
+            'availability' => 'Available for local testing',
+            'priceFrom' => $isStore ? 19 : null,
+            'priceTo' => $isStore ? 189 : null,
+            'priceHour' => $isStore ? null : 89,
+            'priceNight' => $isStore ? null : 390,
+            'priceWeekend' => $isStore ? null : 690,
+            'businessName' => $isStore ? 'Test Store' : null,
+            'legalName' => $isStore ? 'Local Test Store' : null,
+            'segment' => $isStore ? 'Development test account' : null,
+            'businessAddress' => $isStore ? 'Brussels, Belgium' : null,
+            'businessHours' => $isStore ? 'Monday to Friday, 10:00–19:00' : null,
+            'contactOptions' => ['Internal message'],
+            'contactEmail' => strtolower(trim($email ?? '')),
+            'responseTime' => 'FEW_HOURS',
+        ]);
     }
 }

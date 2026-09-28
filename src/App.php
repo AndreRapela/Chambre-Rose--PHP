@@ -38,7 +38,8 @@ final class App
         );
         $profileMedia = new ProfileMediaRepository($pdo);
         $favorites = new FavoritesRepository($pdo);
-        $messaging = new MessagingRepository($pdo);
+        $exclusions = new UserExclusionRepository($pdo);
+        $messaging = new MessagingRepository($pdo, $exclusions);
         $notificationRepository = new NotificationRepository($pdo);
         $notificationOutbox = new NotificationOutboxRepository($pdo);
         $realtimeEvents = new RealtimeEventRepository($pdo);
@@ -53,7 +54,7 @@ final class App
         );
         $passwordResets = new PasswordResetRepository($pdo);
         $mail = new MailService($pdo);
-        $marketplace = new MarketplaceService($users, $profiles, $profileMedia, $responsiveImages);
+        $marketplace = new MarketplaceService($users, $profiles, $profileMedia, $responsiveImages, $exclusions);
         $products = new ProductRepository($pdo);
         $productImages = new ProductImageRepository($pdo, $responsiveImages);
         $productService = new ProductService($products, $productImages, $users);
@@ -79,6 +80,8 @@ final class App
             new ListingRoutes($marketplace, $profiles, $profileMedia, $favorites, $products, $guard, $userNotifications),
             new ProductRoutes($productService, $products, $productImages, $guard, $userNotifications),
             new MessagingRoutes($messaging, $users, $guard, $userNotifications, $realtimeEvents),
+            new SupportRoutes($pdo, $messaging, $guard, $userNotifications, $realtimeEvents),
+            new CalendarRoutes(new AppointmentRepository($pdo), $guard),
             new NotificationRoutes($notificationRepository, $userNotifications, $guard, $pushDeviceCookie, $nativePushNotifications),
             new AdminRoutes(
                 new AdminUserService($users, $mail, $profiles, $identityVerification, $companyVerification),

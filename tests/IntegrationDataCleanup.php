@@ -154,6 +154,12 @@ final class IntegrationDataCleanup
             if ($emails !== []) {
                 $this->execute('DELETE FROM email_outbox WHERE recipient IN ('
                     . implode(', ', $this->placeholders('fixture_email_', $emails)) . ')', $userParams);
+                foreach ($emails as $email) {
+                    $this->execute(
+                        "DELETE FROM email_outbox WHERE template='admin_account_pending' AND body LIKE :applicant",
+                        ['applicant' => '%' . $email . '%']
+                    );
+                }
             }
             if ($includeLegacyUsers) {
                 $this->execute(
