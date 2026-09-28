@@ -10,7 +10,7 @@ Backend PHP 8.2+ do marketplace Chambre Rose. Ele suporta MySQL na EasyHost e Po
 
 - login, cadastro de visitante, acompanhante ou loja e edicao do proprio perfil;
 - aprovacao administrativa de novos cadastros, com prazo informado de 48 horas;
-- ate 15 fotos e 3 videos reais por perfil, armazenados no banco;
+- acompanhantes comuns podem publicar ate 10 fotos e 2 videos; acompanhantes VIP tem mídia ilimitada (lojas mantêm 15 fotos e 3 videos), armazenados no banco;
 - autenticacao JWT HS256 em cookie HttpOnly, SameSite estrito e Secure em producao, com senhas BCrypt;
 - papeis `VISITOR`, `ESCORT`, `STORE` e `ADMIN` (`USER` legado e migrado para `VISITOR`);
 - ativacao e desativacao de VIP no painel administrativo;
@@ -140,7 +140,7 @@ Invoke-RestMethod http://localhost:8080/api/health
 - `GET|PUT /api/profiles/me`: consulta e edita o proprio perfil profissional.
 - `GET|PUT /api/profiles/{userId}`: consulta ou edita qualquer perfil como administrador.
 - `GET /api/listings` e `GET /api/listings/{userId}`: busca publica paginada de acompanhantes e lojas aprovadas.
-- `POST /api/profiles/me/media`: upload real multipart no campo `media`; limite de 15 fotos e 3 videos por perfil.
+- `POST /api/profiles/me/media`: upload real multipart no campo `media`; acompanhantes comuns têm limite de 10 fotos e 2 videos, acompanhantes VIP têm mídia ilimitada e lojas mantêm 15 fotos e 3 videos.
 - `GET|POST /api/conversations` e `GET|POST /api/conversations/{id}/messages`: mensagens internas autenticadas.
 - `GET /api/events`: canal SSE autenticado para mensagens e atualizacoes da conta, com cursor de reconexao.
 - `PATCH /api/conversations/{id}/read|archive` e `DELETE /api/conversations/{id}`: leitura, arquivamento e remocao do proprio inbox.

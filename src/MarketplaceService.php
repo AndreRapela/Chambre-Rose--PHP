@@ -225,7 +225,10 @@ final class MarketplaceService
     /** @return array<string, mixed> */
     public function upload(int $userId, UploadedFile $file, int $position = 0): array
     {
-        $this->ownProfile($userId);
+        $profile = $this->ownProfile($userId);
+        $user = $this->users->find($userId) ?? throw new ApiException(404, 'User not found.');
+        $unlimitedEscortMedia = ($profile['type'] ?? $user['role'] ?? null) === 'ESCORT'
+            && ($user['vipActive'] ?? false) === true;
         if ($file->isEmpty()) {
             throw new ApiException(400, 'A media file is required.', ['media' => 'is required']);
         }
@@ -235,11 +238,11 @@ final class MarketplaceService
         if (in_array($mime, $images, true)) {
             $type = 'PHOTO';
             $max = self::IMAGE_MAX;
-            $limit = 15;
+            $limit = $unlimitedEscortMedia ? null : (($user['role'] ?? '') === 'ESCORT' ? 10 : 15);
         } elseif (in_array($mime, $videos, true)) {
             $type = 'VIDEO';
             $max = self::VIDEO_MAX;
-            $limit = 3;
+            $limit = $unlimitedEscortMedia ? null : (($user['role'] ?? '') === 'ESCORT' ? 2 : 3);
         } else {
             throw new ApiException(400, 'Media must be JPG, PNG, WebP, MP4 or WebM.');
         }

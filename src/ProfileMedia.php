@@ -156,7 +156,7 @@ final class ProfileMediaRepository
         string $contentType,
         string $bytes,
         int $position,
-        int $limit
+        ?int $limit
     ): array {
         $this->pdo->beginTransaction();
 
@@ -166,12 +166,12 @@ final class ProfileMediaRepository
             if ($lock->fetchColumn() === false) {
                 throw new ApiException(404, 'User not found.');
             }
-            if ($this->countType($userId, $type) >= $limit) {
+            if ($limit !== null && $this->countType($userId, $type) >= $limit) {
                 throw new ApiException(
                     409,
                     $type === 'PHOTO'
-                        ? 'A profile can contain at most 15 photos.'
-                        : 'A profile can contain at most 3 videos.'
+                        ? sprintf('A profile can contain at most %d photos.', $limit)
+                        : sprintf('A profile can contain at most %d videos.', $limit)
                 );
             }
             $media = $this->insert($userId, $type, $name, $contentType, $bytes, $position);

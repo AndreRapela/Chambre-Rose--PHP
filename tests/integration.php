@@ -1065,7 +1065,7 @@ if ($adminPassword !== '') {
         && is_array($responsiveDimensions)
         && (int) $responsiveDimensions[0] === 320
         && ($responsiveHeaderMap['content-type'] ?? '') === 'image/webp'
-        && ($responsiveHeaderMap['cache-control'] ?? '') === 'public, max-age=86400, must-revalidate'
+        && ($responsiveHeaderMap['cache-control'] ?? '') === 'public, max-age=31536000, immutable'
         && (int) $storedVariantStatement->fetchColumn() === 1,
         'Approved profile photos must serve only cached WebP variants that do not upscale the source.'
     );
@@ -1264,7 +1264,7 @@ if ($adminPassword !== '') {
         && is_array($vipPreviewDimensions)
         && (int) $vipPreviewDimensions[0] <= 160
         && ($vipPreviewHeaders['content-type'] ?? '') === 'image/webp'
-        && ($vipPreviewHeaders['cache-control'] ?? '') === 'public, max-age=86400, must-revalidate',
+        && ($vipPreviewHeaders['cache-control'] ?? '') === 'public, max-age=31536000, immutable',
         'The public profile photo must remain visible through its own path while every gallery original stays behind a safe blurred VIP preview.'
     );
     [$appointmentCreateStatus, $appointment] = $request('POST', '/api/calendar/appointments', [

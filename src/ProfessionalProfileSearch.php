@@ -111,6 +111,13 @@ final class ProfessionalProfileSearch
         if ($newest) {
             $order .= ', p.created_at DESC, p.user_id DESC';
         } else {
+            // Featured surfaces (including the home page) should not fill their
+            // first row with empty placeholders while photographed profiles are
+            // available. The covering index on profile_media keeps this EXISTS
+            // check inexpensive for every profile in the result set.
+            $order .= ", CASE WHEN EXISTS (SELECT 1 FROM profile_media cover_media"
+                . " WHERE cover_media.user_id=p.user_id AND cover_media.media_type='PHOTO')"
+                . ' THEN 0 ELSE 1 END ASC';
             if ($proximityOrder !== '') {
                 $order .= ', ' . $proximityOrder;
             }

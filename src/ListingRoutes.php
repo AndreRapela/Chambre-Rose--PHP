@@ -6,6 +6,9 @@ namespace ChambreRose;
 
 final class ListingRoutes implements RouteHandler
 {
+    private const PUBLIC_MEDIA_CACHE = 'public, max-age=31536000, immutable';
+    private const PUBLIC_PROFILE_PHOTO_CACHE = 'public, max-age=3600, stale-while-revalidate=86400';
+
     public function __construct(
         private readonly MarketplaceService $marketplace,
         private readonly ProfessionalProfileRepository $profiles,
@@ -351,7 +354,7 @@ final class ListingRoutes implements RouteHandler
         $isPublic = $this->authorizeProfileMedia($request, $userId, $mediaId);
         $image = $this->marketplace->responsivePhoto($userId, $mediaId, $width);
         $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $image['sourceHash'] . '|' . $width);
-        $cache = $isPublic ? 'public, max-age=86400, must-revalidate' : 'private, no-store';
+        $cache = $isPublic ? self::PUBLIC_MEDIA_CACHE : 'private, no-store';
         if (ApiResponder::etagMatches($request, $etag)) {
             return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
         }
@@ -378,7 +381,7 @@ final class ListingRoutes implements RouteHandler
         $headers = [
             'Content-Type' => (string) $photo['contentType'],
             'Content-Disposition' => 'inline; filename="profile-photo-' . $userId . '"',
-            'Cache-Control' => $isPublic ? 'public, max-age=86400, must-revalidate' : 'private, no-store',
+            'Cache-Control' => $isPublic ? self::PUBLIC_PROFILE_PHOTO_CACHE : 'private, no-store',
             'ETag' => $etag,
         ];
         if (ApiResponder::etagMatches($request, $etag)) {
@@ -408,7 +411,7 @@ final class ListingRoutes implements RouteHandler
 
         $image = $this->marketplace->responsivePhoto($userId, $mediaId, $width);
         $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $image['sourceHash'] . '|' . $width . '|profile-photo');
-        $cache = $isPublic ? 'public, max-age=86400, must-revalidate' : 'private, no-store';
+        $cache = $isPublic ? self::PUBLIC_PROFILE_PHOTO_CACHE : 'private, no-store';
         if (ApiResponder::etagMatches($request, $etag)) {
             return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
         }
@@ -447,7 +450,7 @@ final class ListingRoutes implements RouteHandler
         $etag = ApiResponder::etag(
             $userId . '|' . $mediaId . '|' . $image['sourceHash'] . '|vip-preview-v1'
         );
-        $cache = 'public, max-age=86400, must-revalidate';
+        $cache = self::PUBLIC_MEDIA_CACHE;
         if (ApiResponder::etagMatches($request, $etag)) {
             return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
         }
