@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import ftplib
 import argparse
+import base64
+import ftplib
 import io
 import os
 from pathlib import Path, PurePosixPath
@@ -9,6 +10,7 @@ import re
 import sys
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 
 
 FTP_HOST = "ftp.chambre-rosecom.webhosting.be"
@@ -69,6 +71,46 @@ FILES = (
     "src/Validator.php",
     "resources/brand/brand-logo.png",
 )
+
+
+def load_credentials() -> tuple[str, int, str, str]:
+    environment_user = os.getenv("EASYHOST_FTP_USERNAME", "").strip()
+    environment_password = os.getenv("EASYHOST_FTP_PASSWORD", "")
+    if environment_user and environment_password:
+        return (
+            os.getenv("EASYHOST_FTP_HOST", FTP_HOST).strip() or FTP_HOST,
+            int(os.getenv("EASYHOST_FTP_PORT", "21")),
+            environment_user,
+            environment_password,
+        )
+
+    config_root = Path(os.environ["APPDATA"]) / "FileZilla"
+    for filename in ("recentservers.xml", "sitemanager.xml"):
+        config_path = config_root / filename
+        if not config_path.is_file():
+            continue
+        root = ET.parse(config_path).getroot()
+        for server in root.findall(".//Server"):
+            host = (server.findtext("Host") or "").strip()
+            if host != FTP_HOST:
+                continue
+            user = (server.findtext("User") or "").strip()
+            password_node = server.find("Pass")
+            stored_password = (server.findtext("Pass") or "").strip()
+            if not user or not stored_password:
+                continue
+            encoding = password_node.get("encoding", "base64") if password_node is not None else "base64"
+            if encoding == "crypt":
+                raise RuntimeError(
+                    "O perfil do FileZilla exige senha mestra. Configure EASYHOST_FTP_USERNAME e EASYHOST_FTP_PASSWORD."
+                )
+            if encoding not in ("base64", "plain"):
+                raise RuntimeError("Formato de senha do FileZilla nao suportado.")
+            password = base64.b64decode(stored_password).decode("utf-8") if encoding == "base64" else stored_password
+            port = int((server.findtext("Port") or "21").strip())
+            return host, port, user, password
+
+    raise RuntimeError("O perfil FTP da Chambre Rose nao foi encontrado no FileZilla.")
 
 
 def ensure_parent(ftp: ftplib.FTP, remote: PurePosixPath) -> None:
@@ -169,10 +211,10 @@ def main() -> int:
     parser.add_argument("--skip-migrations", action="store_true", help="Preserve .env unchanged when the release has no new database migrations.")
     options = parser.parse_args()
     workspace = Path(__file__).resolve().parent.parent
-    user = os.getenv("EASYHOST_FTP_USERNAME", "").strip()
-    password = os.getenv("EASYHOST_FTP_PASSWORD", "")
-    if not user or not password:
-        print("Defina EASYHOST_FTP_USERNAME e EASYHOST_FTP_PASSWORD.", file=sys.stderr)
+    try:
+        host, port, user, password = load_credentials()
+    except Exception as error:
+        print(f"Falha ao carregar credenciais de deploy: {error}", file=sys.stderr)
         return 2
 
     release = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
@@ -182,7 +224,7 @@ def main() -> int:
 
     try:
         with ftplib.FTP() as ftp:
-            ftp.connect(os.getenv("EASYHOST_FTP_HOST", FTP_HOST), 21, timeout=35)
+            ftp.connect(host, port, timeout=35)
             ftp.login(user, password)
             ftp.set_pasv(True)
             ftp.voidcmd("TYPE I")
