@@ -71,10 +71,16 @@ final class ProfileMediaRepository
         }
 
         $mediaUrl = (string) ($photo['url'] ?? '');
-        $profileUrl = '/api/profiles/' . $userId . '/profile-photo';
+        $profileBaseUrl = '/api/profiles/' . $userId . '/profile-photo';
+        $profileUrl = $profileBaseUrl . '?v=' . (int) $photo['id'];
         $photo['url'] = $profileUrl;
         if ($mediaUrl !== '' && isset($photo['srcSet']) && is_string($photo['srcSet'])) {
-            $photo['srcSet'] = str_replace($mediaUrl . '/', $profileUrl . '/', $photo['srcSet']);
+            preg_match_all('/\/(320|640|960|1280)\.webp\s+\1w/', $photo['srcSet'], $matches);
+            $widths = array_values(array_unique(array_map('intval', $matches[1])));
+            $photo['srcSet'] = implode(', ', array_map(
+                static fn (int $width): string => $profileBaseUrl . '/' . $width . '.webp?v=' . (int) $photo['id'] . ' ' . $width . 'w',
+                $widths
+            ));
         }
 
         return $photo;
@@ -84,6 +90,23 @@ final class ProfileMediaRepository
     {
         $statement = $this->pdo->prepare(
             "SELECT id FROM profile_media WHERE user_id=:id AND media_type='PHOTO' ORDER BY position,id LIMIT 1"
+        );
+        $statement->execute(['id' => $userId]);
+        $mediaId = $statement->fetchColumn();
+
+        return $mediaId === false ? null : (int) $mediaId;
+    }
+
+    public function publicProfilePhotoIdForUser(int $userId): ?int
+    {
+        $statement = $this->pdo->prepare(
+            "SELECT media.id FROM profile_media media"
+            . " JOIN professional_profiles profile ON profile.user_id=media.user_id"
+            . " JOIN users user_account ON user_account.id=media.user_id"
+            . " WHERE media.user_id=:id AND media.media_type='PHOTO'"
+            . " AND user_account.approval_status='APPROVED'"
+            . " AND user_account.role IN ('ESCORT','STORE')"
+            . ' ORDER BY media.position,media.id LIMIT 1'
         );
         $statement->execute(['id' => $userId]);
         $mediaId = $statement->fetchColumn();
@@ -146,6 +169,20 @@ final class ProfileMediaRepository
         $statement->execute(['id' => $userId]);
 
         return (int) $statement->fetchColumn() === $mediaId;
+    }
+
+    public function promotePhoto(int $userId, int $mediaId): void
+    {
+        $media = $this->metadata($userId, $mediaId);
+        if ($media === null || $media['type'] !== 'PHOTO') {
+            throw new ApiException(404, 'Profile photo not found.');
+        }
+        $statement = $this->pdo->prepare(
+            "UPDATE profile_media SET position=CASE WHEN id=:media_id THEN 0 ELSE position+1 END"
+            . " WHERE user_id=:user_id AND media_type='PHOTO'"
+        );
+        $statement->execute(['media_id' => $mediaId, 'user_id' => $userId]);
+        if (!$this->isFirstPhoto($userId, $mediaId)) throw new ApiException(500, 'Unable to select profile photo.');
     }
 
     /** @return array<string, mixed> */

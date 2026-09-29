@@ -26,6 +26,19 @@ final class ProfessionalProfileRepository
         u.role, u.vip_active, u.approval_status
         SQL;
 
+    /**
+     * Catalogue cards deliberately use a much smaller projection than a
+     * profile detail. This avoids reading large biography/profile columns and
+     * calculating review aggregates for rows that only need card metadata.
+     */
+    private const LISTING_COLUMNS = <<<'SQL'
+        p.user_id, p.profile_type, p.display_name, p.gender,
+        p.location_city, p.location_region, p.location_country, p.bio, p.services,
+        p.segment, p.purchase_count, p.verified,
+        u.city AS account_city, u.country AS account_country,
+        u.vip_active
+        SQL;
+
     public function __construct(private readonly PDO $pdo)
     {
     }
@@ -151,6 +164,37 @@ final class ProfessionalProfileRepository
     }
 
     /**
+     * Returns the small profile header required by the standalone gallery.
+     * Gallery navigation must not hydrate biographies, review aggregates or
+     * any private professional fields.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findPublicGallery(int $userId): ?array
+    {
+        $statement = $this->pdo->prepare(
+            "SELECT p.user_id,p.profile_type,p.display_name,p.verified,u.vip_active"
+            . " FROM professional_profiles p JOIN users u ON u.id=p.user_id"
+            . " WHERE p.user_id=:id AND u.approval_status='APPROVED'"
+            . " AND u.role IN ('ESCORT','STORE') LIMIT 1"
+        );
+        $statement->execute(['id' => $userId]);
+        $row = $statement->fetch();
+        if (!is_array($row)) {
+            return null;
+        }
+
+        return [
+            'id' => (int) $row['user_id'],
+            'userId' => (int) $row['user_id'],
+            'type' => (string) $row['profile_type'],
+            'displayName' => (string) $row['display_name'],
+            'verified' => in_array($row['verified'], [true, 1, '1', 't', 'true'], true),
+            'vipActive' => in_array($row['vip_active'], [true, 1, '1', 't', 'true'], true),
+        ];
+    }
+
+    /**
      * @param list<int> $userIds
      * @return list<array<string, mixed>>
      */
@@ -162,14 +206,14 @@ final class ProfessionalProfileRepository
         }
         [$placeholders, $params] = self::idParameters($userIds, 'public_profile');
         $statement = $this->pdo->prepare(
-            'SELECT ' . self::COLUMNS . ' FROM professional_profiles p JOIN users u ON u.id=p.user_id'
+            'SELECT ' . self::LISTING_COLUMNS . ' FROM professional_profiles p JOIN users u ON u.id=p.user_id'
             . ' WHERE p.user_id IN (' . implode(',', $placeholders) . ") AND u.approval_status='APPROVED'"
             . " AND u.role IN ('ESCORT','STORE')"
         );
         $statement->execute($params);
 
         return array_map(
-            static fn (array $row): array => ProfessionalProfileMapper::listingView(ProfessionalProfileMapper::map($row)),
+            static fn (array $row): array => ProfessionalProfileMapper::mapListing($row),
             $statement->fetchAll()
         );
     }
@@ -304,7 +348,7 @@ final class ProfessionalProfileRepository
      */
     public function search(array $filters): array
     {
-        return (new ProfessionalProfileSearch($this->pdo, self::COLUMNS))->search($filters);
+        return (new ProfessionalProfileSearch($this->pdo, self::LISTING_COLUMNS))->search($filters);
     }
 
     /**

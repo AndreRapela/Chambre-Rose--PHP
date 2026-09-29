@@ -72,6 +72,14 @@ final class Response
     /** @param array<string, string> $headers */
     public function withHeaders(array $headers): self
     {
+        if (isset($headers['Vary'], $this->headers['Vary'])) {
+            $vary = array_values(array_unique(array_filter(array_map(
+                'trim',
+                explode(',', $headers['Vary'] . ',' . $this->headers['Vary'])
+            ))));
+            $headers['Vary'] = implode(', ', $vary);
+        }
+
         return new self($this->status, $this->body, $headers + $this->headers, $this->stream);
     }
 

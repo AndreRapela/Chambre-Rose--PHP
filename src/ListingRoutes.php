@@ -26,16 +26,38 @@ final class ListingRoutes implements RouteHandler
         $path = $request->path;
 
         if ($method === 'GET' && $path === '/api/listings') {
-            return ApiResponder::json($this->marketplace->listings(
-                $request->query,
-                $this->guard->optionalCurrentUser($request)
-            ));
+            $viewer = $this->guard->optionalCurrentUser($request);
+            $response = Response::json($this->marketplace->listings($request->query, $viewer), 200, [
+                'Cache-Control' => $viewer === null
+                    ? 'public, max-age=30, stale-while-revalidate=300'
+                    : 'private, no-store',
+            ]);
+
+            return $viewer === null
+                ? $response->withHeaders(['Vary' => 'Cookie, Authorization'])
+                : $response;
         }
         if ($method === 'GET' && preg_match('#^/api/listings/(\d+)$#', $path, $match)) {
             return ApiResponder::json($this->marketplace->visitPublicProfile(
                 (int) $match[1],
                 $this->guard->optionalCurrentUser($request)
             ));
+        }
+        if ($method === 'GET' && preg_match('#^/api/listings/(\d+)/gallery$#', $path, $match)) {
+            $viewer = $this->guard->optionalCurrentUser($request);
+            $response = Response::json(
+                $this->marketplace->publicGallery((int) $match[1], $viewer),
+                200,
+                [
+                    'Cache-Control' => $viewer === null
+                        ? 'public, max-age=30, stale-while-revalidate=300'
+                        : 'private, no-store',
+                ]
+            );
+
+            return $viewer === null
+                ? $response->withHeaders(['Vary' => 'Cookie, Authorization'])
+                : $response;
         }
         if ($method === 'GET' && preg_match('#^/api/listings/(\d+)/contact$#', $path, $match)) {
             return ApiResponder::json(
@@ -190,9 +212,19 @@ final class ListingRoutes implements RouteHandler
         $form = $request->multipart();
         $file = $form['files']['media']
             ?? new UploadedFile('', '', 0, null, null, UPLOAD_ERR_NO_FILE);
+        $profilePhoto = in_array(
+            strtolower((string) ($form['fields']['profilePhoto'] ?? 'false')),
+            ['1', 'true', 'yes'],
+            true
+        );
 
         return ApiResponder::json(
-            $this->marketplace->upload((int) $user['id'], $file, (int) ($form['fields']['position'] ?? 0)),
+            $this->marketplace->upload(
+                (int) $user['id'],
+                $file,
+                (int) ($form['fields']['position'] ?? 0),
+                $profilePhoto
+            ),
             201
         );
     }
@@ -248,13 +280,13 @@ final class ListingRoutes implements RouteHandler
 
     private function profileMedia(Request $request, int $userId, int $mediaId): Response
     {
-        $this->authorizeProfileMedia($request, $userId, $mediaId);
+        $isPublic = $this->authorizeProfileMedia($request, $userId, $mediaId);
         $meta = $this->media->metadata($userId, $mediaId);
         if ($meta === null) {
             throw new ApiException(404, 'Media not found.');
         }
         $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $meta['size'] . '|' . $meta['createdAt']);
-        $cache = 'private, no-store';
+        $cache = $isPublic ? self::PUBLIC_MEDIA_CACHE : 'private, no-store';
         $extension = match ($meta['contentType']) {
             'image/jpeg' => 'jpg',
             'image/png' => 'png',
@@ -370,18 +402,17 @@ final class ListingRoutes implements RouteHandler
 
     private function profilePhoto(Request $request, int $userId): Response
     {
-        $isPublic = $this->authorizeProfilePhoto($request, $userId);
-        $photo = $this->media->profilePhotoForUser($userId);
-        if ($photo === null) {
+        [$mediaId, $isPublic] = $this->authorizeProfilePhoto($request, $userId);
+        $photo = $this->media->metadata($userId, $mediaId);
+        if ($photo === null || ($photo['type'] ?? '') !== 'PHOTO') {
             throw new ApiException(404, 'Profile photo not found.');
         }
-
-        $mediaId = (int) $photo['id'];
         $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $photo['size'] . '|' . $photo['createdAt'] . '|profile-photo');
+        $cache = $this->profilePhotoCache($request, $mediaId, $isPublic);
         $headers = [
             'Content-Type' => (string) $photo['contentType'],
             'Content-Disposition' => 'inline; filename="profile-photo-' . $userId . '"',
-            'Cache-Control' => $isPublic ? self::PUBLIC_PROFILE_PHOTO_CACHE : 'private, no-store',
+            'Cache-Control' => $cache,
             'ETag' => $etag,
         ];
         if (ApiResponder::etagMatches($request, $etag)) {
@@ -403,15 +434,10 @@ final class ListingRoutes implements RouteHandler
 
     private function profilePhotoVariant(Request $request, int $userId, int $width): Response
     {
-        $isPublic = $this->authorizeProfilePhoto($request, $userId);
-        $mediaId = $this->media->profilePhotoIdForUser($userId);
-        if ($mediaId === null) {
-            throw new ApiException(404, 'Profile photo not found.');
-        }
-
-        $image = $this->marketplace->responsivePhoto($userId, $mediaId, $width);
+        [$mediaId, $isPublic] = $this->authorizeProfilePhoto($request, $userId);
+        $image = $this->marketplace->responsiveProfilePhoto($userId, $mediaId, $width);
         $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $image['sourceHash'] . '|' . $width . '|profile-photo');
-        $cache = $isPublic ? self::PUBLIC_PROFILE_PHOTO_CACHE : 'private, no-store';
+        $cache = $this->profilePhotoCache($request, $mediaId, $isPublic);
         if (ApiResponder::etagMatches($request, $etag)) {
             return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
         }
@@ -425,25 +451,43 @@ final class ListingRoutes implements RouteHandler
         ]);
     }
 
-    private function authorizeProfilePhoto(Request $request, int $userId): bool
+    /** @return array{int, bool} */
+    private function authorizeProfilePhoto(Request $request, int $userId): array
     {
-        $viewer = $this->guard->optionalCurrentUser($request);
-        if ($this->marketplace->publicMediaAccess($userId, $viewer) !== null) {
-            return true;
+        $publicPhotoId = $this->media->publicProfilePhotoIdForUser($userId);
+        if ($publicPhotoId !== null) {
+            return [$publicPhotoId, true];
         }
 
+        $viewer = $this->guard->optionalCurrentUser($request);
         if ($viewer === null || ((int) $viewer['id'] !== $userId && $viewer['role'] !== 'ADMIN')) {
             throw new ApiException(404, 'Profile photo not found.');
         }
 
-        return false;
+        $mediaId = $this->media->profilePhotoIdForUser($userId);
+        if ($mediaId === null) {
+            throw new ApiException(404, 'Profile photo not found.');
+        }
+
+        return [$mediaId, false];
+    }
+
+    private function profilePhotoCache(Request $request, int $mediaId, bool $isPublic): string
+    {
+        if (!$isPublic) {
+            return 'private, no-store';
+        }
+
+        return (int) ($request->query['v'] ?? 0) === $mediaId
+            ? self::PUBLIC_MEDIA_CACHE
+            : self::PUBLIC_PROFILE_PHOTO_CACHE;
     }
 
     private function vipMediaPreview(Request $request, int $userId, int $mediaId): Response
     {
         $viewer = $this->guard->optionalCurrentUser($request);
-        $profile = $this->marketplace->publicProfile($userId, $viewer);
-        if (($profile['type'] ?? '') !== 'ESCORT' || ($profile['vipActive'] ?? false) !== true) {
+        $access = $this->marketplace->publicMediaAccess($userId, $viewer);
+        if ($access === null || $access['type'] !== 'ESCORT' || $access['vipActive'] !== true) {
             throw new ApiException(404, 'VIP photo preview not found.');
         }
         $image = $this->marketplace->vipPhotoPreview($userId, $mediaId);

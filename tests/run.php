@@ -39,6 +39,8 @@ use ChambreRose\ProductService;
 use ChambreRose\PrivateIdentityFileCipher;
 use ChambreRose\ProfessionalProfileRepository;
 use ChambreRose\ProfileMediaRepository;
+use ChambreRose\PromotionRepository;
+use ChambreRose\PromotionService;
 use ChambreRose\RealtimeEventRepository;
 use ChambreRose\RealtimeRoutes;
 use ChambreRose\ResponsiveImageProcessor;
@@ -53,6 +55,7 @@ use ChambreRose\UserRepository;
 use ChambreRose\UserNotificationService;
 use ChambreRose\Validator;
 use ChambreRose\SearchPagination;
+use ChambreRose\Seeder;
 
 final class MemoryNotificationOutbox implements NotificationOutboxStore
 {
@@ -466,6 +469,105 @@ $assert(
     'A tampered Push device cookie must not revoke a subscription.'
 );
 if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    $promotionDatabase = new PDO('sqlite::memory:');
+    $promotionDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $promotionDatabase->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $promotionDatabase->exec(<<<'SQL'
+        CREATE TABLE site_promotions (
+          slot INTEGER PRIMARY KEY,label TEXT NOT NULL,title TEXT NOT NULL,subtitle TEXT NOT NULL,
+          link_url TEXT NOT NULL,link_text TEXT NOT NULL,icon TEXT NOT NULL,image_path TEXT NULL,
+          image_file_name TEXT NULL,image_content_type TEXT NULL,image_size_bytes INTEGER NULL,
+          image_data BLOB NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO site_promotions (slot,label,title,subtitle,link_url,link_text,icon,image_path) VALUES
+          (1,'Gift edit','Gift-ready lingerie edits','Curated selection.','/catalogue','Explore gifts','gift','/assets/gift.jpg'),
+          (2,'Private delivery','Boutique care','Discreet delivery.','/catalogue/lojas','Contact boutique','truck','/assets/delivery.jpg');
+        SQL);
+    $promotionService = new PromotionService(new PromotionRepository($promotionDatabase));
+    $assert(
+        count($promotionService->all()) === 2
+        && $promotionService->all()[0]['imageUrl'] === '/assets/gift.jpg',
+        'Public promotions must expose both configured slots with their initial images.'
+    );
+    $promotionImageBytes = (string) file_get_contents(dirname(__DIR__) . '/resources/brand/brand-logo.png');
+    $updatedPromotion = $promotionService->update(1, [
+        'label' => 'Seasonal edit',
+        'title' => 'Autumn selection',
+        'subtitle' => 'A refined seasonal collection.',
+        'linkUrl' => '/catalogue?category=lingerie',
+        'linkText' => 'Discover now',
+        'icon' => 'star',
+    ], new UploadedFile('season.png', 'image/png', strlen($promotionImageBytes), null, $promotionImageBytes));
+    $storedPromotionImage = $promotionService->image(1);
+    $assert(
+        $updatedPromotion['title'] === 'Autumn selection'
+        && $updatedPromotion['icon'] === 'star'
+        && str_starts_with((string) $updatedPromotion['imageUrl'], '/api/promotions/1/image?v=')
+        && $storedPromotionImage['bytes'] === $promotionImageBytes,
+        'Administrators must be able to edit every promotion field and replace its image.'
+    );
+    try {
+        $promotionService->update(2, [
+            'label' => 'Unsafe', 'title' => 'Unsafe link', 'subtitle' => 'Invalid destination.',
+            'linkUrl' => 'javascript:alert(1)', 'linkText' => 'Open', 'icon' => 'truck',
+        ], null);
+        $assert(false, 'Unsafe promotion links must be rejected.');
+    } catch (ApiException $exception) {
+        $assert($exception->status === 400, 'Unsafe promotion links must return a validation error.');
+    }
+
+    $seedDatabase = new PDO('sqlite::memory:');
+    $seedDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $seedDatabase->exec(<<<'SQL'
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL,
+          first_name TEXT NOT NULL, last_name TEXT NOT NULL, phone TEXT NOT NULL,
+          address TEXT NOT NULL, city TEXT NOT NULL, region TEXT NOT NULL, country TEXT NOT NULL, postal_code TEXT NOT NULL,
+          role TEXT NOT NULL, approval_status TEXT NOT NULL, approval_reason TEXT NULL,
+          review_deadline TEXT NULL, approved_at TEXT NULL, locale TEXT NOT NULL,
+          vip_active INTEGER NOT NULL, vip_since TEXT NULL, vip_until TEXT NULL,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE chambre_rose_seed_history (
+          seed_key TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO chambre_rose_seed_history (seed_key) VALUES
+          ('mvp-marketplace-content-v1'), ('mvp-profile-diversity-v2');
+        INSERT INTO users (
+          id,email,password_hash,first_name,last_name,phone,address,city,region,country,postal_code,
+          role,approval_status,approval_reason,review_deadline,approved_at,locale,vip_active,vip_since,vip_until,
+          created_at,updated_at
+        ) VALUES
+          (1,'demo-companion-man@chambre-rose.invalid','old-hash','Noah','','','','Brussels','','Belgium','',
+           'ESCORT','PENDING',NULL,NULL,NULL,'fr',0,NULL,NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+          (2,'demo-companion-trans@chambre-rose.invalid','old-hash','Alexia','','','','Antwerp','','Belgium','',
+           'ESCORT','PENDING',NULL,NULL,NULL,'fr',1,NULL,NULL,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+        SQL);
+    putenv('SEED_MVP_CONTENT=false');
+    putenv('SEED_DEMO_USERS=false');
+    (new Seeder($seedDatabase))->run();
+    $demoAccounts = $seedDatabase->query(
+        "SELECT email,password_hash,approval_status FROM users WHERE email LIKE 'demo-companion-%' ORDER BY id"
+    )->fetchAll(PDO::FETCH_ASSOC);
+    $firstDemoHash = (string) $demoAccounts[0]['password_hash'];
+    $assert(
+        password_verify('ChambreRose2026!Man', $firstDemoHash)
+        && password_verify('ChambreRose2026!Trans', (string) $demoAccounts[1]['password_hash']),
+        'Male and trans demo companions must receive the credentials advertised by the login page.'
+    );
+    $assert(
+        array_column($demoAccounts, 'approval_status') === ['APPROVED', 'APPROVED'],
+        'Demo companion quick-login accounts must be approved.'
+    );
+    (new Seeder($seedDatabase))->run();
+    $assert(
+        $seedDatabase->query("SELECT password_hash FROM users WHERE id=1")->fetchColumn() === $firstDemoHash
+        && (int) $seedDatabase->query(
+            "SELECT COUNT(*) FROM chambre_rose_seed_history WHERE seed_key='mvp-profile-demo-login-v3'"
+        )->fetchColumn() === 1,
+        'The demo companion credential seed must be idempotent.'
+    );
+
     $adminDatabase = new PDO('sqlite::memory:');
     $adminDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $adminDatabase->exec(<<<'SQL'
@@ -481,7 +583,8 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         CREATE TABLE professional_profiles (
           user_id INTEGER PRIMARY KEY, profile_type TEXT NOT NULL, display_name TEXT NOT NULL,
           business_name TEXT NULL, segment TEXT NULL, location TEXT NULL,
-          location_city TEXT NULL, location_region TEXT NULL, location_country TEXT NULL
+          location_city TEXT NULL, location_region TEXT NULL, location_country TEXT NULL,
+          verified INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE user_reports (
           id INTEGER PRIMARY KEY, reporter_id INTEGER NOT NULL, reported_id INTEGER NOT NULL,
@@ -568,9 +671,17 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     );
     $adminDatabase->exec("UPDATE users SET approval_status='APPROVED',vip_active=1 WHERE id=2");
     $publicMediaAccess = (new ProfessionalProfileRepository($adminDatabase))->findPublicMediaAccess(2);
+    $publicGallery = (new ProfessionalProfileRepository($adminDatabase))->findPublicGallery(2);
     $assert(
         $publicMediaAccess === ['userId' => 2, 'type' => 'ESCORT', 'vipActive' => true],
         'Public media authorization must use the lightweight profile access projection.'
+    );
+    $assert(
+        ($publicGallery['userId'] ?? null) === 2
+        && ($publicGallery['displayName'] ?? null) === 'Profile 2'
+        && ($publicGallery['type'] ?? null) === 'ESCORT'
+        && ($publicGallery['vipActive'] ?? null) === true,
+        'The gallery must use a lightweight public header without hydrating a complete profile.'
     );
     $adminDatabase->exec("UPDATE users SET approval_status='PENDING',vip_active=0 WHERE id=2");
     $adminDatabase->exec("UPDATE users SET approval_status='APPROVED' WHERE id=1");
@@ -660,7 +771,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         'name' => 'Protected metrics',
         'category' => 'wellness',
         'price' => 49.90,
-        'imageUrl' => '/catalog/product.jpg',
+        'imageUrl' => '/api/products/1/images/main',
         'reviews' => 900,
         'purchaseCount' => 800,
         'likes' => 700,
@@ -672,6 +783,20 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         'New products must ignore client-supplied engagement metrics.'
     );
     $productId = (int) $createdProduct['id'];
+    $productDatabase->exec(
+        "INSERT INTO product_images (id,product_id,role,content_type,size_bytes,image_data,updated_at)"
+        . " VALUES (51,{$productId},'MAIN','image/jpeg',4,X'01020304',CURRENT_TIMESTAMP)"
+    );
+    $legacyResponsiveProduct = $productRepository->find($productId);
+    $assert(
+        ($legacyResponsiveProduct['imageSrcSet'] ?? null) === implode(', ', [
+            "/api/products/{$productId}/images/main/320.webp 320w",
+            "/api/products/{$productId}/images/main/640.webp 640w",
+            "/api/products/{$productId}/images/main/960.webp 960w",
+            "/api/products/{$productId}/images/main/1280.webp 1280w",
+        ]),
+        'Legacy product uploads must request responsive WebP variants instead of downloading the original BLOB on catalogue cards.'
+    );
     $productDatabase->exec(
         "UPDATE products SET reviews=3,purchase_count=4,likes=5 WHERE id={$productId}"
     );
@@ -1211,6 +1336,16 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         . 'profile_media_id INTEGER,width INTEGER NOT NULL)'
     );
     $mediaDatabase->exec(
+        'CREATE TABLE users ('
+        . 'id INTEGER PRIMARY KEY,role TEXT NOT NULL,approval_status TEXT NOT NULL)'
+    );
+    $mediaDatabase->exec(
+        'CREATE TABLE professional_profiles ('
+        . 'user_id INTEGER PRIMARY KEY,profile_type TEXT NOT NULL)'
+    );
+    $mediaDatabase->exec("INSERT INTO users (id,role,approval_status) VALUES (7,'ESCORT','APPROVED'),(8,'ESCORT','PENDING')");
+    $mediaDatabase->exec("INSERT INTO professional_profiles (user_id,profile_type) VALUES (7,'ESCORT'),(8,'ESCORT')");
+    $mediaDatabase->exec(
         "INSERT INTO profile_media (id,user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) VALUES"
         . " (1,7,'PHOTO','later.jpg','image/jpeg',1,X'01',5,'2026-09-08 00:00:00'),"
         . " (2,7,'PHOTO','cover.jpg','image/jpeg',1,X'02',1,'2026-09-08 00:00:00'),"
@@ -1239,9 +1374,11 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     );
     $assert(
         (int) ($profilePhoto['id'] ?? 0) === 2
-        && ($profilePhoto['url'] ?? '') === '/api/profiles/7/profile-photo'
-        && ($profilePhoto['srcSet'] ?? '') === '/api/profiles/7/profile-photo/320.webp 320w, /api/profiles/7/profile-photo/640.webp 640w'
+        && ($profilePhoto['url'] ?? '') === '/api/profiles/7/profile-photo?v=2'
+        && ($profilePhoto['srcSet'] ?? '') === '/api/profiles/7/profile-photo/320.webp?v=2 320w, /api/profiles/7/profile-photo/640.webp?v=2 640w'
         && $profileMedia->profilePhotoIdForUser(7) === 2
+        && $profileMedia->publicProfilePhotoIdForUser(7) === 2
+        && $profileMedia->publicProfilePhotoIdForUser(8) === null
         && $profileMedia->profilePhotoIdForUser(99) === null
         && $profileMedia->profilePhotoForUser(99, true) === null,
         'A public profile photo must use independent paths and expose its ordered identifier without hydrating media metadata.'
@@ -1251,6 +1388,13 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         && !$profileMedia->isFirstPhoto(7, 1)
         && !$profileMedia->isFirstPhoto(99, 2),
         'Only the first ordered photo must be recognized as the public profile photo.'
+    );
+    $profileMedia->promotePhoto(7, 1);
+    $assert(
+        $profileMedia->isFirstPhoto(7, 1)
+        && !$profileMedia->isFirstPhoto(7, 2)
+        && (int) ($profileMedia->profilePhotoForUser(7, true)['id'] ?? 0) === 1,
+        'Choosing a new profile photo must promote it without removing the previous gallery photo.'
     );
     $videoFixture = '0123456789abcdefghijklmnopqrstuvwxyz';
     $insertMedia = $mediaDatabase->prepare(

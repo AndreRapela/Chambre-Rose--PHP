@@ -348,7 +348,7 @@ final class ProductRepository
         );
         $statement = $this->pdo->prepare(
             'SELECT product_images.product_id, product_images.role, responsive_image_variants.width'
-            . ' FROM product_images INNER JOIN responsive_image_variants'
+            . ' FROM product_images LEFT JOIN responsive_image_variants'
             . ' ON responsive_image_variants.product_image_id=product_images.id'
             . ' WHERE product_images.product_id IN (' . implode(', ', $placeholders) . ')'
             . ' ORDER BY product_images.product_id, product_images.role, responsive_image_variants.width'
@@ -358,15 +358,32 @@ final class ProductRepository
         }
         $statement->execute();
 
+        $storedImages = [];
         $widths = [];
         foreach ($statement->fetchAll() as $row) {
-            $widths[(int) $row['product_id']][(string) $row['role']][] = (int) $row['width'];
+            $productId = (int) $row['product_id'];
+            $role = (string) $row['role'];
+            $storedImages[$productId][$role] = true;
+            if ($row['width'] !== null) {
+                $widths[$productId][$role][] = (int) $row['width'];
+            }
         }
 
-        return array_map(static function (array $product) use ($widths): array {
+        return array_map(static function (array $product) use ($storedImages, $widths): array {
             $productId = (int) $product['id'];
             $mainWidths = $widths[$productId]['MAIN'] ?? [];
             $secondaryWidths = $widths[$productId]['SECONDARY'] ?? [];
+            // Images uploaded before responsive variants were introduced still
+            // need to avoid sending the multi-megabyte original to catalogue
+            // cards. Advertising the supported URLs lets the first request
+            // generate the small WebP once; every later request uses the
+            // persisted variant.
+            if ($mainWidths === [] && ($storedImages[$productId]['MAIN'] ?? false)) {
+                $mainWidths = ResponsiveImageProcessor::WIDTHS;
+            }
+            if ($secondaryWidths === [] && ($storedImages[$productId]['SECONDARY'] ?? false)) {
+                $secondaryWidths = ResponsiveImageProcessor::WIDTHS;
+            }
             $product['imageSrcSet'] = $mainWidths === []
                 ? null
                 : ResponsiveImageService::srcSet((string) $product['imageUrl'], $mainWidths);

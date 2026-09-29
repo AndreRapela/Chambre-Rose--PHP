@@ -66,6 +66,22 @@ final class MarketplaceService
     }
 
     /**
+     * Loads only the public header and media needed by the gallery route.
+     * Unlike a profile visit, this does not load reviews or write a view count.
+     *
+     * @param array<string,mixed>|null $viewer
+     * @return array<string, mixed>
+     */
+    public function publicGallery(int $userId, ?array $viewer = null): array
+    {
+        $this->assertProfileAccess($userId, $viewer);
+        $profile = $this->profiles->findPublicGallery($userId)
+            ?? throw new ApiException(404, 'Gallery not found.');
+
+        return $this->withPublicMedia($profile, $viewer);
+    }
+
+    /**
      * Loads the minimal projection needed by image endpoints, avoiding a full
      * profile, review and gallery hydration for every responsive image request.
      *
@@ -223,7 +239,7 @@ final class MarketplaceService
     }
 
     /** @return array<string, mixed> */
-    public function upload(int $userId, UploadedFile $file, int $position = 0): array
+    public function upload(int $userId, UploadedFile $file, int $position = 0, bool $profilePhoto = false): array
     {
         $profile = $this->ownProfile($userId);
         $user = $this->users->find($userId) ?? throw new ApiException(404, 'User not found.');
@@ -266,6 +282,9 @@ final class MarketplaceService
         if ($type === 'PHOTO') {
             try {
                 $this->responsiveImages->storePrepared('PROFILE', (int) $media['id'], $bytes, $prepared);
+                if ($profilePhoto) {
+                    $this->media->promotePhoto($userId, (int) $media['id']);
+                }
             } catch (\Throwable $exception) {
                 $this->media->delete($userId, (int) $media['id']);
                 throw $exception;
@@ -284,6 +303,21 @@ final class MarketplaceService
         if ($meta === null || $meta['type'] !== 'PHOTO') {
             throw new ApiException(404, 'Profile photo not found.');
         }
+        $cached = $this->responsiveImages->cachedVariant('PROFILE', $mediaId, $width);
+        if ($cached !== null) {
+            return $cached;
+        }
+        $bytes = $this->media->data($userId, $mediaId);
+        if ($bytes === null) {
+            throw new ApiException(404, 'Profile photo not found.');
+        }
+
+        return $this->responsiveImages->variant('PROFILE', $mediaId, $bytes, $width);
+    }
+
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string} */
+    public function responsiveProfilePhoto(int $userId, int $mediaId, int $width): array
+    {
         $cached = $this->responsiveImages->cachedVariant('PROFILE', $mediaId, $width);
         if ($cached !== null) {
             return $cached;
@@ -566,11 +600,21 @@ final class MarketplaceService
         }
 
         $mediaUrl = (string) ($photo['url'] ?? '');
-        $profileUrl = '/api/profiles/' . (int) $profile['userId'] . '/profile-photo';
+        $photoId = (int) ($photo['id'] ?? 0);
+        $profileUrl = '/api/profiles/' . (int) $profile['userId'] . '/profile-photo?v=' . $photoId;
         $profile['profileImageUrl'] = $profileUrl;
-        $profile['profileImageSrcSet'] = isset($photo['srcSet']) && is_string($photo['srcSet'])
-            ? str_replace($mediaUrl . '/', $profileUrl . '/', $photo['srcSet'])
-            : null;
+        $profile['profileImageSrcSet'] = null;
+        if ($mediaUrl !== '' && isset($photo['srcSet']) && is_string($photo['srcSet'])) {
+            preg_match_all('/\/(320|640|960|1280)\.webp\s+\1w/', $photo['srcSet'], $matches);
+            $widths = array_values(array_unique(array_map('intval', $matches[1])));
+            if ($widths !== []) {
+                $baseUrl = '/api/profiles/' . (int) $profile['userId'] . '/profile-photo';
+                $profile['profileImageSrcSet'] = implode(', ', array_map(
+                    static fn (int $width): string => $baseUrl . '/' . $width . '.webp?v=' . $photoId . ' ' . $width . 'w',
+                    $widths
+                ));
+            }
+        }
     }
 
     /** @param array<string,mixed> $profile

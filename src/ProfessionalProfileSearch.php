@@ -99,10 +99,27 @@ final class ProfessionalProfileSearch
         }
 
         $whereSql = implode(' AND ', $where);
-        $count = $this->pdo->prepare('SELECT COUNT(*) FROM professional_profiles p JOIN users u ON u.id=p.user_id WHERE ' . $whereSql);
-        $count->execute($params);
-        $total = (int) $count->fetchColumn();
-        $pagination = SearchPagination::resolve($total, $filters['page'] ?? null, $filters['pageSize'] ?? null);
+        $includeTotal = filter_var(
+            $filters['includeTotal'] ?? true,
+            FILTER_VALIDATE_BOOLEAN,
+            FILTER_NULL_ON_FAILURE
+        ) !== false;
+        if ($includeTotal) {
+            $count = $this->pdo->prepare('SELECT COUNT(*) FROM professional_profiles p JOIN users u ON u.id=p.user_id WHERE ' . $whereSql);
+            $count->execute($params);
+            $total = (int) $count->fetchColumn();
+            $pagination = SearchPagination::resolve($total, $filters['page'] ?? null, $filters['pageSize'] ?? null);
+        } else {
+            $pageSize = min(50, max(1, (int) ($filters['pageSize'] ?? 20)));
+            $page = max(1, (int) ($filters['page'] ?? 1));
+            $total = 0;
+            $pagination = [
+                'page' => $page,
+                'pageSize' => $pageSize,
+                'totalPages' => 0,
+                'offset' => ($page - 1) * $pageSize,
+            ];
+        }
         ['page' => $page, 'pageSize' => $pageSize] = $pagination;
 
         [$proximityOrder, $proximityParams] = $this->proximityOrder($filters);
@@ -133,11 +150,17 @@ final class ProfessionalProfileSearch
         $statement->bindValue(':offset', $pagination['offset'], PDO::PARAM_INT);
         $statement->execute();
 
+        $items = array_map(
+            static fn (array $row): array => ProfessionalProfileMapper::mapListing($row),
+            $statement->fetchAll()
+        );
+        if (!$includeTotal) {
+            $total = count($items);
+            $pagination['totalPages'] = $total === 0 ? 0 : 1;
+        }
+
         return [
-            'items' => array_map(
-                static fn (array $row): array => ProfessionalProfileMapper::listingView(ProfessionalProfileMapper::map($row)),
-                $statement->fetchAll()
-            ),
+            'items' => $items,
             'page' => $page,
             'pageSize' => $pageSize,
             'total' => $total,

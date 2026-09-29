@@ -16,6 +16,25 @@ final class ApiRequestGuard
     /** @return array{sub: string, role: string, pwd: string, iat?: int, exp: int} */
     public function authenticate(Request $request): array
     {
+        return $this->authenticatedIdentityAndUser($request)['identity'];
+    }
+
+    /** @return array<string,mixed> */
+    public function currentUser(Request $request): array
+    {
+        return $this->authenticatedIdentityAndUser($request)['user'];
+    }
+
+    /**
+     * Authentication and current-user hydration share the same lookup. The
+     * previous flow loaded the same user twice on every authenticated request,
+     * which was especially expensive while several profile photos loaded in
+     * parallel.
+     *
+     * @return array{identity: array{sub: string, role: string, pwd: string, iat?: int, exp: int}, user: array<string,mixed>}
+     */
+    private function authenticatedIdentityAndUser(Request $request): array
+    {
         $bearerToken = $this->bearerToken($request);
         $token = $bearerToken ?? $this->sessionCookie->token($request);
         if ($token === null) {
@@ -37,7 +56,7 @@ final class ApiRequestGuard
         }
         $identity['role'] = $user['role'];
 
-        return $identity;
+        return ['identity' => $identity, 'user' => $user];
     }
 
     /** @return array{sub: string, role: string, pwd: string, iat?: int, exp: int} */
@@ -49,18 +68,6 @@ final class ApiRequestGuard
         }
 
         return $identity;
-    }
-
-    /** @return array<string,mixed> */
-    public function currentUser(Request $request): array
-    {
-        $identity = $this->authenticate($request);
-        $user = $this->users->findByEmail(strtolower($identity['sub']));
-        if ($user === null) {
-            throw new ApiException(401, 'Authentication account no longer exists.');
-        }
-
-        return $user;
     }
 
     /** @return array<string,mixed>|null */

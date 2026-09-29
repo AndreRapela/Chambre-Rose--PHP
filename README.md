@@ -62,7 +62,7 @@ APP_AUTO_MIGRATE=true
 SEED_MVP_CONTENT=false
 ```
 
-Para instalar uma vez o catalogo inicial com cinco acompanhantes, uma loja e os
+Para instalar uma vez o catalogo inicial com perfis diversos de acompanhantes, uma loja e os
 produtos de demonstracao, defina `SEED_MVP_CONTENT=true` durante o setup. O seed
 e versionado e idempotente: requisicoes posteriores nao duplicam o conteudo.
 
@@ -295,6 +295,8 @@ Produtos e perfis aceitam `page` e `pageSize`, retornando `items`, `page`, `page
 O teste `php tests/search-pagination.php` percorre produtos, acompanhantes e lojas sem criar ou modificar dados. Configure `TEST_API_URL` para apontar ao ambiente local de testes.
 
 Releases sem novas migrations podem usar `python deployment/upload-easyhost-api.py --skip-migrations`, preservando o `.env` de produção sem ativar o migrator. O uploader mantém backup dos arquivos substituídos e verifica a saúde da API.
+
+Para publicar também os perfis, a loja, os produtos e as mídias de demonstração disponíveis no ambiente local, use `python deployment/upload-easyhost-api.py --seed-mvp-content`. A opção ativa o seed apenas durante a verificação do release, restaura integralmente o `.env` de produção e não duplica registros já instalados.
 
 ## Adicionando migrations
 

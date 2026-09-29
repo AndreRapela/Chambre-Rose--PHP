@@ -10,6 +10,12 @@ use PDOException;
 final class Seeder
 {
     private const MVP_CONTENT_SEED = 'mvp-marketplace-content-v1';
+    private const PROFILE_DIVERSITY_SEED = 'mvp-profile-diversity-v2';
+    private const PROFILE_DEMO_LOGIN_SEED = 'mvp-profile-demo-login-v3';
+    private const MALE_COMPANION_EMAIL = 'demo-companion-man@chambre-rose.invalid';
+    private const MALE_COMPANION_PASSWORD = 'ChambreRose2026!Man';
+    private const TRANS_COMPANION_EMAIL = 'demo-companion-trans@chambre-rose.invalid';
+    private const TRANS_COMPANION_PASSWORD = 'ChambreRose2026!Trans';
 
     private readonly UserRepository $users;
     private readonly ProfessionalProfileRepository $profiles;
@@ -22,8 +28,13 @@ final class Seeder
 
     public function run(): void
     {
-        if (Config::bool('SEED_MVP_CONTENT', false)) {
+        $seedMvpContent = Config::bool('SEED_MVP_CONTENT', false);
+        if ($seedMvpContent) {
             $this->seedMvpContentOnce();
+        }
+        if ($seedMvpContent || $this->seedApplied(self::MVP_CONTENT_SEED)) {
+            $this->seedProfileDiversityOnce();
+            $this->seedProfileDemoLoginsOnce();
         }
         if (!Config::bool('SEED_DEMO_USERS', false)) {
             return;
@@ -60,7 +71,48 @@ final class Seeder
 
     private function seedMvpContentOnce(): void
     {
-        if ($this->seedApplied(self::MVP_CONTENT_SEED)) {
+        $this->applySeedOnce(self::MVP_CONTENT_SEED, function (): void {
+            $storeId = $this->seedStore();
+            $this->seedProducts($storeId);
+            $this->seedCompanions();
+        });
+    }
+
+    private function seedProfileDiversityOnce(): void
+    {
+        $this->applySeedOnce(self::PROFILE_DIVERSITY_SEED, function (): void {
+            $this->seedDiverseCompanions();
+        });
+    }
+
+    private function seedProfileDemoLoginsOnce(): void
+    {
+        $this->applySeedOnce(self::PROFILE_DEMO_LOGIN_SEED, function (): void {
+            $accounts = [
+                self::MALE_COMPANION_EMAIL => self::MALE_COMPANION_PASSWORD,
+                self::TRANS_COMPANION_EMAIL => self::TRANS_COMPANION_PASSWORD,
+            ];
+
+            foreach ($accounts as $email => $password) {
+                $user = $this->users->findByEmail($email);
+                if ($user === null) {
+                    throw new \RuntimeException("Demo companion account {$email} was not created.");
+                }
+
+                $userId = (int) $user['id'];
+                $this->users->updatePassword(
+                    $userId,
+                    password_hash($password, PASSWORD_BCRYPT, ['cost' => 12])
+                );
+                $this->users->setApproval($userId, 'APPROVED', null);
+            }
+        });
+    }
+
+    /** @param callable(): void $seed */
+    private function applySeedOnce(string $seedKey, callable $seed): void
+    {
+        if ($this->seedApplied($seedKey)) {
             return;
         }
 
@@ -74,7 +126,7 @@ final class Seeder
                 'INSERT INTO chambre_rose_seed_history (seed_key) VALUES (:seed_key)'
             );
             try {
-                $statement->execute(['seed_key' => self::MVP_CONTENT_SEED]);
+                $statement->execute(['seed_key' => $seedKey]);
             } catch (PDOException $exception) {
                 if (!in_array($exception->getCode(), ['23000', '23505'], true)) {
                     throw $exception;
@@ -85,20 +137,22 @@ final class Seeder
 
                 return;
             }
-            $storeId = $this->seedStore();
-            $this->seedProducts($storeId);
-            $this->seedCompanions();
+
+            $seed();
 
             if ($ownsTransaction) {
                 $this->pdo->commit();
             }
         } catch (\Throwable $exception) {
-            if ($ownsTransaction && $this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
+            if ($ownsTransaction) $this->rollbackIfActive();
 
             throw $exception;
         }
+    }
+
+    private function rollbackIfActive(): void
+    {
+        if ($this->pdo->inTransaction()) $this->pdo->rollBack();
     }
 
     private function seedApplied(string $seedKey): bool
@@ -277,6 +331,73 @@ final class Seeder
         }
     }
 
+    private function seedDiverseCompanions(): void
+    {
+        $profiles = [
+            [
+                'name' => 'Noah Élégance', 'email' => self::MALE_COMPANION_EMAIL,
+                'gender' => 'MAN', 'city' => 'Brussels', 'region' => 'Brussels-Capital',
+                'birthDate' => '1994-03-12', 'heightCm' => 183, 'weightKg' => 78,
+                'hair' => 'Brown', 'eyes' => 'Hazel', 'origin' => 'Belgian', 'vip' => false,
+                'bio' => 'Profil masculin fictif de démonstration. Une présence élégante, attentionnée et discrète pour des rencontres respectueuses.',
+                'image' => 'carousel-basic-black.jpeg',
+            ],
+            [
+                'name' => 'Alexia Lumière', 'email' => self::TRANS_COMPANION_EMAIL,
+                'gender' => 'TRANS', 'city' => 'Antwerp', 'region' => 'Flanders',
+                'birthDate' => '1997-08-24', 'heightCm' => 176, 'weightKg' => 63,
+                'hair' => 'Black', 'eyes' => 'Brown', 'origin' => 'European', 'vip' => true,
+                'bio' => 'Profil trans fictif de démonstration. Une personnalité lumineuse, chaleureuse et discrète pour des échanges respectueux.',
+                'image' => 'carousel-pink-lace-tie.jpeg',
+            ],
+        ];
+
+        foreach ($profiles as $index => $profile) {
+            $email = (string) $profile['email'];
+            $city = (string) $profile['city'];
+            $region = (string) $profile['region'];
+            $user = $this->users->findByEmail($email) ?? $this->users->create([
+                'firstName' => (string) $profile['name'], 'lastName' => '', 'email' => $email, 'phone' => '',
+                'address' => 'Private demo address ' . ($index + 6), 'city' => $city, 'region' => $region,
+                'country' => 'Belgium', 'postalCode' => '',
+            ], password_hash(bin2hex(random_bytes(24)), PASSWORD_BCRYPT, ['cost' => 12]), 'ESCORT', 'APPROVED', 'fr');
+            $userId = (int) $user['id'];
+
+            if ($this->profiles->findByUser($userId) === null) {
+                $this->profiles->upsert($userId, 'ESCORT', [
+                    'displayName' => $profile['name'], 'birthDate' => $profile['birthDate'], 'gender' => $profile['gender'],
+                    'location' => "{$city}, {$region}, Belgium", 'locationCity' => $city,
+                    'locationRegion' => $region, 'locationCountry' => 'Belgium', 'bio' => $profile['bio'],
+                    'languages' => ['French', 'English', 'Dutch'], 'heightCm' => $profile['heightCm'],
+                    'weightKg' => $profile['weightKg'], 'bustCm' => null, 'waistCm' => null, 'hipsCm' => null,
+                    'hair' => $profile['hair'], 'eyes' => $profile['eyes'], 'origin' => $profile['origin'],
+                    'services' => ['Private message', 'Personalized photos', 'Video call'],
+                    'interests' => ['Travel', 'Photography', 'Conversation'], 'contactOptions' => [],
+                    'contactEmail' => $email, 'responseTime' => 'FEW_HOURS', 'availability' => 'Online today',
+                    'website' => null, 'priceHour' => 99, 'priceNight' => 420, 'priceWeekend' => 720,
+                    'businessName' => null, 'legalName' => null, 'segment' => null,
+                    'businessAddress' => null, 'businessHours' => null,
+                ]);
+            }
+
+            $this->pdo->prepare('UPDATE professional_profiles SET purchase_count=:purchases,views_count=:views,verified=TRUE WHERE user_id=:id')
+                ->execute(['id' => $userId, 'purchases' => 5 + $index, 'views' => 164 + ($index * 37)]);
+            if ($profile['vip'] === true) {
+                $this->pdo->prepare('UPDATE users SET vip_active=TRUE,vip_since=CURRENT_TIMESTAMP WHERE id=:id')
+                    ->execute(['id' => $userId]);
+            }
+
+            $gallery = array_values(array_unique([
+                (string) $profile['image'],
+                'carousel-basic-black.jpeg',
+                'carousel-pink-lace-tie.jpeg',
+                'carousel-pink-ring-thong.jpeg',
+            ]));
+            $this->seedProfilePhotosIfMissing($userId, $gallery);
+            $this->seedReviewsIfMissing($userId, (string) $profile['name']);
+        }
+    }
+
     /** @param list<string> $fileNames */
     private function seedProfilePhotosIfMissing(int $userId, array $fileNames): void
     {
@@ -325,6 +446,15 @@ final class Seeder
         );
         foreach ($reviews as [$reviewer, $body]) {
             $statement->execute(['profile' => $userId, 'name' => $reviewer, 'body' => $body]);
+        }
+    }
+
+    private function seedReviewsIfMissing(int $userId, string $name): void
+    {
+        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM profile_reviews WHERE profile_user_id=:profile');
+        $statement->execute(['profile' => $userId]);
+        if ((int) $statement->fetchColumn() === 0) {
+            $this->seedReviews($userId, $name);
         }
     }
 

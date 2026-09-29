@@ -1217,7 +1217,7 @@ if ($adminPassword !== '') {
         && (int) ($lockedPhotos[0]['id'] ?? 0) === $mediaId
         && ($lockedPhotos[0]['locked'] ?? false) === true
         && ($lockedPhotos[0]['url'] ?? null) === "/api/profiles/{$id}/media/{$mediaId}/vip-preview.webp"
-        && ($lockedMediaProfile['profileImageUrl'] ?? null) === "/api/profiles/{$id}/profile-photo"
+        && ($lockedMediaProfile['profileImageUrl'] ?? null) === "/api/profiles/{$id}/profile-photo?v={$mediaId}"
         && count($lockedPreview) === 1
         && ($lockedPreview[0]['locked'] ?? false) === true
         && ($lockedPreview[0]['url'] ?? null) === "/api/profiles/{$id}/media/{$additionalPhotoId}/vip-preview.webp"

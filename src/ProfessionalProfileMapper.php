@@ -92,6 +92,34 @@ final class ProfessionalProfileMapper
         ];
     }
 
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    public static function mapListing(array $row): array
+    {
+        $id = (int) $row['user_id'];
+        $purchaseCount = max(0, (int) $row['purchase_count']);
+
+        return [
+            'id' => $id,
+            'userId' => $id,
+            'type' => (string) $row['profile_type'],
+            'displayName' => (string) $row['display_name'],
+            'locationCity' => (string) ($row['location_city'] ?: $row['account_city']),
+            'locationRegion' => $row['location_region'],
+            'locationCountry' => (string) ($row['location_country'] ?: $row['account_country']),
+            'bio' => self::preview($row['bio'], 240),
+            'gender' => $row['gender'],
+            'services' => self::decodeList($row['services']),
+            'segment' => $row['segment'],
+            'vipActive' => self::bool($row['vip_active']),
+            'purchaseCount' => $purchaseCount,
+            'starCount' => $purchaseCount,
+            'verified' => self::bool($row['verified']),
+        ];
+    }
+
     private static function encodeList(mixed $value): string
     {
         return json_encode(is_array($value) ? array_values($value) : [], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
@@ -103,6 +131,18 @@ final class ProfessionalProfileMapper
         $decoded = is_string($value) ? json_decode($value, true) : [];
 
         return is_array($decoded) ? array_values(array_filter($decoded, 'is_string')) : [];
+    }
+
+    private static function preview(mixed $value, int $maximumLength): ?string
+    {
+        if (!is_string($value) || trim($value) === '') {
+            return null;
+        }
+        $value = trim($value);
+
+        return function_exists('mb_substr')
+            ? mb_substr($value, 0, $maximumLength, 'UTF-8')
+            : substr($value, 0, $maximumLength);
     }
 
     /**

@@ -58,6 +58,7 @@ final class App
         $products = new ProductRepository($pdo);
         $productImages = new ProductImageRepository($pdo, $responsiveImages);
         $productService = new ProductService($products, $productImages, $users);
+        $promotionService = new PromotionService(new PromotionRepository($pdo));
         $sessionCookie = new AuthSessionCookie($jwt);
         $pushDeviceCookie = new PushDeviceCookie();
         $rateLimiter = new AuthRateLimiter($pdo);
@@ -76,6 +77,7 @@ final class App
         $this->router = new ApiRouter([
             new AddressSearchRoutes($guard, $rateLimiter),
             new SeoRoutes(new SeoSitemapService($pdo)),
+            new PromotionRoutes($promotionService, $guard),
             new AuthRoutes($auth, $guard, $sessionCookie, $pushDeviceCookie, $rateLimiter, $userNotifications),
             new ListingRoutes($marketplace, $profiles, $profileMedia, $favorites, $products, $guard, $userNotifications),
             new ProductRoutes($productService, $products, $productImages, $guard, $userNotifications),

@@ -364,6 +364,20 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-27-marketplace-listing-performance',
+                'file' => dirname(__DIR__) . '/database/migrations/027-marketplace-listing-performance.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => true,
+                'resumable' => true,
+            ],
+            [
+                'version' => 'php-' . $suffix . '-28-site-promotions',
+                'file' => dirname(__DIR__) . '/database/migrations/028-site-promotions.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 

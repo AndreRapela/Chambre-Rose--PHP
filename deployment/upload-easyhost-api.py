@@ -26,6 +26,10 @@ FILES = (
     "database/migrations/025-private-company-verification.pgsql.sql",
     "database/migrations/026-personal-area.mysql.sql",
     "database/migrations/026-personal-area.pgsql.sql",
+    "database/migrations/027-marketplace-listing-performance.mysql.sql",
+    "database/migrations/027-marketplace-listing-performance.pgsql.sql",
+    "database/migrations/028-site-promotions.mysql.sql",
+    "database/migrations/028-site-promotions.pgsql.sql",
     "src/AccountRecovery.php",
     "src/AddressSearchRoutes.php",
     "src/AdminModerationRoutes.php",
@@ -55,13 +59,19 @@ FILES = (
     "src/ProductRepository.php",
     "src/ProductRoutes.php",
     "src/ProductService.php",
+    "src/ProfessionalProfileMapper.php",
     "src/ProfessionalProfileRepository.php",
     "src/ProfessionalProfileSearch.php",
     "src/ProfileMedia.php",
+    "src/PromotionRepository.php",
+    "src/PromotionRoutes.php",
+    "src/PromotionService.php",
     "src/PushNotificationService.php",
     "src/Repositories.php",
     "src/ResponsiveImageProcessor.php",
     "src/ResponsiveImageService.php",
+    "src/ResponsiveImageVariantRepository.php",
+    "src/Response.php",
     "src/SearchPagination.php",
     "src/Seeder.php",
     "src/Services.php",
@@ -70,6 +80,9 @@ FILES = (
     "src/UserNotificationService.php",
     "src/Validator.php",
     "resources/brand/brand-logo.png",
+    "resources/seed-images/carousel-basic-black.jpeg",
+    "resources/seed-images/carousel-pink-lace-tie.jpeg",
+    "resources/seed-images/carousel-pink-ring-thong.jpeg",
 )
 
 
@@ -185,13 +198,26 @@ def replace_file(
 def enable_auto_migrate(environment: bytes) -> bytes:
     text = environment.decode("utf-8")
     updated, replacements = re.subn(
-        r"(?m)^APP_AUTO_MIGRATE\s*=\s*false\s*$",
+        r"(?m)^APP_AUTO_MIGRATE[ \t]*=[ \t]*false[ \t]*$",
         "APP_AUTO_MIGRATE=true",
         text,
         count=1,
     )
-    if replacements == 0 and not re.search(r"(?m)^APP_AUTO_MIGRATE\s*=\s*true\s*$", text):
+    if replacements == 0 and not re.search(r"(?m)^APP_AUTO_MIGRATE[ \t]*=[ \t]*true[ \t]*$", text):
         updated = text.rstrip() + "\nAPP_AUTO_MIGRATE=true\n"
+    return updated.encode("utf-8")
+
+
+def enable_mvp_content_seed(environment: bytes) -> bytes:
+    text = environment.decode("utf-8")
+    updated, replacements = re.subn(
+        r"(?m)^SEED_MVP_CONTENT[ \t]*=[ \t]*(?:false|true)[ \t]*$",
+        "SEED_MVP_CONTENT=true",
+        text,
+        count=1,
+    )
+    if replacements == 0:
+        updated = text.rstrip() + "\nSEED_MVP_CONTENT=true\n"
     return updated.encode("utf-8")
 
 
@@ -209,6 +235,11 @@ def check_health(release: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Publish the API with backups and a health check.")
     parser.add_argument("--skip-migrations", action="store_true", help="Preserve .env unchanged when the release has no new database migrations.")
+    parser.add_argument(
+        "--seed-mvp-content",
+        action="store_true",
+        help="Temporarily enable the idempotent marketplace seed so local demonstration profiles are created in production.",
+    )
     options = parser.parse_args()
     workspace = Path(__file__).resolve().parent.parent
     try:
@@ -246,9 +277,13 @@ def main() -> int:
             original_environment = read_remote(ftp, environment_path)
             if original_environment is None:
                 raise RuntimeError("O .env de producao nao foi encontrado.")
-            migration_environment = original_environment if options.skip_migrations else enable_auto_migrate(original_environment)
+            release_environment = original_environment
+            if not options.skip_migrations or options.seed_mvp_content:
+                release_environment = enable_auto_migrate(release_environment)
+            if options.seed_mvp_content:
+                release_environment = enable_mvp_content_seed(release_environment)
             try:
-                replace_file(ftp, environment_path, migration_environment, release, None)
+                replace_file(ftp, environment_path, release_environment, release, None)
                 check_health(release)
             finally:
                 replace_file(ftp, environment_path, original_environment, release + "-restore", None)
@@ -262,8 +297,9 @@ def main() -> int:
         print(f"Falha no deploy da API: {error}", file=sys.stderr)
         return 1
 
-    migration_status = "migracoes nao solicitadas" if options.skip_migrations else "migracoes pendentes aplicadas"
-    print(f"API publicada: {changed} arquivos alterados; {migration_status}; .env preservado.")
+    migration_status = "migracoes nao solicitadas" if options.skip_migrations and not options.seed_mvp_content else "migracoes pendentes aplicadas"
+    seed_status = "; catalogo MVP verificado" if options.seed_mvp_content else ""
+    print(f"API publicada: {changed} arquivos alterados; {migration_status}{seed_status}; .env preservado.")
     print(f"Backup dos arquivos substituidos: {backup_root}")
     return 0
 
