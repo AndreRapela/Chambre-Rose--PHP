@@ -191,24 +191,39 @@ final class ProductRepository
         return $this->find($id) ?? throw new ApiException(404, 'Product not found.');
     }
 
-    public function registerProfilePurchase(int $profileUserId, int $buyerUserId, ?float $amount): void
+    public function registerProfileSelection(int $profileUserId, int $buyerUserId): bool
     {
         if ($profileUserId === $buyerUserId) {
             throw new ApiException(403, 'You cannot select your own profile.');
         }
         $this->pdo->beginTransaction();
         try {
-            $lock = $this->pdo->prepare('SELECT user_id FROM professional_profiles WHERE user_id=:id FOR UPDATE');
+            $lockSql = 'SELECT user_id FROM professional_profiles WHERE user_id=:id';
+            if (in_array($this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME), ['mysql', 'pgsql'], true)) {
+                $lockSql .= ' FOR UPDATE';
+            }
+            $lock = $this->pdo->prepare($lockSql);
             $lock->execute(['id' => $profileUserId]);
             if ($lock->fetchColumn() === false) {
                 throw new ApiException(404, 'Profile not found.');
             }
+            $existing = $this->pdo->prepare(
+                "SELECT id FROM marketplace_orders WHERE buyer_user_id=:buyer AND profile_user_id=:profile AND order_type='PROFILE' LIMIT 1"
+            );
+            $existing->execute(['buyer' => $buyerUserId, 'profile' => $profileUserId]);
+            if ($existing->fetchColumn() !== false) {
+                $this->pdo->commit();
+
+                return false;
+            }
             $this->pdo->prepare(
-                "INSERT INTO marketplace_orders (buyer_user_id,profile_user_id,order_type,amount,status,created_at) VALUES (:buyer,:profile,'PROFILE',:amount,'COMPLETED',CURRENT_TIMESTAMP)"
-            )->execute(['buyer' => $buyerUserId, 'profile' => $profileUserId, 'amount' => $amount]);
+                "INSERT INTO marketplace_orders (buyer_user_id,profile_user_id,order_type,amount,status,created_at) VALUES (:buyer,:profile,'PROFILE',NULL,'COMPLETED',CURRENT_TIMESTAMP)"
+            )->execute(['buyer' => $buyerUserId, 'profile' => $profileUserId]);
             $this->pdo->prepare('UPDATE professional_profiles SET purchase_count=purchase_count+1,updated_at=CURRENT_TIMESTAMP WHERE user_id=:id')
                 ->execute(['id' => $profileUserId]);
             $this->pdo->commit();
+
+            return true;
         } catch (\Throwable $exception) {
             if ($this->pdo->inTransaction()) {
                 $this->pdo->rollBack();

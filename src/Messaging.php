@@ -431,7 +431,7 @@ final class MessagingRepository
         return array_map(static function (array $row): array {
             $avatarUrl = $row['avatar_id'] === null
                 ? null
-                : '/api/profiles/' . (int) $row['other_id'] . '/media/' . (int) $row['avatar_id'];
+                : '/api/profiles/' . (int) $row['other_id'] . '/media/' . (int) $row['avatar_id'] . '?v=media-v3';
             $lastMessage = $row['last_id'] === null ? null : self::message([
                 'id' => $row['last_id'],
                 'conversation_id' => $row['id'],

@@ -6,8 +6,8 @@ namespace ChambreRose;
 
 final class ListingRoutes implements RouteHandler
 {
-    private const PUBLIC_MEDIA_CACHE = 'public, max-age=31536000, immutable';
-    private const PUBLIC_PROFILE_PHOTO_CACHE = 'public, max-age=3600, stale-while-revalidate=86400';
+    private const PUBLIC_MEDIA_CACHE = 'public, max-age=300, stale-while-revalidate=300';
+    private const PUBLIC_PROFILE_PHOTO_CACHE = 'public, max-age=300, stale-while-revalidate=300';
 
     public function __construct(
         private readonly MarketplaceService $marketplace,
@@ -45,8 +45,12 @@ final class ListingRoutes implements RouteHandler
         }
         if ($method === 'GET' && preg_match('#^/api/listings/(\d+)/gallery$#', $path, $match)) {
             $viewer = $this->guard->optionalCurrentUser($request);
+            $offset = filter_var($request->query['offset'] ?? 0, FILTER_VALIDATE_INT);
+            $limit = filter_var($request->query['limit'] ?? 30, FILTER_VALIDATE_INT);
+            $offset = $offset === false ? 0 : max(0, min(1_000_000, $offset));
+            $limit = $limit === false ? 30 : max(1, min(50, $limit));
             $response = Response::json(
-                $this->marketplace->publicGallery((int) $match[1], $viewer),
+                $this->marketplace->publicGallery((int) $match[1], $viewer, $offset, $limit),
                 200,
                 [
                     'Cache-Control' => $viewer === null
@@ -166,22 +170,21 @@ final class ListingRoutes implements RouteHandler
             throw new ApiException(400, 'Only companion profiles can receive this purchase type.');
         }
         $this->guard->requireJson($request);
-        $body = $request->json();
-        $amount = isset($body['amount']) && is_numeric($body['amount'])
-            ? max(0, (float) $body['amount'])
-            : null;
-        $this->products->registerProfilePurchase($profileId, (int) $user['id'], $amount);
+        $request->json(); // Validate the payload, but never trust a client-supplied ranking amount.
+        $created = $this->products->registerProfileSelection($profileId, (int) $user['id']);
         $buyerName = trim((string) ($user['firstName'] ?? '') . ' ' . (string) ($user['lastName'] ?? ''));
-        $this->notifications->notify(
-            $profileId,
-            UserNotificationService::MARKETPLACE,
-            'PROFILE_SELECTED',
-            '/catalogue/perfil/' . $profileId,
-            null,
-            ['memberName' => $buyerName]
-        );
+        if ($created) {
+            $this->notifications->notify(
+                $profileId,
+                UserNotificationService::MARKETPLACE,
+                'PROFILE_SELECTED',
+                '/catalogue/perfil/' . $profileId,
+                null,
+                ['memberName' => $buyerName]
+            );
+        }
 
-        return ApiResponder::json($this->marketplace->publicProfile($profileId, $user), 201);
+        return ApiResponder::json($this->marketplace->publicProfile($profileId, $user), $created ? 201 : 200);
     }
 
     private function updateListing(Request $request, int $target): Response
@@ -285,49 +288,47 @@ final class ListingRoutes implements RouteHandler
         if ($meta === null) {
             throw new ApiException(404, 'Media not found.');
         }
-        $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $meta['size'] . '|' . $meta['createdAt']);
         $cache = $isPublic ? self::PUBLIC_MEDIA_CACHE : 'private, no-store';
+        $isVideo = $meta['type'] === 'VIDEO';
+        $etag = ApiResponder::etag(
+            $userId . '|' . $mediaId . '|' . $meta['size'] . '|' . $meta['createdAt']
+            . ($isVideo ? '|video' : '|sanitized-photo-v3')
+        );
+        if (ApiResponder::etagMatches($request, $etag)) {
+            return new Response(304, '', [
+                'Cache-Control' => $cache,
+                'ETag' => $etag,
+            ]);
+        }
+
+        if (!$isVideo) {
+            $image = $this->marketplace->responsivePhoto($userId, $mediaId, 1280);
+            $headers = [
+                'Content-Type' => 'image/webp',
+                'Content-Disposition' => 'inline; filename="profile-photo-' . $mediaId . '.webp"',
+                'Cache-Control' => $cache,
+                'ETag' => $etag,
+                'Content-Length' => (string) $image['size'],
+            ];
+
+            return $request->method === 'HEAD'
+                ? new Response(200, '', $headers)
+                : new Response(200, $image['bytes'], $headers);
+        }
+
         $extension = match ($meta['contentType']) {
-            'image/jpeg' => 'jpg',
-            'image/png' => 'png',
-            'image/webp' => 'webp',
             'video/mp4' => 'mp4',
             'video/webm' => 'webm',
             default => 'bin',
         };
-        $kind = $meta['type'] === 'PHOTO' ? 'photo' : 'video';
         $headers = [
             'Content-Type' => (string) $meta['contentType'],
-            'Content-Disposition' => 'inline; filename="profile-' . $kind . '-' . $mediaId . '.' . $extension . '"',
+            'Content-Disposition' => 'inline; filename="profile-video-' . $mediaId . '.' . $extension . '"',
             'Cache-Control' => $cache,
             'ETag' => $etag,
         ];
-        $isVideo = $meta['type'] === 'VIDEO';
-        if ($isVideo) {
-            $headers['Accept-Ranges'] = 'bytes';
-            $headers['X-Accel-Buffering'] = 'no';
-        }
 
-        if (ApiResponder::etagMatches($request, $etag)) {
-            return new Response(304, '', $headers);
-        }
-
-        if ($isVideo) {
-            return $this->videoResponse($request, $userId, $mediaId, (int) $meta['size'], $etag, $headers);
-        }
-
-        if ($request->method === 'HEAD') {
-            return new Response(200, '', ['Content-Length' => (string) $meta['size']] + $headers);
-        }
-
-        $bytes = $this->media->data($userId, $mediaId);
-        if ($bytes === null) {
-            throw new ApiException(404, 'Media not found.');
-        }
-
-        return new Response(200, $bytes, [
-            'Content-Length' => (string) strlen($bytes),
-        ] + $headers);
+        return $this->videoResponse($request, $userId, $mediaId, (int) $meta['size'], $etag, $headers);
     }
 
     /** @param array<string, string> $headers */
@@ -339,6 +340,8 @@ final class ListingRoutes implements RouteHandler
         string $etag,
         array $headers
     ): Response {
+        $headers['Accept-Ranges'] = 'bytes';
+        $headers['X-Accel-Buffering'] = 'no';
         $rangeHeader = $request->header('range');
         $ifRange = trim($request->header('if-range') ?? '');
         if ($ifRange !== '' && !hash_equals($etag, $ifRange)) {
@@ -407,29 +410,25 @@ final class ListingRoutes implements RouteHandler
         if ($photo === null || ($photo['type'] ?? '') !== 'PHOTO') {
             throw new ApiException(404, 'Profile photo not found.');
         }
-        $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $photo['size'] . '|' . $photo['createdAt'] . '|profile-photo');
+        $etag = ApiResponder::etag(
+            $userId . '|' . $mediaId . '|' . $photo['size'] . '|' . $photo['createdAt'] . '|profile-photo-webp-v3'
+        );
         $cache = $this->profilePhotoCache($request, $mediaId, $isPublic);
         $headers = [
-            'Content-Type' => (string) $photo['contentType'],
-            'Content-Disposition' => 'inline; filename="profile-photo-' . $userId . '"',
+            'Content-Type' => 'image/webp',
+            'Content-Disposition' => 'inline; filename="profile-photo-' . $userId . '.webp"',
             'Cache-Control' => $cache,
             'ETag' => $etag,
         ];
         if (ApiResponder::etagMatches($request, $etag)) {
             return new Response(304, '', $headers);
         }
-        if ($request->method === 'HEAD') {
-            return new Response(200, '', ['Content-Length' => (string) $photo['size']] + $headers);
-        }
+        $image = $this->marketplace->responsiveProfilePhoto($userId, $mediaId, 1280);
+        $headers['Content-Length'] = (string) $image['size'];
 
-        $bytes = $this->media->data($userId, $mediaId);
-        if ($bytes === null) {
-            throw new ApiException(404, 'Profile photo not found.');
-        }
-
-        return new Response(200, $bytes, [
-            'Content-Length' => (string) strlen($bytes),
-        ] + $headers);
+        return $request->method === 'HEAD'
+            ? new Response(200, '', $headers)
+            : new Response(200, $image['bytes'], $headers);
     }
 
     private function profilePhotoVariant(Request $request, int $userId, int $width): Response
@@ -478,9 +477,7 @@ final class ListingRoutes implements RouteHandler
             return 'private, no-store';
         }
 
-        return (int) ($request->query['v'] ?? 0) === $mediaId
-            ? self::PUBLIC_MEDIA_CACHE
-            : self::PUBLIC_PROFILE_PHOTO_CACHE;
+        return self::PUBLIC_PROFILE_PHOTO_CACHE;
     }
 
     private function vipMediaPreview(Request $request, int $userId, int $mediaId): Response

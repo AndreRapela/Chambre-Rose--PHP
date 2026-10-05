@@ -112,15 +112,18 @@ final class ProductRoutes implements RouteHandler
         if ($image === null) {
             throw new ApiException(404, 'Product image not found.');
         }
-        $etag = ApiResponder::etag($productId . '|' . $role . '|' . $image['size_bytes'] . '|' . $image['updated_at']);
+        $etag = ApiResponder::etag(
+            $productId . '|' . $role . '|' . $image['size_bytes'] . '|' . $image['updated_at'] . '|sanitized-webp-v2'
+        );
         $cache = 'public, max-age=3600, must-revalidate';
         if (ApiResponder::etagMatches($request, $etag)) {
             return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
         }
 
-        return new Response(200, (string) $image['image_data'], [
-            'Content-Type' => (string) $image['content_type'],
-            'Content-Length' => (string) $image['size_bytes'],
+        $bytes = (new ResponsiveImageProcessor())->sanitize((string) $image['image_data']);
+        return new Response(200, $bytes, [
+            'Content-Type' => 'image/webp',
+            'Content-Length' => (string) strlen($bytes),
             'Content-Disposition' => 'inline',
             'Cache-Control' => $cache,
             'ETag' => $etag,

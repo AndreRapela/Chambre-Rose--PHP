@@ -47,6 +47,41 @@ final class ResponsiveImageVariantRepository
         ];
     }
 
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string}|null */
+    public function findLargestAtOrBelow(string $ownerType, int $ownerId, int $maxWidth, int $minWidth): ?array
+    {
+        $ownerColumn = self::ownerColumn($ownerType);
+        $statement = $this->pdo->prepare(
+            "SELECT width,height,content_type,size_bytes,image_data,source_hash,updated_at
+             FROM responsive_image_variants
+             WHERE {$ownerColumn}=:owner AND width<=:max_width AND width>=:min_width
+             ORDER BY width DESC LIMIT 1"
+        );
+        $statement->execute([
+            'owner' => $ownerId,
+            'max_width' => $maxWidth,
+            'min_width' => $minWidth,
+        ]);
+        $row = $statement->fetch();
+        if (!is_array($row)) {
+            return null;
+        }
+        $bytes = self::lobToString($row['image_data'] ?? null);
+        if ($bytes === null) {
+            return null;
+        }
+
+        return [
+            'width' => (int) $row['width'],
+            'height' => (int) $row['height'],
+            'contentType' => (string) $row['content_type'],
+            'size' => (int) $row['size_bytes'],
+            'bytes' => $bytes,
+            'sourceHash' => (string) $row['source_hash'],
+            'updatedAt' => (string) $row['updated_at'],
+        ];
+    }
+
     /**
      * @param list<array{width: int, height: int, contentType: string, size: int, bytes: string}> $variants
      */

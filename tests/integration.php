@@ -10,6 +10,7 @@ use ChambreRose\AuthRateLimiter;
 use ChambreRose\Config;
 use ChambreRose\Database;
 use ChambreRose\Jwt;
+use ChambreRose\ResponsiveImageService;
 use ChambreRose\Tests\IntegrationDataCleanup;
 
 $base = rtrim(getenv('TEST_API_URL') ?: 'http://localhost:8080', '/');
@@ -284,7 +285,7 @@ $assert(
     'Visitor registration must remain signed out while awaiting the 48-hour administrator review.'
 );
 [$duplicateEmailStatus, $duplicateEmail] = $request('POST', '/api/auth/check-registration-email', ['email' => strtoupper($cleanup->email('visitor'))]);
-$assert($duplicateEmailStatus === 409 && str_contains($duplicateEmail['fields']['email'] ?? '', 'already registered'), 'Existing emails must be reported as duplicates before account-type selection, regardless of case.');
+$assert($duplicateEmailStatus === 200 && ($duplicateEmail['available'] ?? false) === true, 'Registration email preflight must not reveal whether an account exists.');
 $visitorRegistrationEmail = Database::connection()->prepare(
     'SELECT delivery_status, body FROM email_outbox WHERE recipient = :recipient AND template = :template ORDER BY id DESC LIMIT 1'
 );
@@ -738,17 +739,29 @@ if ($adminPassword !== '') {
     );
     preg_match('/\s(\d{3})\s/', $http_response_header[0] ?? '', $productVariantStatusMatch);
     $productVariantDimensions = is_string($productVariant) ? getimagesizefromstring($productVariant) : false;
+    $productImageCheck = [
+        'updateStatus' => (int) ($productUpdateStatusMatch[1] ?? 0),
+        'imageUrl' => $responsiveProduct['imageUrl'] ?? null,
+        'imageSrcSet' => $responsiveProduct['imageSrcSet'] ?? null,
+        'variantStatus' => (int) ($productVariantStatusMatch[1] ?? 0),
+        'variantBytes' => is_string($productVariant) ? strlen($productVariant) : null,
+        'variantMime' => is_string($productVariant) ? (new finfo(FILEINFO_MIME_TYPE))->buffer($productVariant) : null,
+        'variantDimensions' => is_array($productVariantDimensions) ? $productVariantDimensions[0] : null,
+    ];
     $assert(
         (int) ($productUpdateStatusMatch[1] ?? 0) === 200
-        && ($responsiveProduct['imageUrl'] ?? '') === "/api/products/{$productId}/images/main"
-        && ($responsiveProduct['imageSrcSet'] ?? '') === "/api/products/{$productId}/images/main/320.webp 320w"
+        && parse_url((string) ($responsiveProduct['imageUrl'] ?? ''), PHP_URL_PATH) === "/api/products/{$productId}/images/main"
+        && ($responsiveProduct['imageSrcSet'] ?? '') === ResponsiveImageService::srcSet(
+            (string) ($responsiveProduct['imageUrl'] ?? ''),
+            [320]
+        )
         && (int) ($productVariantStatusMatch[1] ?? 0) === 200
         && is_string($productVariant)
         && str_starts_with($productVariant, 'RIFF')
         && substr($productVariant, 8, 4) === 'WEBP'
         && is_array($productVariantDimensions)
         && (int) $productVariantDimensions[0] === 320,
-        'Uploaded product photos must expose and serve responsive WebP variants.'
+        'Uploaded product photos must expose and serve responsive WebP variants. ' . json_encode($productImageCheck, JSON_UNESCAPED_SLASHES)
     );
     [$productPurchaseStatus, $purchasedProduct] = $request(
         'POST',
@@ -801,7 +814,7 @@ if ($adminPassword !== '') {
     $assert(
         $adminProfileStatus === 200
         && $mediaId > 0
-        && str_contains((string) ($adminProfile['media'][0]['srcSet'] ?? ''), "/api/profiles/{$id}/media/{$mediaId}/320.webp 320w")
+        && str_contains((string) ($adminProfile['media'][0]['srcSet'] ?? ''), "/api/profiles/{$id}/media/{$mediaId}/320.webp?v=media-v3 320w")
         && ($adminProfile['birthDate'] ?? null) === '1995-05-12',
         'Admin must see complete profile data and responsive media while reviewing a pending account.'
     );
@@ -846,7 +859,7 @@ if ($adminPassword !== '') {
         && (float) ($listing['priceNight'] ?? 0) === 250.0
         && ($listing['priceWeekend'] ?? null) === null
         && ($listing['hasContactEmail'] ?? false) === true
-        && ($listing['media'][0]['srcSet'] ?? '') === "/api/profiles/{$id}/media/{$mediaId}/320.webp 320w"
+        && ($listing['media'][0]['srcSet'] ?? '') === "/api/profiles/{$id}/media/{$mediaId}/320.webp?v=media-v3 320w"
         && !array_key_exists('fileName', $listing['media'][0] ?? []),
         'Approved listings must expose responsive media and contact availability while withholding private fields.'
     );
@@ -1026,11 +1039,11 @@ if ($adminPassword !== '') {
         (int) ($approvedMediaStatusMatch[1] ?? 0) === 200
         && is_string($approvedMedia)
         && $approvedMedia !== ''
-        && $cacheControlHeader === 'private, no-store'
+        && $cacheControlHeader === 'public, max-age=300, stale-while-revalidate=300'
         && is_string($contentDispositionHeader)
-        && str_contains($contentDispositionHeader, "profile-photo-{$mediaId}.png")
+        && str_contains($contentDispositionHeader, "profile-photo-{$mediaId}.webp")
         && !str_contains($contentDispositionHeader, 'profile.png'),
-        'Profile media must avoid caches and original file names.'
+        'Public profile media must use the shared responsive cache and omit original upload names.'
     );
 
     $variantContext = stream_context_create(['http' => [
@@ -1054,8 +1067,18 @@ if ($adminPassword !== '') {
     }
     $responsiveDimensions = is_string($responsiveMedia) ? getimagesizefromstring($responsiveMedia) : false;
     $storedVariantStatement = Database::connection()->prepare(
-        'SELECT COUNT(*) FROM responsive_image_variants WHERE profile_media_id=:media'
+        'SELECT COUNT(*) FROM responsive_image_variants WHERE profile_media_id=:media AND width=320'
     );
+    $storedVariantStatement->execute(['media' => $mediaId]);
+    $responsivePhotoCheck = [
+        'status' => (int) ($responsiveStatusMatch[1] ?? 0),
+        'bytes' => is_string($responsiveMedia) ? strlen($responsiveMedia) : null,
+        'mime' => is_string($responsiveMedia) ? (new finfo(FILEINFO_MIME_TYPE))->buffer($responsiveMedia) : null,
+        'width' => is_array($responsiveDimensions) ? $responsiveDimensions[0] : null,
+        'contentType' => $responsiveHeaderMap['content-type'] ?? null,
+        'cacheControl' => $responsiveHeaderMap['cache-control'] ?? null,
+        'storedVariants' => (int) $storedVariantStatement->fetchColumn(),
+    ];
     $storedVariantStatement->execute(['media' => $mediaId]);
     $assert(
         (int) ($responsiveStatusMatch[1] ?? 0) === 200
@@ -1065,9 +1088,9 @@ if ($adminPassword !== '') {
         && is_array($responsiveDimensions)
         && (int) $responsiveDimensions[0] === 320
         && ($responsiveHeaderMap['content-type'] ?? '') === 'image/webp'
-        && ($responsiveHeaderMap['cache-control'] ?? '') === 'public, max-age=31536000, immutable'
+        && ($responsiveHeaderMap['cache-control'] ?? '') === 'public, max-age=300, stale-while-revalidate=300'
         && (int) $storedVariantStatement->fetchColumn() === 1,
-        'Approved profile photos must serve only cached WebP variants that do not upscale the source.'
+        'Approved profile photos must serve only cached WebP variants that do not upscale the source. ' . json_encode($responsivePhotoCheck, JSON_UNESCAPED_SLASHES)
     );
 
     $videoFixture = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -1104,6 +1127,12 @@ if ($adminPassword !== '') {
         "/api/profiles/{$id}/media/{$videoId}",
         ['Range: bytes=5-12']
     );
+    $videoRangeCheck = [
+        'status' => $rangeStatus,
+        'body' => $rangeBody,
+        'headers' => $rangeHeaders,
+        'expectedBody' => substr($videoFixture, 5, 8),
+    ];
     $assert(
         $videoId > 0
         && $rangeStatus === 206
@@ -1111,7 +1140,7 @@ if ($adminPassword !== '') {
         && ($rangeHeaders['accept-ranges'] ?? null) === 'bytes'
         && ($rangeHeaders['content-range'] ?? null) === 'bytes 5-12/' . strlen($videoFixture)
         && ($rangeHeaders['content-length'] ?? null) === '8',
-        'Video requests must return only the requested bytes with complete 206 metadata.'
+        'Video requests must return only the requested bytes with complete 206 metadata. ' . json_encode($videoRangeCheck, JSON_UNESCAPED_SLASHES)
     );
     [$headStatus, $headBody, $headHeaders] = $binaryRequest(
         'HEAD',
@@ -1216,13 +1245,24 @@ if ($adminPassword !== '') {
         && count($lockedPhotos) >= 2
         && (int) ($lockedPhotos[0]['id'] ?? 0) === $mediaId
         && ($lockedPhotos[0]['locked'] ?? false) === true
-        && ($lockedPhotos[0]['url'] ?? null) === "/api/profiles/{$id}/media/{$mediaId}/vip-preview.webp"
-        && ($lockedMediaProfile['profileImageUrl'] ?? null) === "/api/profiles/{$id}/profile-photo?v={$mediaId}"
+        && ($lockedPhotos[0]['url'] ?? null) === "/api/profiles/{$id}/media/{$mediaId}/vip-preview.webp?v=media-v3"
+        && ($lockedMediaProfile['profileImageUrl'] ?? null) === "/api/profiles/{$id}/profile-photo?v=media-v3-{$mediaId}"
         && count($lockedPreview) === 1
         && ($lockedPreview[0]['locked'] ?? false) === true
-        && ($lockedPreview[0]['url'] ?? null) === "/api/profiles/{$id}/media/{$additionalPhotoId}/vip-preview.webp"
+        && ($lockedPreview[0]['url'] ?? null) === "/api/profiles/{$id}/media/{$additionalPhotoId}/vip-preview.webp?v=media-v3"
         && !array_key_exists('srcSet', $lockedPreview[0]),
-        'A non-VIP visitor must receive the separate public profile photo and protected previews for every gallery photo.'
+        'A non-VIP visitor must receive the separate public profile photo and protected previews for every gallery photo. '
+        . json_encode([
+            'vipStatus' => $escortVipStatus,
+            'profileStatus' => $lockedMediaStatus,
+            'mediaLocked' => $lockedMediaProfile['mediaLocked'] ?? null,
+            'lockedMediaCount' => $lockedMediaProfile['lockedMediaCount'] ?? null,
+            'photoIds' => array_map(static fn (array $photo): mixed => $photo['id'] ?? null, $lockedPhotos),
+            'photoUrls' => array_map(static fn (array $photo): mixed => $photo['url'] ?? null, $lockedPhotos),
+            'profileImageUrl' => $lockedMediaProfile['profileImageUrl'] ?? null,
+            'expectedMediaId' => $mediaId,
+            'expectedAdditionalPhotoId' => $additionalPhotoId,
+        ], JSON_UNESCAPED_SLASHES)
     );
     [$profilePhotoStatus, $profilePhotoBytes] = $binaryRequest(
         'GET',
@@ -1264,7 +1304,7 @@ if ($adminPassword !== '') {
         && is_array($vipPreviewDimensions)
         && (int) $vipPreviewDimensions[0] <= 160
         && ($vipPreviewHeaders['content-type'] ?? '') === 'image/webp'
-        && ($vipPreviewHeaders['cache-control'] ?? '') === 'public, max-age=31536000, immutable',
+        && ($vipPreviewHeaders['cache-control'] ?? '') === 'public, max-age=300, stale-while-revalidate=300',
         'The public profile photo must remain visible through its own path while every gallery original stays behind a safe blurred VIP preview.'
     );
     [$appointmentCreateStatus, $appointment] = $request('POST', '/api/calendar/appointments', [
@@ -1388,16 +1428,34 @@ if ($adminPassword !== '') {
     [$selectionStatus, $selectedProfile] = $request(
         'POST',
         "/api/listings/{$id}/purchases",
-        ['amount' => null],
+        ['amount' => 999999],
+        $visitorCookie
+    );
+    [$duplicateSelectionStatus, $duplicateSelectedProfile] = $request(
+        'POST',
+        "/api/listings/{$id}/purchases",
+        ['amount' => 999999],
         $visitorCookie
     );
     $viewsStatement->execute(['id' => $id]);
     $viewsAfterSelection = (int) $viewsStatement->fetchColumn();
+    $selectionOrderCount = Database::connection()->prepare(
+        "SELECT COUNT(*) FROM marketplace_orders WHERE buyer_user_id=:buyer AND profile_user_id=:profile AND order_type='PROFILE'"
+    );
+    $selectionOrderCount->execute(['buyer' => $visitorId, 'profile' => $id]);
+    $selectionAmount = Database::connection()->prepare(
+        "SELECT amount FROM marketplace_orders WHERE buyer_user_id=:buyer AND profile_user_id=:profile AND order_type='PROFILE' LIMIT 1"
+    );
+    $selectionAmount->execute(['buyer' => $visitorId, 'profile' => $id]);
     $assert(
         $selectionStatus === 201
         && (int) ($selectedProfile['starCount'] ?? -1) === $starsBeforeSelection + 1
+        && $duplicateSelectionStatus === 200
+        && (int) ($duplicateSelectedProfile['starCount'] ?? -1) === (int) ($selectedProfile['starCount'] ?? -2)
+        && (int) $selectionOrderCount->fetchColumn() === 1
+        && $selectionAmount->fetchColumn() === null
         && !array_key_exists('rating', $selectedProfile),
-        'A completed VIP selection must add one star count without exposing a score.'
+        'A VIP profile selection must ignore client amounts, stay idempotent and add exactly one star count without exposing a score.'
     );
     $assert(
         $viewsAfterSelection === $viewsBeforeSelection,

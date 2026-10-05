@@ -63,7 +63,8 @@ final class ProductService
             if ($file !== null && !$file->isEmpty()) {
                 $this->images->put((int) $product['id'], $role, $file);
                 $field = $role === 'MAIN' ? 'imageUrl' : 'secondaryImageUrl';
-                $data[$field] = '/api/products/' . $product['id'] . '/images/' . strtolower($role);
+                $version = bin2hex(random_bytes(12));
+                $data[$field] = '/api/products/' . $product['id'] . '/images/' . strtolower($role) . '?v=' . $version;
             }
         }
         if (($data['imageUrl'] ?? '') !== $product['imageUrl'] || ($data['secondaryImageUrl'] ?? null) !== $product['secondaryImageUrl']) {

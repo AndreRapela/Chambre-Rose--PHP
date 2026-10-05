@@ -45,7 +45,7 @@ jobs:
       RATE_LIMIT_SECRET: integration-rate-limit-secret-with-more-than-thirty-two-characters
       AUTH_COOKIE_SECURE: 'false'
       MAIL_TRANSPORT: log
-      SEED_DEMO_USERS: 'false'
+      SEED_DEMO_USERS: 'true'
       SEED_MVP_CONTENT: 'false'
       SEED_ADMIN_EMAIL: integration-admin@chambre-rose.test
       SEED_ADMIN_PASSWORD: Integration9!Admin

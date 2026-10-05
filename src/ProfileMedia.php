@@ -13,12 +13,60 @@ final class ProfileMediaRepository
     }
 
     /** @return list<array<string, mixed>> */
-    public function listFor(int $userId, bool $public = false): array
+    public function listFor(
+        int $userId,
+        bool $public = false,
+        ?string $type = null,
+        ?int $limit = null,
+        int $offset = 0
+    ): array
     {
-        $statement = $this->pdo->prepare('SELECT id, user_id, media_type, file_name, content_type, size_bytes, position, created_at FROM profile_media WHERE user_id=:id ORDER BY media_type, position, id');
-        $statement->execute(['id' => $userId]);
+        if ($type !== null && !in_array($type, ['PHOTO', 'VIDEO'], true)) {
+            throw new \InvalidArgumentException('Unsupported profile media type.');
+        }
+        $whereType = $type === null ? '' : ' AND media_type=:type';
+        $pagination = $limit === null ? '' : ' LIMIT :limit OFFSET :offset';
+        $statement = $this->pdo->prepare(
+            'SELECT id, user_id, media_type, file_name, content_type, size_bytes, position, created_at'
+            . ' FROM profile_media WHERE user_id=:id' . $whereType
+            . ' ORDER BY media_type, position, id' . $pagination
+        );
+        $statement->bindValue(':id', $userId, PDO::PARAM_INT);
+        if ($type !== null) {
+            $statement->bindValue(':type', $type);
+        }
+        if ($limit !== null) {
+            $statement->bindValue(':limit', max(1, min(50, $limit)), PDO::PARAM_INT);
+            $statement->bindValue(':offset', max(0, $offset), PDO::PARAM_INT);
+        }
+        $statement->execute();
 
         return $this->mapRows($statement->fetchAll(), $public);
+    }
+
+    public function countAll(int $userId): int
+    {
+        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM profile_media WHERE user_id=:id');
+        $statement->execute(['id' => $userId]);
+
+        return (int) $statement->fetchColumn();
+    }
+
+    /** @return array{PHOTO:int,VIDEO:int} */
+    public function countTypes(int $userId): array
+    {
+        $counts = ['PHOTO' => 0, 'VIDEO' => 0];
+        $statement = $this->pdo->prepare(
+            'SELECT media_type,COUNT(*) AS media_count FROM profile_media WHERE user_id=:id GROUP BY media_type'
+        );
+        $statement->execute(['id' => $userId]);
+        foreach ($statement->fetchAll() as $row) {
+            if (isset($counts[$row['media_type']])) {
+                $counts[$row['media_type']] = (int) $row['media_count'];
+            }
+        }
+
+        return $counts;
     }
 
     /**
@@ -72,13 +120,13 @@ final class ProfileMediaRepository
 
         $mediaUrl = (string) ($photo['url'] ?? '');
         $profileBaseUrl = '/api/profiles/' . $userId . '/profile-photo';
-        $profileUrl = $profileBaseUrl . '?v=' . (int) $photo['id'];
+        $profileUrl = $profileBaseUrl . '?v=media-v3-' . (int) $photo['id'];
         $photo['url'] = $profileUrl;
         if ($mediaUrl !== '' && isset($photo['srcSet']) && is_string($photo['srcSet'])) {
-            preg_match_all('/\/(320|640|960|1280)\.webp\s+\1w/', $photo['srcSet'], $matches);
+            preg_match_all('/\/(320|640|960|1280)\.webp(?:\?[^ ]*)?\s+\1w/', $photo['srcSet'], $matches);
             $widths = array_values(array_unique(array_map('intval', $matches[1])));
             $photo['srcSet'] = implode(', ', array_map(
-                static fn (int $width): string => $profileBaseUrl . '/' . $width . '.webp?v=' . (int) $photo['id'] . ' ' . $width . 'w',
+                static fn (int $width): string => $profileBaseUrl . '/' . $width . '.webp?v=media-v3-' . (int) $photo['id'] . ' ' . $width . 'w',
                 $widths
             ));
         }
@@ -313,13 +361,24 @@ final class ProfileMediaRepository
      */
     private static function map(array $row, bool $public = false, array $responsiveWidths = []): array
     {
-        $url = '/api/profiles/' . (int) $row['user_id'] . '/media/' . (int) $row['id'];
+        $url = '/api/profiles/' . (int) $row['user_id'] . '/media/' . (int) $row['id'] . '?v=media-v3';
         $media = ['id' => (int)$row['id'],'userId' => (int)$row['user_id'],'type' => (string)$row['media_type'],
             'fileName' => (string)$row['file_name'],'contentType' => (string)$row['content_type'],'size' => (int)$row['size_bytes'],
             'position' => (int)$row['position'],'url' => $url,
             'createdAt' => (string)$row['created_at']];
-        if ($media['type'] === 'PHOTO' && $responsiveWidths !== []) {
-            $media['srcSet'] = ResponsiveImageService::srcSet($url, $responsiveWidths);
+        if ($media['type'] === 'PHOTO') {
+            $availableResponsiveWidths = array_values(array_filter(
+                $responsiveWidths,
+                static fn (int $width): bool => in_array($width, ResponsiveImageProcessor::WIDTHS, true)
+            ));
+            // Older photos predate stored WebP variants. Advertise the standard
+            // widths so the image endpoint can generate/cache one on first use
+            // instead of making the browser download the original upload.
+            $widthsForSrcSet = $responsiveWidths === [] ? null : $availableResponsiveWidths;
+            $srcSet = ResponsiveImageService::srcSet($url, $widthsForSrcSet);
+            if ($srcSet !== '') {
+                $media['srcSet'] = $srcSet;
+            }
         }
         if ($public) {
             unset($media['fileName']);

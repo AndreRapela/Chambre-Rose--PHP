@@ -6,6 +6,9 @@ namespace ChambreRose;
 
 final class ResponsiveImageService
 {
+    public const VIP_PREVIEW_WIDTH = 160;
+    private const PROCESSING_VERSION = 'webp-sanitized-v2';
+
     public function __construct(
         private readonly ResponsiveImageProcessor $processor,
         private readonly ResponsiveImageVariantRepository $variants
@@ -18,6 +21,11 @@ final class ResponsiveImageService
         return $this->processor->generate($sourceBytes);
     }
 
+    public function sanitize(string $sourceBytes): string
+    {
+        return $this->processor->sanitize($sourceBytes);
+    }
+
     /**
      * @param list<array{width: int, height: int, contentType: string, size: int, bytes: string}> $prepared
      */
@@ -27,27 +35,93 @@ final class ResponsiveImageService
         string $sourceBytes,
         array $prepared
     ): void {
-        $this->variants->replace($ownerType, $ownerId, hash('sha256', $sourceBytes), $prepared);
+        $this->variants->replace($ownerType, $ownerId, self::sourceHash($sourceBytes), $prepared);
     }
 
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string} */
-    public function variant(string $ownerType, int $ownerId, string $sourceBytes, int $width): array
+    public function variant(
+        string $ownerType,
+        int $ownerId,
+        string $sourceBytes,
+        int $width,
+        bool $allowSmaller = false
+    ): array
     {
         self::assertSupportedWidth($width);
-        $sourceHash = hash('sha256', $sourceBytes);
+        $sourceHash = self::sourceHash($sourceBytes);
         $cached = $this->variants->find($ownerType, $ownerId, $width, $sourceHash);
         if ($cached !== null) {
             return $cached;
         }
 
-        $generated = $this->processor->generate($sourceBytes, [$width]);
+        if ($allowSmaller) {
+            $largestCached = $this->variants->findLargestAtOrBelow(
+                $ownerType,
+                $ownerId,
+                $width,
+                min(ResponsiveImageProcessor::WIDTHS)
+            );
+            if ($largestCached !== null) {
+                return $largestCached;
+            }
+        }
+
+        $sanitizedBytes = $this->processor->sanitize($sourceBytes);
+        $generated = $this->processor->generate($sanitizedBytes, [$width]);
         if ($generated === []) {
-            throw new ApiException(404, 'Responsive image size is larger than the source image.');
+            if (!$allowSmaller) {
+                throw new ApiException(404, 'Responsive image size is larger than the source image.');
+            }
+
+            // Legacy uploads have no derivatives yet. Generate all supported
+            // widths once and serve the largest non-upscaled candidate when
+            // the browser asks for a width larger than the source can provide.
+            $generated = $this->processor->generate($sanitizedBytes);
+            $available = array_values(array_filter(
+                $generated,
+                static fn (array $variant): bool => $variant['width'] <= $width
+            ));
+            if ($available === []) {
+                return $this->originalImageFallback($sourceBytes, $sourceHash);
+            }
+            $this->variants->save($ownerType, $ownerId, $sourceHash, $generated);
+            $actualWidth = max(array_column($available, 'width'));
+
+            return $this->variants->find($ownerType, $ownerId, $actualWidth, $sourceHash)
+                ?? throw new ApiException(503, 'Unable to cache the responsive image.');
         }
         $this->variants->save($ownerType, $ownerId, $sourceHash, $generated);
 
         return $this->variants->find($ownerType, $ownerId, $width, $sourceHash)
             ?? throw new ApiException(503, 'Unable to cache the responsive image.');
+    }
+
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string}|null */
+    public function cachedVipPreview(string $ownerType, int $ownerId): ?array
+    {
+        return $this->variants->find($ownerType, $ownerId, self::VIP_PREVIEW_WIDTH);
+    }
+
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string} */
+    public function prepareVipPreview(string $sourceBytes): array
+    {
+        return $this->processor->blurredPreview($sourceBytes);
+    }
+
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string} */
+    public function vipPreview(string $ownerType, int $ownerId, string $sourceBytes): array
+    {
+        $sourceHash = self::sourceHash($sourceBytes);
+        $cached = $this->variants->find($ownerType, $ownerId, self::VIP_PREVIEW_WIDTH, $sourceHash);
+        if ($cached !== null) {
+            return $cached;
+        }
+
+        $preview = $this->prepareVipPreview($sourceBytes);
+        $this->variants->save($ownerType, $ownerId, $sourceHash, [$preview]);
+
+        return $this->variants->find($ownerType, $ownerId, self::VIP_PREVIEW_WIDTH, $sourceHash)
+            ?? throw new ApiException(503, 'Unable to cache the VIP photo preview.');
     }
 
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string}|null */
@@ -58,11 +132,24 @@ final class ResponsiveImageService
         return $this->variants->find($ownerType, $ownerId, $width);
     }
 
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string}|null */
+    public function cachedVariantAtOrBelow(string $ownerType, int $ownerId, int $width): ?array
+    {
+        self::assertSupportedWidth($width);
+
+        return $this->variants->findLargestAtOrBelow(
+            $ownerType,
+            $ownerId,
+            $width,
+            min(ResponsiveImageProcessor::WIDTHS)
+        );
+    }
+
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string} */
     public function blurredPreview(string $sourceBytes): array
     {
         return $this->processor->blurredPreview($sourceBytes) + [
-            'sourceHash' => hash('sha256', $sourceBytes),
+            'sourceHash' => self::sourceHash($sourceBytes),
         ];
     }
 
@@ -76,8 +163,11 @@ final class ResponsiveImageService
         ));
         sort($availableWidths, SORT_NUMERIC);
 
+        [$path, $query] = array_pad(explode('?', $baseUrl, 2), 2, '');
+        $suffix = $query === '' ? '' : '?' . $query;
+
         return implode(', ', array_map(
-            static fn (int $width): string => $baseUrl . '/' . $width . '.webp ' . $width . 'w',
+            static fn (int $width): string => $path . '/' . $width . '.webp' . $suffix . ' ' . $width . 'w',
             $availableWidths
         ));
     }
@@ -87,5 +177,30 @@ final class ResponsiveImageService
         if (!in_array($width, ResponsiveImageProcessor::WIDTHS, true)) {
             throw new ApiException(404, 'Responsive image size not found.');
         }
+    }
+
+    private static function sourceHash(string $sourceBytes): string
+    {
+        return hash('sha256', self::PROCESSING_VERSION . "\0" . $sourceBytes);
+    }
+
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string} */
+    private function originalImageFallback(string $sourceBytes, string $sourceHash): array
+    {
+        $sanitizedBytes = $this->processor->sanitize($sourceBytes);
+        $dimensions = @getimagesizefromstring($sanitizedBytes);
+        if (!is_array($dimensions) || strtolower((string) $dimensions['mime']) !== 'image/webp') {
+            throw new ApiException(404, 'Responsive image size is larger than the source image.');
+        }
+
+        return [
+            'width' => (int) $dimensions[0],
+            'height' => (int) $dimensions[1],
+            'contentType' => 'image/webp',
+            'size' => strlen($sanitizedBytes),
+            'bytes' => $sanitizedBytes,
+            'sourceHash' => $sourceHash,
+            'updatedAt' => '',
+        ];
     }
 }

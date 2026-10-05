@@ -121,6 +121,53 @@ final class ResponsiveImageProcessor
         return $variants;
     }
 
+    /**
+     * Re-encodes the canonical upload as WebP, removing EXIF and other embedded
+     * metadata before the original is persisted or served publicly.
+     */
+    public function sanitize(string $sourceBytes): string
+    {
+        if (!function_exists('imagecreatefromstring') || !function_exists('imagewebp')) {
+            throw new ApiException(503, 'Image sanitization is unavailable.');
+        }
+
+        $dimensions = @getimagesizefromstring($sourceBytes);
+        if (!is_array($dimensions)) {
+            throw new ApiException(400, 'The uploaded image is invalid or corrupted.');
+        }
+        $sourceWidth = (int) $dimensions[0];
+        $sourceHeight = (int) $dimensions[1];
+        self::assertSupportedDimensions($sourceWidth, $sourceHeight);
+
+        $source = @imagecreatefromstring($sourceBytes);
+        if (!$source instanceof GdImage) {
+            throw new ApiException(400, 'The uploaded image could not be decoded.');
+        }
+
+        try {
+            if (strtolower((string) $dimensions['mime']) === 'image/jpeg') {
+                $source = self::applyExifOrientation($source, self::jpegExifOrientation($sourceBytes));
+            }
+            imagealphablending($source, false);
+            imagesavealpha($source, true);
+
+            ob_start();
+            try {
+                $encoded = imagewebp($source, null, 82);
+                $bytes = ob_get_contents();
+            } finally {
+                ob_end_clean();
+            }
+            if (!$encoded || !is_string($bytes) || $bytes === '') {
+                throw new ApiException(503, 'Unable to sanitize the uploaded image.');
+            }
+
+            return $bytes;
+        } finally {
+            unset($source);
+        }
+    }
+
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string} */
     public function blurredPreview(string $sourceBytes): array
     {
@@ -130,6 +177,8 @@ final class ResponsiveImageProcessor
         ) {
             throw new ApiException(503, 'VIP image preview processing is unavailable.');
         }
+
+        $sourceBytes = $this->sanitize($sourceBytes);
 
         $dimensions = @getimagesizefromstring($sourceBytes);
         if (!is_array($dimensions)) {
@@ -201,5 +250,164 @@ final class ResponsiveImageProcessor
         } finally {
             unset($target, $source);
         }
+    }
+
+    private static function assertSupportedDimensions(int $width, int $height): void
+    {
+        if ($width < 1 || $height < 1 || $width * $height > self::MAX_PIXELS) {
+            throw new ApiException(413, 'The image dimensions are too large.');
+        }
+        if (max($width / $height, $height / $width) > self::MAX_ASPECT_RATIO) {
+            throw new ApiException(413, 'The image aspect ratio is too large for responsive processing.');
+        }
+    }
+
+    private static function applyExifOrientation(GdImage $image, int $orientation): GdImage
+    {
+        $rotation = match ($orientation) {
+            3, 4 => 180,
+            5, 6 => 270,
+            7, 8 => 90,
+            default => 0,
+        };
+        if ($rotation !== 0) {
+            $transparent = imagecolorallocatealpha($image, 0, 0, 0, 127);
+            $rotated = @imagerotate($image, $rotation, $transparent);
+            if ($rotated instanceof GdImage) {
+                unset($image);
+                $image = $rotated;
+                imagealphablending($image, false);
+                imagesavealpha($image, true);
+            }
+        }
+
+        $flip = match ($orientation) {
+            2, 5, 7 => IMG_FLIP_HORIZONTAL,
+            4 => IMG_FLIP_VERTICAL,
+            default => null,
+        };
+        if ($flip !== null) {
+            imageflip($image, $flip);
+        }
+
+        return $image;
+    }
+
+    private static function jpegExifOrientation(string $bytes): int
+    {
+        if (!str_starts_with($bytes, "\xFF\xD8")) {
+            return 1;
+        }
+
+        $length = strlen($bytes);
+        for ($offset = 2; $offset + 4 <= $length;) {
+            if (ord($bytes[$offset]) !== 0xFF) {
+                break;
+            }
+            while ($offset < $length && ord($bytes[$offset]) === 0xFF) {
+                $offset++;
+            }
+            if ($offset >= $length) {
+                break;
+            }
+
+            $marker = ord($bytes[$offset++]);
+            if ($marker === 0xDA || $marker === 0xD9) {
+                break;
+            }
+            if ($marker === 0x01 || ($marker >= 0xD0 && $marker <= 0xD7)) {
+                continue;
+            }
+            if ($offset + 2 > $length) {
+                break;
+            }
+
+            $segmentLength = unpack('n', substr($bytes, $offset, 2))[1] ?? 0;
+            if ($segmentLength < 2 || $offset + $segmentLength > $length) {
+                break;
+            }
+            if ($marker === 0xE1) {
+                $orientation = self::orientationFromExifSegment(
+                    substr($bytes, $offset + 2, $segmentLength - 2)
+                );
+                if ($orientation !== null) {
+                    return $orientation;
+                }
+            }
+            $offset += $segmentLength;
+        }
+
+        return 1;
+    }
+
+    private static function orientationFromExifSegment(string $segment): ?int
+    {
+        if (!str_starts_with($segment, "Exif\0\0")) {
+            return null;
+        }
+        $tiffStart = 6;
+        $byteOrder = substr($segment, $tiffStart, 2);
+        if (!in_array($byteOrder, ['II', 'MM'], true)) {
+            return null;
+        }
+        $littleEndian = $byteOrder === 'II';
+        if (self::readTiffUInt16($segment, $tiffStart + 2, $littleEndian) !== 42) {
+            return null;
+        }
+        $ifdOffset = self::readTiffUInt32($segment, $tiffStart + 4, $littleEndian);
+        if ($ifdOffset === null) {
+            return null;
+        }
+        $ifd = $tiffStart + $ifdOffset;
+        $entryCount = self::readTiffUInt16($segment, $ifd, $littleEndian);
+        if ($entryCount === null) {
+            return null;
+        }
+
+        for ($index = 0; $index < $entryCount; $index++) {
+            $entry = $ifd + 2 + ($index * 12);
+            $tag = self::readTiffUInt16($segment, $entry, $littleEndian);
+            if ($tag !== 0x0112) {
+                continue;
+            }
+            $type = self::readTiffUInt16($segment, $entry + 2, $littleEndian);
+            $count = self::readTiffUInt32($segment, $entry + 4, $littleEndian);
+            if ($type !== 3 || $count === null || $count < 1) {
+                return null;
+            }
+            $valueOffset = $entry + 8;
+            if ($count !== 1) {
+                $relativeValueOffset = self::readTiffUInt32($segment, $entry + 8, $littleEndian);
+                if ($relativeValueOffset === null || $relativeValueOffset > strlen($segment) - $tiffStart) {
+                    return null;
+                }
+                $valueOffset = $tiffStart + $relativeValueOffset;
+            }
+            $orientation = self::readTiffUInt16($segment, $valueOffset, $littleEndian);
+
+            return $orientation !== null && $orientation >= 1 && $orientation <= 8
+                ? $orientation
+                : null;
+        }
+
+        return null;
+    }
+
+    private static function readTiffUInt16(string $bytes, int $offset, bool $littleEndian): ?int
+    {
+        if ($offset < 0 || $offset + 2 > strlen($bytes)) {
+            return null;
+        }
+
+        return unpack($littleEndian ? 'v' : 'n', substr($bytes, $offset, 2))[1] ?? null;
+    }
+
+    private static function readTiffUInt32(string $bytes, int $offset, bool $littleEndian): ?int
+    {
+        if ($offset < 0 || $offset + 4 > strlen($bytes)) {
+            return null;
+        }
+
+        return unpack($littleEndian ? 'V' : 'N', substr($bytes, $offset, 4))[1] ?? null;
     }
 }

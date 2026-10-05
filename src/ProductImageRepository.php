@@ -31,6 +31,12 @@ final class ProductImageRepository
             throw new ApiException(413, 'A product image cannot exceed 8 MB.');
         }
         $bytes = $file->bytes();
+        $bytes = $this->responsiveImages?->sanitize($bytes)
+            ?? (new ResponsiveImageProcessor())->sanitize($bytes);
+        if (strlen($bytes) > 8 * 1024 * 1024) {
+            throw new ApiException(413, 'A processed product image cannot exceed 8 MB.');
+        }
+        $mime = 'image/webp';
         $prepared = $this->responsiveImages?->prepare($bytes) ?? [];
         $name = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', basename(str_replace('\\', '/', $file->name))) ?? '') ?: 'product-image';
         $driver = (string) $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);

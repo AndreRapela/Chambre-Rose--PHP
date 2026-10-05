@@ -62,7 +62,7 @@ final class MarketplaceService
         $profile = $this->profiles->findByUser($userId, true) ?? throw new ApiException(404, 'Listing not found.');
         $profile['reviews'] = $this->profiles->reviews($userId);
 
-        return $this->withPublicMedia($profile, $viewer);
+        return $this->withPublicMedia($profile, $viewer, 6, 0);
     }
 
     /**
@@ -72,13 +72,13 @@ final class MarketplaceService
      * @param array<string,mixed>|null $viewer
      * @return array<string, mixed>
      */
-    public function publicGallery(int $userId, ?array $viewer = null): array
+    public function publicGallery(int $userId, ?array $viewer = null, int $offset = 0, int $limit = 30): array
     {
         $this->assertProfileAccess($userId, $viewer);
         $profile = $this->profiles->findPublicGallery($userId)
             ?? throw new ApiException(404, 'Gallery not found.');
 
-        return $this->withPublicMedia($profile, $viewer);
+        return $this->withPublicMedia($profile, $viewer, max(0, $offset), max(1, min(50, $limit)));
     }
 
     /**
@@ -269,7 +269,19 @@ final class MarketplaceService
         $name = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', basename(str_replace('\\', '/', $file->name))) ?? '') ?: strtolower($type);
 
         $bytes = $file->bytes();
+        if ($type === 'PHOTO') {
+            $bytes = $this->responsiveImages->sanitize($bytes);
+            if (strlen($bytes) > $max) {
+                throw new ApiException(413, 'A processed photo cannot exceed 8 MB.');
+            }
+            $mime = 'image/webp';
+        }
         $prepared = $type === 'PHOTO' ? $this->responsiveImages->prepare($bytes) : [];
+        if ($type === 'PHOTO') {
+            // Prepare the low-resolution VIP preview at upload time, so gallery
+            // views never need to decode and blur the full original repeatedly.
+            $prepared[] = $this->responsiveImages->prepareVipPreview($bytes);
+        }
         $media = $this->media->insertWithinLimit(
             $userId,
             $type,
@@ -303,7 +315,7 @@ final class MarketplaceService
         if ($meta === null || $meta['type'] !== 'PHOTO') {
             throw new ApiException(404, 'Profile photo not found.');
         }
-        $cached = $this->responsiveImages->cachedVariant('PROFILE', $mediaId, $width);
+        $cached = $this->responsiveImages->cachedVariantAtOrBelow('PROFILE', $mediaId, $width);
         if ($cached !== null) {
             return $cached;
         }
@@ -312,13 +324,13 @@ final class MarketplaceService
             throw new ApiException(404, 'Profile photo not found.');
         }
 
-        return $this->responsiveImages->variant('PROFILE', $mediaId, $bytes, $width);
+        return $this->responsiveImages->variant('PROFILE', $mediaId, $bytes, $width, true);
     }
 
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string} */
     public function responsiveProfilePhoto(int $userId, int $mediaId, int $width): array
     {
-        $cached = $this->responsiveImages->cachedVariant('PROFILE', $mediaId, $width);
+        $cached = $this->responsiveImages->cachedVariantAtOrBelow('PROFILE', $mediaId, $width);
         if ($cached !== null) {
             return $cached;
         }
@@ -327,7 +339,7 @@ final class MarketplaceService
             throw new ApiException(404, 'Profile photo not found.');
         }
 
-        return $this->responsiveImages->variant('PROFILE', $mediaId, $bytes, $width);
+        return $this->responsiveImages->variant('PROFILE', $mediaId, $bytes, $width, true);
     }
 
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string} */
@@ -337,12 +349,16 @@ final class MarketplaceService
         if ($meta === null || ($meta['type'] ?? '') !== 'PHOTO') {
             throw new ApiException(404, 'VIP photo preview not found.');
         }
+        $cached = $this->responsiveImages->cachedVipPreview('PROFILE', $mediaId);
+        if ($cached !== null) {
+            return $cached;
+        }
         $bytes = $this->media->data($userId, $mediaId);
         if ($bytes === null) {
             throw new ApiException(404, 'VIP photo preview not found.');
         }
 
-        return $this->responsiveImages->blurredPreview($bytes);
+        return $this->responsiveImages->vipPreview('PROFILE', $mediaId, $bytes);
     }
 
     /**
@@ -511,18 +527,20 @@ final class MarketplaceService
      *  @param array<string,mixed>|null $viewer
      *  @return array<string,mixed>
      */
-    private function withPublicMedia(array $profile, ?array $viewer): array
+    private function withPublicMedia(array $profile, ?array $viewer, int $limit, int $offset): array
     {
+        $userId = (int) $profile['userId'];
+        $counts = $this->media->countTypes($userId);
         if ($this->mediaLocked($profile, $viewer)) {
-            $photos = array_values(array_filter(
-                $this->media->listFor((int) $profile['userId'], true),
-                static fn (array $media): bool => ($media['type'] ?? '') === 'PHOTO'
-            ));
-            $this->applyProfileImage($profile, $photos);
+            $total = $counts['PHOTO'];
+            $photos = $this->media->listFor($userId, true, 'PHOTO', $limit, $offset);
+            if ($offset === 0) {
+                $this->applyProfileImage($profile, $photos);
+            }
             $profile['media'] = array_map(
                 static function (array $media) use ($profile): array {
                     $media['url'] = '/api/profiles/' . (int) $profile['userId'] . '/media/'
-                        . (int) $media['id'] . '/vip-preview.webp';
+                        . (int) $media['id'] . '/vip-preview.webp?v=media-v3';
                     $media['contentType'] = 'image/webp';
                     $media['locked'] = true;
                     unset($media['srcSet']);
@@ -532,15 +550,28 @@ final class MarketplaceService
                 $photos
             );
             $profile['mediaLocked'] = true;
-            $profile['lockedMediaCount'] = count($photos);
+            $profile['lockedMediaCount'] = $total;
+            $profile['mediaTotal'] = $total;
+            $profile['mediaPhotoCount'] = $total;
+            $profile['mediaVideoCount'] = 0;
+            $profile['mediaHasMore'] = $offset + count($photos) < $total;
+            $profile['mediaNextOffset'] = $profile['mediaHasMore'] ? $offset + count($photos) : null;
 
             return $profile;
         }
 
-        $profile['media'] = $this->media->listFor((int) $profile['userId'], true);
+        $total = $counts['PHOTO'] + $counts['VIDEO'];
+        $profile['media'] = $this->media->listFor($userId, true, null, $limit, $offset);
         $profile['mediaLocked'] = false;
         $profile['lockedMediaCount'] = 0;
-        $this->applyProfileImage($profile, $profile['media']);
+        $profile['mediaTotal'] = $total;
+        $profile['mediaPhotoCount'] = $counts['PHOTO'];
+        $profile['mediaVideoCount'] = $counts['VIDEO'];
+        $profile['mediaHasMore'] = $offset + count($profile['media']) < $total;
+        $profile['mediaNextOffset'] = $profile['mediaHasMore'] ? $offset + count($profile['media']) : null;
+        if ($offset === 0) {
+            $this->applyProfileImage($profile, $profile['media']);
+        }
 
         return $profile;
     }
@@ -601,14 +632,14 @@ final class MarketplaceService
 
         $mediaUrl = (string) ($photo['url'] ?? '');
         $photoId = (int) ($photo['id'] ?? 0);
-        $profileUrl = '/api/profiles/' . (int) $profile['userId'] . '/profile-photo?v=' . $photoId;
+        $profileUrl = '/api/profiles/' . (int) $profile['userId'] . '/profile-photo?v=media-v3-' . $photoId;
         $profile['profileImageUrl'] = $profileUrl;
         $profile['profileImageSrcSet'] = null;
         if ($mediaUrl !== '' && isset($photo['srcSet']) && is_string($photo['srcSet'])) {
-            preg_match_all('/\/(320|640|960|1280)\.webp\s+\1w/', $photo['srcSet'], $matches);
+            preg_match_all('/\/(320|640|960|1280)\.webp(?:\?[^ ]*)?\s+\1w/', $photo['srcSet'], $matches);
             $widths = array_values(array_unique(array_map('intval', $matches[1])));
             if ($widths !== []) {
-                $baseUrl = '/api/profiles/' . (int) $profile['userId'] . '/profile-photo';
+                $baseUrl = '/api/profiles/' . (int) $profile['userId'] . '/profile-photo?v=media-v3-' . $photoId;
                 $profile['profileImageSrcSet'] = implode(', ', array_map(
                     static fn (int $width): string => $baseUrl . '/' . $width . '.webp?v=' . $photoId . ' ' . $width . 'w',
                     $widths

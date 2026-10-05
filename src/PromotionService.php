@@ -10,8 +10,10 @@ final class PromotionService
     /** @var list<string> */
     private const ICONS = ['gift', 'truck', 'heart', 'star', 'diamond', 'shopping-bag', 'bullhorn'];
 
-    public function __construct(private readonly PromotionRepository $promotions)
-    {
+    public function __construct(
+        private readonly PromotionRepository $promotions,
+        private readonly ?ResponsiveImageService $responsiveImages = null
+    ) {
     }
 
     /** @return list<array<string, mixed>> */
@@ -25,8 +27,13 @@ final class PromotionService
     {
         self::assertSlot($slot);
 
-        return $this->promotions->image($slot)
+        $image = $this->promotions->image($slot)
             ?? throw new ApiException(404, 'Promotion image not found.');
+        $image['bytes'] = $this->sanitizeImage($image['bytes']);
+        $image['contentType'] = 'image/webp';
+        $image['size'] = strlen($image['bytes']);
+
+        return $image;
     }
 
     /** @param array<string, string> $input
@@ -71,6 +78,10 @@ final class PromotionService
             if (strlen($bytes) > self::IMAGE_MAX) {
                 throw new ApiException(413, 'A promotion image cannot exceed 8 MB.');
             }
+            $bytes = $this->sanitizeImage($bytes);
+            if (strlen($bytes) > self::IMAGE_MAX) {
+                throw new ApiException(413, 'A processed promotion image cannot exceed 8 MB.');
+            }
             $dimensions = @getimagesizefromstring($bytes);
             if (!is_array($dimensions) || (int) $dimensions[0] < 1 || (int) $dimensions[1] < 1) {
                 throw new ApiException(400, 'The promotion image is invalid or corrupted.', [
@@ -79,7 +90,7 @@ final class PromotionService
             }
             $name = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', basename(str_replace('\\', '/', $file->name))) ?? '')
                 ?: 'promotion-image';
-            $image = ['name' => $name, 'contentType' => $contentType, 'bytes' => $bytes];
+            $image = ['name' => $name, 'contentType' => 'image/webp', 'bytes' => $bytes];
         }
 
         /** @var array{label:string,title:string,subtitle:string,linkUrl:string,linkText:string,icon:string} $data */
@@ -111,5 +122,11 @@ final class PromotionService
     private static function length(string $value): int
     {
         return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value);
+    }
+
+    private function sanitizeImage(string $bytes): string
+    {
+        return $this->responsiveImages?->sanitize($bytes)
+            ?? (new ResponsiveImageProcessor())->sanitize($bytes);
     }
 }

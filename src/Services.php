@@ -419,9 +419,9 @@ final class AuthService
     /** @param array<string,mixed> $input */
     public function checkRegistrationEmail(array $input): void
     {
-        if ($this->users->emailExists(Validator::registrationEmail($input))) {
-            throw new ApiException(409, 'Email is already registered.', ['email' => 'This email is already registered.']);
-        }
+        // Validate the syntax without revealing whether an account exists.
+        // The registration endpoint remains authoritative and handles conflicts.
+        Validator::registrationEmail($input);
     }
 
     /**

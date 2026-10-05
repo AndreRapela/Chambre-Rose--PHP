@@ -21,6 +21,7 @@ use ChambreRose\HttpByteRange;
 use ChambreRose\IdentityVerificationRepository;
 use ChambreRose\IdentityVerificationService;
 use ChambreRose\Jwt;
+use ChambreRose\LegacyImageBackfill;
 use ChambreRose\LocationNormalizer;
 use ChambreRose\MultipartParser;
 use ChambreRose\NotificationRepository;
@@ -503,8 +504,11 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         $updatedPromotion['title'] === 'Autumn selection'
         && $updatedPromotion['icon'] === 'star'
         && str_starts_with((string) $updatedPromotion['imageUrl'], '/api/promotions/1/image?v=')
-        && $storedPromotionImage['bytes'] === $promotionImageBytes,
-        'Administrators must be able to edit every promotion field and replace its image.'
+        && $storedPromotionImage['contentType'] === 'image/webp'
+        && str_starts_with($storedPromotionImage['bytes'], 'RIFF')
+        && substr($storedPromotionImage['bytes'], 8, 4) === 'WEBP'
+        && $storedPromotionImage['bytes'] !== $promotionImageBytes,
+        'Promotion uploads and public responses must use metadata-free WebP while administrators can edit every field.'
     );
     try {
         $promotionService->update(2, [
@@ -760,6 +764,13 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         CREATE TABLE responsive_image_variants (
           id INTEGER PRIMARY KEY,product_image_id INTEGER NULL,width INTEGER NOT NULL
         );
+        CREATE TABLE professional_profiles (
+          user_id INTEGER PRIMARY KEY,purchase_count INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE marketplace_orders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,buyer_user_id INTEGER NOT NULL,profile_user_id INTEGER NULL,
+          order_type TEXT NOT NULL,amount REAL NULL,status TEXT NOT NULL,created_at TEXT NOT NULL
+        );
         SQL);
     $productRepository = new ProductRepository($productDatabase);
     $productService = new ProductService(
@@ -813,11 +824,21 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         'Product edits must preserve server-owned engagement metrics.'
     );
     try {
-        $productRepository->registerProfilePurchase(7, 7, null);
+        $productRepository->registerProfileSelection(7, 7);
         $assert(false, 'A member must not be able to select their own profile.');
     } catch (ApiException $exception) {
         $assert($exception->status === 403, 'Self-selection must return 403.');
     }
+    $productDatabase->exec('INSERT INTO professional_profiles (user_id,purchase_count) VALUES (8,0)');
+    $assert($productRepository->registerProfileSelection(8, 7), 'A member may confirm a companion selection once.');
+    $assert(!$productRepository->registerProfileSelection(8, 7), 'Repeating the same profile selection must be idempotent.');
+    $selectionOrder = $productDatabase->query("SELECT amount,order_type FROM marketplace_orders WHERE buyer_user_id=7")->fetch(PDO::FETCH_ASSOC);
+    $selectionCount = (int) $productDatabase->query('SELECT purchase_count FROM professional_profiles WHERE user_id=8')->fetchColumn();
+    $assert(
+        is_array($selectionOrder) && $selectionOrder['amount'] === null && $selectionOrder['order_type'] === 'PROFILE'
+        && $selectionCount === 1,
+        'Profile ranking must ignore client-provided prices and count a buyer/profile pair only once.'
+    );
 
     $notificationDatabase = new PDO('sqlite::memory:');
     $notificationDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -1211,6 +1232,38 @@ imagepng($wideSource);
 $widePng = ob_get_clean();
 unset($wideSource);
 $assert(is_string($widePng), 'Responsive image fixture must be encoded.');
+$sanitizedPixel = $imageProcessor->sanitize($png);
+$sanitizedPixelInfo = getimagesizefromstring($sanitizedPixel);
+$assert(
+    is_array($sanitizedPixelInfo)
+    && strtolower((string) ($sanitizedPixelInfo['mime'] ?? '')) === 'image/webp'
+    && str_starts_with($sanitizedPixel, 'RIFF')
+    && strpos($sanitizedPixel, 'EXIF') === false,
+    'Sanitized originals must be metadata-free WebP images, including very small uploads.'
+);
+$orientedSource = imagecreatetruecolor(20, 10);
+$assert($orientedSource instanceof GdImage, 'EXIF orientation fixture must be allocated.');
+imagefilledrectangle($orientedSource, 0, 0, 19, 9, imagecolorallocate($orientedSource, 220, 20, 60));
+ob_start();
+imagejpeg($orientedSource, null, 90);
+$orientedJpeg = ob_get_clean();
+unset($orientedSource);
+$assert(is_string($orientedJpeg), 'EXIF orientation fixture must be encoded as JPEG.');
+$exifTiff = 'II' . pack('v', 42) . pack('V', 8) . pack('v', 1)
+    . pack('v', 0x0112) . pack('v', 3) . pack('V', 1) . pack('v', 6) . pack('v', 0) . pack('V', 0);
+$exifPayload = "Exif\0\0" . $exifTiff;
+$orientedJpegWithExif = substr($orientedJpeg, 0, 2)
+    . "\xFF\xE1" . pack('n', strlen($exifPayload) + 2) . $exifPayload
+    . substr($orientedJpeg, 2);
+$orientedWebp = $imageProcessor->sanitize($orientedJpegWithExif);
+$orientedWebpInfo = getimagesizefromstring($orientedWebp);
+$assert(
+    is_array($orientedWebpInfo)
+    && $orientedWebpInfo[0] === 10
+    && $orientedWebpInfo[1] === 20
+    && strpos($orientedWebp, 'EXIF') === false,
+    'JPEG orientation must be applied before EXIF is removed from sanitized originals.'
+);
 $responsiveVariants = $imageProcessor->generate($widePng);
 $blurredPreview = $imageProcessor->blurredPreview($widePng);
 $assert(
@@ -1240,6 +1293,16 @@ $assert(
     ResponsiveImageService::srcSet('/api/profiles/9/media/2', [640, 320])
         === '/api/profiles/9/media/2/320.webp 320w, /api/profiles/9/media/2/640.webp 640w',
     'Responsive image metadata must expose only available, ordered width descriptors.'
+);
+$assert(
+    ResponsiveImageService::srcSet('/api/profiles/9/media/2')
+        === '/api/profiles/9/media/2/320.webp 320w, /api/profiles/9/media/2/640.webp 640w, /api/profiles/9/media/2/960.webp 960w, /api/profiles/9/media/2/1280.webp 1280w',
+    'Legacy photos without stored variants must still advertise lazy-generated responsive candidates.'
+);
+$assert(
+    ResponsiveImageService::srcSet('/api/profiles/9/media/2?v=media-v3', [320, 640])
+        === '/api/profiles/9/media/2/320.webp?v=media-v3 320w, /api/profiles/9/media/2/640.webp?v=media-v3 640w',
+    'Versioned responsive URLs must preserve cache-busting query strings after the image variant path.'
 );
 
 $closedRange = HttpByteRange::parse('bytes=2-5', 10);
@@ -1312,16 +1375,135 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         && (int) $responsiveImageDatabase->query('SELECT COUNT(*) FROM responsive_image_variants')->fetchColumn() === 2,
         'Product uploads must atomically persist only non-upscaled responsive WebP variants.'
     );
+    $profileVariants = $imageProcessor->generate($widePng);
+    $profileVariants[] = $responsiveImageService->prepareVipPreview($widePng);
+    $responsiveImageService->storePrepared('PROFILE', 77, $widePng, $profileVariants);
+    $storedVipPreview = $responsiveImageService->cachedVipPreview('PROFILE', 77);
+    $assert(
+        ($storedVipPreview['width'] ?? null) === ResponsiveImageService::VIP_PREVIEW_WIDTH
+        && ($storedVipPreview['contentType'] ?? null) === 'image/webp'
+        && str_starts_with((string) ($storedVipPreview['bytes'] ?? ''), 'RIFF'),
+        'VIP blur previews must be persisted as small WebP variants instead of recalculated for each visit.'
+    );
+    $legacyLargeRequest = $responsiveImageService->variant('PROFILE', 78, $widePng, 1280, true);
+    $legacyVariantCount = (int) $responsiveImageDatabase->query(
+        'SELECT COUNT(*) FROM responsive_image_variants WHERE profile_media_id=78'
+    )->fetchColumn();
+    $reusedLegacyLargeRequest = $responsiveImageService->variant('PROFILE', 78, $widePng, 1280, true);
+    $assert(
+        $legacyLargeRequest['width'] === 640
+        && $legacyLargeRequest['contentType'] === 'image/webp'
+        && $reusedLegacyLargeRequest['bytes'] === $legacyLargeRequest['bytes']
+        && $legacyVariantCount === 2
+        && (int) $responsiveImageDatabase->query(
+            'SELECT COUNT(*) FROM responsive_image_variants WHERE profile_media_id=78'
+        )->fetchColumn() === $legacyVariantCount,
+        'Legacy profile images must generate and reuse the largest available non-upscaled WebP instead of failing oversized candidates.'
+    );
+    $tinyProfileFallback = $responsiveImageService->variant('PROFILE', 79, $png, 320, true);
+    $assert(
+        $tinyProfileFallback['width'] === 1
+        && $tinyProfileFallback['contentType'] === 'image/webp'
+        && str_starts_with($tinyProfileFallback['bytes'], 'RIFF')
+        && $tinyProfileFallback['bytes'] !== $png,
+        'Very small legacy photos must be sanitized as WebP when no responsive width can be generated.'
+    );
     try {
         $responsiveProductImages->responsive(44, 'MAIN', 960);
         $assert(false, 'A responsive endpoint must not enlarge an 800-pixel source to 960 pixels.');
     } catch (ApiException $exception) {
         $assert(
             $exception->status === 404
-            && (int) $responsiveImageDatabase->query('SELECT COUNT(*) FROM responsive_image_variants')->fetchColumn() === 2,
+            && (int) $responsiveImageDatabase->query(
+                'SELECT COUNT(*) FROM responsive_image_variants WHERE product_image_id IS NOT NULL'
+            )->fetchColumn() === 2,
             'Unavailable oversized variants must return 404 without creating an upscaled file.'
         );
     }
+
+    $legacyBackfillDatabase = new PDO('sqlite::memory:');
+    $legacyBackfillDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $legacyBackfillDatabase->exec(
+        'CREATE TABLE profile_media ('
+        . 'id INTEGER PRIMARY KEY,media_type TEXT NOT NULL,content_type TEXT,size_bytes INTEGER NOT NULL,'
+        . 'media_data BLOB NOT NULL)'
+    );
+    $legacyBackfillDatabase->exec(
+        'CREATE TABLE product_images ('
+        . 'id INTEGER PRIMARY KEY,content_type TEXT,size_bytes INTEGER NOT NULL,image_data BLOB NOT NULL,'
+        . 'updated_at TEXT NOT NULL)'
+    );
+    $legacyBackfillDatabase->exec(
+        'CREATE TABLE site_promotions ('
+        . 'slot INTEGER PRIMARY KEY,image_content_type TEXT,image_size_bytes INTEGER,image_data BLOB,'
+        . 'updated_at TEXT NOT NULL)'
+    );
+    $legacyBackfillDatabase->exec(
+        'CREATE TABLE responsive_image_variants ('
+        . 'id INTEGER PRIMARY KEY AUTOINCREMENT,profile_media_id INTEGER,product_image_id INTEGER,'
+        . 'width INTEGER NOT NULL,height INTEGER NOT NULL,content_type TEXT NOT NULL,size_bytes INTEGER NOT NULL,'
+        . 'image_data BLOB NOT NULL,source_hash TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,'
+        . 'UNIQUE(profile_media_id,width),UNIQUE(product_image_id,width))'
+    );
+    $legacyWebp = $imageProcessor->sanitize($widePng);
+    $legacyBackfillDatabase->prepare(
+        'INSERT INTO profile_media (id,media_type,content_type,size_bytes,media_data) VALUES (1,\'PHOTO\',\'image/png\',:size,:data)'
+    )->execute(['size' => strlen($widePng), 'data' => $widePng]);
+    $legacyBackfillDatabase->prepare(
+        'INSERT INTO profile_media (id,media_type,content_type,size_bytes,media_data) VALUES (2,\'VIDEO\',\'video/webm\',:size,:data)'
+    )->execute(['size' => 8, 'data' => 'video001']);
+    $legacyBackfillDatabase->prepare(
+        'INSERT INTO profile_media (id,media_type,content_type,size_bytes,media_data) VALUES (3,\'PHOTO\',\'image/webp\',:size,:data)'
+    )->execute(['size' => strlen($legacyWebp), 'data' => $legacyWebp]);
+    $legacyBackfillDatabase->prepare(
+        'INSERT INTO profile_media (id,media_type,content_type,size_bytes,media_data) VALUES (4,\'PHOTO\',\'image/svg+xml\',:size,:data)'
+    )->execute(['size' => 11, 'data' => '<svg></svg>']);
+    $legacyBackfillDatabase->prepare(
+        'INSERT INTO product_images (id,content_type,size_bytes,image_data,updated_at) VALUES (1,\'image/png\',:size,:data,\'2026-09-01\')'
+    )->execute(['size' => strlen($widePng), 'data' => $widePng]);
+    $legacyBackfillDatabase->prepare(
+        'INSERT INTO product_images (id,content_type,size_bytes,image_data,updated_at) VALUES (2,\'image/webp\',:size,:data,\'2026-09-01\')'
+    )->execute(['size' => strlen($legacyWebp), 'data' => $legacyWebp]);
+    $legacyBackfillDatabase->prepare(
+        'INSERT INTO site_promotions (slot,image_content_type,image_size_bytes,image_data,updated_at) VALUES (1,\'image/png\',:size,:data,\'2026-09-01\')'
+    )->execute(['size' => strlen($widePng), 'data' => $widePng]);
+    $legacyBackfillDatabase->exec(
+        "INSERT INTO site_promotions (slot,image_content_type,image_size_bytes,image_data,updated_at) VALUES (2,NULL,NULL,NULL,'2026-09-01')"
+    );
+    $legacyBackfill = new LegacyImageBackfill($legacyBackfillDatabase, $imageProcessor);
+    $legacyDryRun = $legacyBackfill->run(false, 1);
+    $assert(
+        $legacyDryRun['mode'] === 'dry-run'
+        && $legacyDryRun['tables']['profile_media']['candidates'] === 1
+        && $legacyDryRun['tables']['product_images']['candidates'] === 1
+        && $legacyDryRun['tables']['site_promotions']['candidates'] === 1
+        && $legacyDryRun['tables']['profile_media']['derivatives'] === 3
+        && $legacyDryRun['tables']['product_images']['derivatives'] === 2
+        && (string) $legacyBackfillDatabase->query('SELECT content_type FROM profile_media WHERE id=1')->fetchColumn() === 'image/png'
+        && (int) $legacyBackfillDatabase->query('SELECT COUNT(*) FROM responsive_image_variants')->fetchColumn() === 0,
+        'Legacy image backfill dry-run must validate and estimate eligible photos without changing blobs or derivatives.'
+    );
+    $legacyApplied = $legacyBackfill->run(true, 1);
+    $assert(
+        $legacyApplied['tables']['profile_media']['updated'] === 1
+        && $legacyApplied['tables']['product_images']['updated'] === 1
+        && $legacyApplied['tables']['site_promotions']['updated'] === 1
+        && (string) $legacyBackfillDatabase->query('SELECT content_type FROM profile_media WHERE id=1')->fetchColumn() === 'image/webp'
+        && (string) $legacyBackfillDatabase->query('SELECT content_type FROM product_images WHERE id=1')->fetchColumn() === 'image/webp'
+        && (string) $legacyBackfillDatabase->query('SELECT image_content_type FROM site_promotions WHERE slot=1')->fetchColumn() === 'image/webp'
+        && (string) $legacyBackfillDatabase->query('SELECT media_type FROM profile_media WHERE id=2')->fetchColumn() === 'VIDEO'
+        && (string) $legacyBackfillDatabase->query('SELECT content_type FROM profile_media WHERE id=4')->fetchColumn() === 'image/svg+xml'
+        && (int) $legacyBackfillDatabase->query('SELECT COUNT(*) FROM responsive_image_variants WHERE profile_media_id=1')->fetchColumn() === 3
+        && (int) $legacyBackfillDatabase->query('SELECT COUNT(*) FROM responsive_image_variants WHERE product_image_id=1')->fetchColumn() === 2,
+        'Legacy image backfill must convert eligible blobs once, preserve videos, and warm responsive and VIP preview variants.'
+    );
+    $legacyRepeated = $legacyBackfill->run(true, 1);
+    $assert(
+        $legacyRepeated['tables']['profile_media']['candidates'] === 0
+        && $legacyRepeated['tables']['product_images']['candidates'] === 0
+        && $legacyRepeated['tables']['site_promotions']['candidates'] === 0,
+        'Legacy image backfill must be idempotent after successful conversion.'
+    );
 
     $mediaDatabase = new PDO('sqlite::memory:');
     $mediaDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -1343,45 +1525,56 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         'CREATE TABLE professional_profiles ('
         . 'user_id INTEGER PRIMARY KEY,profile_type TEXT NOT NULL)'
     );
-    $mediaDatabase->exec("INSERT INTO users (id,role,approval_status) VALUES (7,'ESCORT','APPROVED'),(8,'ESCORT','PENDING')");
-    $mediaDatabase->exec("INSERT INTO professional_profiles (user_id,profile_type) VALUES (7,'ESCORT'),(8,'ESCORT')");
+    $mediaDatabase->exec("INSERT INTO users (id,role,approval_status) VALUES (7,'ESCORT','APPROVED'),(8,'ESCORT','PENDING'),(9,'ESCORT','APPROVED')");
+    $mediaDatabase->exec("INSERT INTO professional_profiles (user_id,profile_type) VALUES (7,'ESCORT'),(8,'ESCORT'),(9,'ESCORT')");
     $mediaDatabase->exec(
         "INSERT INTO profile_media (id,user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) VALUES"
         . " (1,7,'PHOTO','later.jpg','image/jpeg',1,X'01',5,'2026-09-08 00:00:00'),"
         . " (2,7,'PHOTO','cover.jpg','image/jpeg',1,X'02',1,'2026-09-08 00:00:00'),"
-        . " (4,8,'PHOTO','other.jpg','image/jpeg',1,X'03',0,'2026-09-08 00:00:00')"
+        . " (4,8,'PHOTO','other.jpg','image/jpeg',1,X'03',0,'2026-09-08 00:00:00'),"
+        . " (5,9,'PHOTO','legacy.jpg','image/jpeg',1,X'04',0,'2026-09-08 00:00:00')"
     );
     $mediaDatabase->exec(
         'INSERT INTO responsive_image_variants (profile_media_id,width) VALUES (1,320),(2,320),(2,640),(4,320)'
     );
     $profileMedia = new ProfileMediaRepository($mediaDatabase);
-    $covers = $profileMedia->firstPhotosForUsers([7, 8, 99], true);
-    $photoCounts = $profileMedia->countTypeForUsers([7, 8, 99], 'PHOTO');
+    $covers = $profileMedia->firstPhotosForUsers([7, 8, 9, 99], true);
+    $photoCounts = $profileMedia->countTypeForUsers([7, 8, 9, 99], 'PHOTO');
     $profilePhoto = $profileMedia->profilePhotoForUser(7, true);
+    $galleryPage = $profileMedia->listFor(7, true, null, 1, 1);
     $assert(
         count($covers[7]) === 1
         && (int) $covers[7][0]['id'] === 2
-        && ($covers[7][0]['srcSet'] ?? '') === '/api/profiles/7/media/2/320.webp 320w, /api/profiles/7/media/2/640.webp 640w'
+        && ($covers[7][0]['url'] ?? '') === '/api/profiles/7/media/2?v=media-v3'
+        && ($covers[7][0]['srcSet'] ?? '') === '/api/profiles/7/media/2/320.webp?v=media-v3 320w, /api/profiles/7/media/2/640.webp?v=media-v3 640w'
         && !array_key_exists('fileName', $covers[7][0])
         && count($covers[8]) === 1
+        && ($covers[9][0]['srcSet'] ?? '') === '/api/profiles/9/media/5/320.webp?v=media-v3 320w, /api/profiles/9/media/5/640.webp?v=media-v3 640w, /api/profiles/9/media/5/960.webp?v=media-v3 960w, /api/profiles/9/media/5/1280.webp?v=media-v3 1280w'
         && $covers[99] === [],
-        'Listing cards must receive only each profile\'s first public photo and its available variants.'
+        'Listing cards must receive each profile\'s first public photo and lazy responsive candidates for legacy media.'
     );
     $assert(
-        $photoCounts === [7 => 2, 8 => 1, 99 => 0]
+        $photoCounts === [7 => 2, 8 => 1, 9 => 1, 99 => 0]
         && $profileMedia->countTypeForUsers([], 'PHOTO') === [],
         'Profile media counts must be loaded for the full result set in one batch.'
     );
     $assert(
         (int) ($profilePhoto['id'] ?? 0) === 2
-        && ($profilePhoto['url'] ?? '') === '/api/profiles/7/profile-photo?v=2'
-        && ($profilePhoto['srcSet'] ?? '') === '/api/profiles/7/profile-photo/320.webp?v=2 320w, /api/profiles/7/profile-photo/640.webp?v=2 640w'
+        && ($profilePhoto['url'] ?? '') === '/api/profiles/7/profile-photo?v=media-v3-2'
+        && ($profilePhoto['srcSet'] ?? '') === '/api/profiles/7/profile-photo/320.webp?v=media-v3-2 320w, /api/profiles/7/profile-photo/640.webp?v=media-v3-2 640w'
         && $profileMedia->profilePhotoIdForUser(7) === 2
         && $profileMedia->publicProfilePhotoIdForUser(7) === 2
         && $profileMedia->publicProfilePhotoIdForUser(8) === null
+        && ($profileMedia->profilePhotoForUser(9, true)['srcSet'] ?? '') === '/api/profiles/9/profile-photo/320.webp?v=media-v3-5 320w, /api/profiles/9/profile-photo/640.webp?v=media-v3-5 640w, /api/profiles/9/profile-photo/960.webp?v=media-v3-5 960w, /api/profiles/9/profile-photo/1280.webp?v=media-v3-5 1280w'
         && $profileMedia->profilePhotoIdForUser(99) === null
         && $profileMedia->profilePhotoForUser(99, true) === null,
         'A public profile photo must use independent paths and expose its ordered identifier without hydrating media metadata.'
+    );
+    $assert(
+        $profileMedia->countAll(7) === 2
+        && count($galleryPage) === 1
+        && (int) ($galleryPage[0]['id'] ?? 0) === 1,
+        'Profile gallery queries must return bounded pages and a separate total count.'
     );
     $assert(
         $profileMedia->isFirstPhoto(7, 2)
@@ -1405,6 +1598,12 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     $insertMedia->bindValue(':size', strlen($videoFixture), PDO::PARAM_INT);
     $insertMedia->bindValue(':data', $videoFixture, PDO::PARAM_LOB);
     $insertMedia->execute();
+    $mediaCounts = $profileMedia->countTypes(7);
+    $assert(
+        $mediaCounts === ['PHOTO' => 2, 'VIDEO' => 1]
+        && $profileMedia->countAll(7) === 3,
+        'Profile totals must count each media type in one bounded aggregate query.'
+    );
     $mediaChunks = iterator_to_array(
         $profileMedia->chunks(7, 3, 2, 7, 3),
         false

@@ -58,7 +58,7 @@ final class App
         $products = new ProductRepository($pdo);
         $productImages = new ProductImageRepository($pdo, $responsiveImages);
         $productService = new ProductService($products, $productImages, $users);
-        $promotionService = new PromotionService(new PromotionRepository($pdo));
+        $promotionService = new PromotionService(new PromotionRepository($pdo), $responsiveImages);
         $sessionCookie = new AuthSessionCookie($jwt);
         $pushDeviceCookie = new PushDeviceCookie();
         $rateLimiter = new AuthRateLimiter($pdo);
