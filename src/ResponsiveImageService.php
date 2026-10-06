@@ -145,6 +145,19 @@ final class ResponsiveImageService
         );
     }
 
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string}|null */
+    public function cachedProfilePhotoForUser(int $userId, int $mediaId, int $width): ?array
+    {
+        self::assertSupportedWidth($width);
+
+        return $this->variants->findProfilePhotoForUser(
+            $userId,
+            $mediaId,
+            $width,
+            min(ResponsiveImageProcessor::WIDTHS)
+        );
+    }
+
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string} */
     public function blurredPreview(string $sourceBytes): array
     {

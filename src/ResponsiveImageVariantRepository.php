@@ -82,6 +82,44 @@ final class ResponsiveImageVariantRepository
         ];
     }
 
+    /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string}|null */
+    public function findProfilePhotoForUser(int $userId, int $mediaId, int $maxWidth, int $minWidth): ?array
+    {
+        $statement = $this->pdo->prepare(
+            "SELECT image_variant.width,image_variant.height,image_variant.content_type,image_variant.size_bytes,image_variant.image_data,
+                    image_variant.source_hash,image_variant.updated_at
+             FROM responsive_image_variants image_variant
+             JOIN profile_media profile_media ON profile_media.id=image_variant.profile_media_id
+             WHERE profile_media.user_id=:user_id AND profile_media.id=:media_id AND profile_media.media_type='PHOTO'
+               AND image_variant.width<=:max_width AND image_variant.width>=:min_width
+             ORDER BY image_variant.width DESC LIMIT 1"
+        );
+        $statement->execute([
+            'user_id' => $userId,
+            'media_id' => $mediaId,
+            'max_width' => $maxWidth,
+            'min_width' => $minWidth,
+        ]);
+        $row = $statement->fetch();
+        if (!is_array($row)) {
+            return null;
+        }
+        $bytes = self::lobToString($row['image_data'] ?? null);
+        if ($bytes === null) {
+            return null;
+        }
+
+        return [
+            'width' => (int) $row['width'],
+            'height' => (int) $row['height'],
+            'contentType' => (string) $row['content_type'],
+            'size' => (int) $row['size_bytes'],
+            'bytes' => $bytes,
+            'sourceHash' => (string) $row['source_hash'],
+            'updatedAt' => (string) $row['updated_at'],
+        ];
+    }
+
     /**
      * @param list<array{width: int, height: int, contentType: string, size: int, bytes: string}> $variants
      */

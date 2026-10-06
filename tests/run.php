@@ -23,6 +23,7 @@ use ChambreRose\IdentityVerificationService;
 use ChambreRose\Jwt;
 use ChambreRose\LegacyImageBackfill;
 use ChambreRose\LocationNormalizer;
+use ChambreRose\MarketplaceService;
 use ChambreRose\MultipartParser;
 use ChambreRose\NotificationRepository;
 use ChambreRose\NotificationOutboxStore;
@@ -53,6 +54,7 @@ use ChambreRose\SeoRoutes;
 use ChambreRose\SeoSitemapService;
 use ChambreRose\UploadedFile;
 use ChambreRose\UserRepository;
+use ChambreRose\UserExclusionRepository;
 use ChambreRose\UserNotificationService;
 use ChambreRose\Validator;
 use ChambreRose\SearchPagination;
@@ -686,6 +688,73 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
         && ($publicGallery['type'] ?? null) === 'ESCORT'
         && ($publicGallery['vipActive'] ?? null) === true,
         'The gallery must use a lightweight public header without hydrating a complete profile.'
+    );
+    $adminDatabase->exec(<<<'SQL'
+        CREATE TABLE profile_media (
+          id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,media_type TEXT NOT NULL,file_name TEXT NOT NULL,
+          content_type TEXT NOT NULL,size_bytes INTEGER NOT NULL,media_data BLOB NOT NULL,
+          position INTEGER NOT NULL,created_at TEXT NOT NULL
+        );
+        CREATE TABLE responsive_image_variants (profile_media_id INTEGER,width INTEGER NOT NULL);
+        SQL);
+    $galleryMediaInsert = $adminDatabase->prepare(
+        'INSERT INTO profile_media '
+        . '(id,user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) '
+        . "VALUES (:id,2,:type,'fixture',:mime,1,X'01',:position,CURRENT_TIMESTAMP)"
+    );
+    for ($index = 1; $index <= 67; $index++) {
+        $isPhoto = $index <= 65;
+        $galleryMediaInsert->execute([
+            'id' => $index,
+            'type' => $isPhoto ? 'PHOTO' : 'VIDEO',
+            'mime' => $isPhoto ? 'image/webp' : 'video/webm',
+            'position' => $index,
+        ]);
+    }
+    $galleryService = new MarketplaceService(
+        $adminUsers,
+        new ProfessionalProfileRepository($adminDatabase),
+        new ProfileMediaRepository($adminDatabase),
+        new ResponsiveImageService(new ResponsiveImageProcessor(), new ResponsiveImageVariantRepository($adminDatabase))
+    );
+    $galleryOwner = ['id' => 2, 'role' => 'ESCORT', 'vipActive' => true];
+    $firstGalleryPage = $galleryService->publicGallery(2, $galleryOwner);
+    $lastGalleryPage = $galleryService->publicGallery(2, $galleryOwner, 60, 30);
+    $assert(
+        array_column($firstGalleryPage['media'], 'id') === range(1, 30)
+        && $firstGalleryPage['mediaTotal'] === 67
+        && $firstGalleryPage['mediaPhotoCount'] === 65
+        && $firstGalleryPage['mediaVideoCount'] === 2
+        && $firstGalleryPage['mediaNextOffset'] === 30
+        && $firstGalleryPage['mediaHasMore'] === true
+        && isset($firstGalleryPage['profileImageUrl']),
+        'The default gallery request must begin at the first item and return a full bounded page.'
+    );
+    $assert(
+        array_column($lastGalleryPage['media'], 'id') === range(61, 67)
+        && $lastGalleryPage['mediaNextOffset'] === null
+        && $lastGalleryPage['mediaHasMore'] === false,
+        'Gallery offsets must advance independently of the page size without repeating an earlier page.'
+    );
+    $lockedGalleryPage = $galleryService->publicGallery(2, null, 60, 30);
+    $assert(
+        array_column($lockedGalleryPage['media'], 'id') === range(61, 65)
+        && $lockedGalleryPage['mediaLocked'] === true
+        && $lockedGalleryPage['mediaTotal'] === 65
+        && $lockedGalleryPage['mediaVideoCount'] === 0
+        && $lockedGalleryPage['mediaNextOffset'] === null
+        && str_contains($lockedGalleryPage['media'][0]['url'], '/vip-preview.webp')
+        && $lockedGalleryPage['media'][0]['locked'] === true,
+        'VIP gallery pagination must return only locked photo previews and never expose video entries.'
+    );
+    $boundedGalleryPage = $galleryService->publicGallery(2, $galleryOwner, -5, 100);
+    $singleGalleryPage = $galleryService->publicGallery(2, $galleryOwner, 0, 0);
+    $assert(
+        array_column($boundedGalleryPage['media'], 'id') === range(1, 50)
+        && $boundedGalleryPage['mediaNextOffset'] === 50
+        && array_column($singleGalleryPage['media'], 'id') === [1]
+        && $singleGalleryPage['mediaNextOffset'] === 1,
+        'Invalid gallery bounds must clamp the limit and offset without swapping their meanings.'
     );
     $adminDatabase->exec("UPDATE users SET approval_status='PENDING',vip_active=0 WHERE id=2");
     $adminDatabase->exec("UPDATE users SET approval_status='APPROVED' WHERE id=1");
@@ -1662,6 +1731,45 @@ $assert(
     Request::resolveClientIp('198.51.100.9', '203.0.113.20', '172.16.0.0/12') === '198.51.100.9',
     'Untrusted clients must not be able to spoof a forwarded IP address.'
 );
+if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    $exclusionDatabase = new PDO('sqlite::memory:');
+    $exclusionDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $exclusionDatabase->exec('CREATE TABLE user_exclusions (owner_id INTEGER NOT NULL, excluded_user_id INTEGER NOT NULL)');
+    $exclusionDatabase->exec('INSERT INTO user_exclusions (owner_id,excluded_user_id) VALUES (1,3),(4,1)');
+    $exclusions = new UserExclusionRepository($exclusionDatabase);
+    $excludedUserIds = $exclusions->excludedUserIds(1, [2, 3, 4, 4, 0, -1]);
+    sort($excludedUserIds);
+    $assert(
+        $excludedUserIds === [3, 4] && !$exclusions->existsBetween(1, 2),
+        'Batch exclusion lookup must preserve both directions while deduplicating and ignoring invalid IDs.'
+    );
+    $exclusionDatabase->exec('INSERT INTO user_exclusions (owner_id,excluded_user_id) VALUES (1,402),(403,1)');
+    $largeBatchExclusions = $exclusions->excludedUserIds(1, range(2, 405));
+    sort($largeBatchExclusions);
+    $assert(
+        $largeBatchExclusions === [3, 4, 402, 403],
+        'Batch exclusion lookup must safely split large candidate lists without missing either exclusion direction.'
+    );
+    $assert(
+        $exclusions->excludedUserIds(1, []) === [] && $exclusions->excludedUserIds(1, [1]) === [],
+        'Batch exclusion lookup must skip empty lists and the viewer’s own ID.'
+    );
+    $imageDatabase = new PDO('sqlite::memory:');
+    $imageDatabase->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $imageDatabase->exec('CREATE TABLE profile_media (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, media_type TEXT NOT NULL)');
+    $imageDatabase->exec('CREATE TABLE responsive_image_variants (profile_media_id INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, content_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, image_data BLOB NOT NULL, source_hash TEXT NOT NULL, updated_at TEXT NOT NULL)');
+    $imageDatabase->exec("INSERT INTO profile_media (id,user_id,media_type) VALUES (10,2,'PHOTO'),(11,3,'PHOTO'),(12,2,'VIDEO')");
+    $imageDatabase->exec("INSERT INTO responsive_image_variants (profile_media_id,width,height,content_type,size_bytes,image_data,source_hash,updated_at) VALUES (10,640,480,'image/webp',4,'test','hash-a','2026-01-01'),(10,1280,960,'image/webp',8,'large','hash-a','2026-01-01'),(11,640,480,'image/webp',4,'other','hash-b','2026-01-01'),(12,640,480,'image/webp',4,'video','hash-c','2026-01-01')");
+    $imageVariants = new ResponsiveImageVariantRepository($imageDatabase);
+    $cachedProfileImage = $imageVariants->findProfilePhotoForUser(2, 10, 960, 320);
+    $assert(
+        ($cachedProfileImage['bytes'] ?? null) === 'test'
+            && $cachedProfileImage['width'] === 640
+            && $imageVariants->findProfilePhotoForUser(2, 11, 960, 320) === null
+            && $imageVariants->findProfilePhotoForUser(2, 12, 960, 320) === null,
+        'A cached gallery photo must be selected in one owner-checked query without returning another profile’s media or videos.'
+    );
+}
 
 $error = Response::error(400, 'Invalid request data.', '/api/test');
 $decoded = json_decode($error->body, true, 16, JSON_THROW_ON_ERROR);

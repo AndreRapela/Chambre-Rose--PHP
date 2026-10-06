@@ -41,7 +41,7 @@ final class ProductImageRepository
         $name = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', basename(str_replace('\\', '/', $file->name))) ?? '') ?: 'product-image';
         $driver = (string) $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
         $sql = $driver === 'mysql'
-            ? 'INSERT INTO product_images (product_id,role,file_name,content_type,size_bytes,image_data,created_at,updated_at) VALUES (:product,:role,:name,:type,:size,:data,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE file_name=VALUES(file_name),content_type=VALUES(content_type),size_bytes=VALUES(size_bytes),image_data=VALUES(image_data),updated_at=CURRENT_TIMESTAMP'
+            ? 'INSERT INTO product_images (product_id,role,file_name,content_type,size_bytes,image_data,created_at,updated_at) VALUES (:product,:role,:name,:type,:size,:data,CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE file_name=VALUES(file_name),content_type=VALUES(content_type),size_bytes=VALUES(size_bytes),image_data=VALUES(image_data),updated_at=CURRENT_TIMESTAMP(3)'
             : 'INSERT INTO product_images (product_id,role,file_name,content_type,size_bytes,image_data,created_at,updated_at) VALUES (:product,:role,:name,:type,:size,:data,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT (product_id,role) DO UPDATE SET file_name=EXCLUDED.file_name,content_type=EXCLUDED.content_type,size_bytes=EXCLUDED.size_bytes,image_data=EXCLUDED.image_data,updated_at=CURRENT_TIMESTAMP';
         $startedTransaction = !$this->pdo->inTransaction();
         if ($startedTransaction) {

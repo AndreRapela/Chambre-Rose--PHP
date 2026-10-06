@@ -78,7 +78,7 @@ final class MarketplaceService
         $profile = $this->profiles->findPublicGallery($userId)
             ?? throw new ApiException(404, 'Gallery not found.');
 
-        return $this->withPublicMedia($profile, $viewer, max(0, $offset), max(1, min(50, $limit)));
+        return $this->withPublicMedia($profile, $viewer, max(1, min(50, $limit)), max(0, $offset));
     }
 
     /**
@@ -131,9 +131,10 @@ final class MarketplaceService
         }
         $viewerId = (int) ($viewer['id'] ?? 0);
         if ($viewerId > 0 && $this->exclusions !== null) {
+            $excludedUserIds = array_fill_keys($this->exclusions->excludedUserIds($viewerId, $userIds), true);
             $userIds = array_values(array_filter(
                 $userIds,
-                fn (int $userId): bool => !$this->exclusions->existsBetween($viewerId, $userId)
+                static fn (int $userId): bool => !isset($excludedUserIds[$userId])
             ));
         }
         if ($userIds === []) {
@@ -311,13 +312,13 @@ final class MarketplaceService
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string} */
     public function responsivePhoto(int $userId, int $mediaId, int $width): array
     {
+        $cached = $this->responsiveImages->cachedProfilePhotoForUser($userId, $mediaId, $width);
+        if ($cached !== null) {
+            return $cached;
+        }
         $meta = $this->media->metadata($userId, $mediaId);
         if ($meta === null || $meta['type'] !== 'PHOTO') {
             throw new ApiException(404, 'Profile photo not found.');
-        }
-        $cached = $this->responsiveImages->cachedVariantAtOrBelow('PROFILE', $mediaId, $width);
-        if ($cached !== null) {
-            return $cached;
         }
         $bytes = $this->media->data($userId, $mediaId);
         if ($bytes === null) {
