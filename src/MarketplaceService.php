@@ -640,11 +640,7 @@ final class MarketplaceService
             preg_match_all('/\/(320|640|960|1280)\.webp(?:\?[^ ]*)?\s+\1w/', $photo['srcSet'], $matches);
             $widths = array_values(array_unique(array_map('intval', $matches[1])));
             if ($widths !== []) {
-                $baseUrl = '/api/profiles/' . (int) $profile['userId'] . '/profile-photo?v=media-v3-' . $photoId;
-                $profile['profileImageSrcSet'] = implode(', ', array_map(
-                    static fn (int $width): string => $baseUrl . '/' . $width . '.webp?v=' . $photoId . ' ' . $width . 'w',
-                    $widths
-                ));
+                $profile['profileImageSrcSet'] = ResponsiveImageService::srcSet($profileUrl, $widths);
             }
         }
     }

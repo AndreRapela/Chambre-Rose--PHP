@@ -860,6 +860,7 @@ if ($adminPassword !== '') {
         && ($listing['priceWeekend'] ?? null) === null
         && ($listing['hasContactEmail'] ?? false) === true
         && ($listing['media'][0]['srcSet'] ?? '') === "/api/profiles/{$id}/media/{$mediaId}/320.webp?v=media-v3 320w"
+        && ($listing['profileImageSrcSet'] ?? '') === "/api/profiles/{$id}/profile-photo/320.webp?v=media-v3-{$mediaId} 320w"
         && !array_key_exists('fileName', $listing['media'][0] ?? []),
         'Approved listings must expose responsive media and contact availability while withholding private fields.'
     );

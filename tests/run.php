@@ -1821,6 +1821,18 @@ foreach (['en', 'fr'] as $mailLocale) {
         'Administrator registration alerts must identify the applicant and link directly to account review.'
     );
 }
+$imageProfile = ['userId' => 7];
+$imageProjection = new ReflectionMethod(MarketplaceService::class, 'applyProfileImage');
+$imageProjection->invokeArgs((new ReflectionClass(MarketplaceService::class))->newInstanceWithoutConstructor(), [
+    &$imageProfile,
+    [['id' => 2, 'type' => 'PHOTO', 'url' => '/api/profiles/7/media/2',
+      'srcSet' => '/api/profiles/7/media/2/320.webp?v=media-v3 320w, /api/profiles/7/media/2/640.webp?v=media-v3 640w']],
+]);
+$assert(
+    $imageProfile['profileImageUrl'] === '/api/profiles/7/profile-photo?v=media-v3-2'
+    && $imageProfile['profileImageSrcSet'] === '/api/profiles/7/profile-photo/320.webp?v=media-v3-2 320w, /api/profiles/7/profile-photo/640.webp?v=media-v3-2 640w',
+    'Responsive profile widths must be URL path segments, never part of the cache-version query.'
+);
 $pngLogo = (new ReflectionMethod(App::class, 'brandLogo'))->invoke(new App(), new Request('GET', '/api/brand/logo', [], ['format' => 'png']));
 $assert($pngLogo->status === 200 && $pngLogo->headers['Content-Type'] === 'image/png', 'Email brand endpoint must support PNG without changing existing WebP requests.');
 
