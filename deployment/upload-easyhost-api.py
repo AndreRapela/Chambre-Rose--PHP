@@ -30,62 +30,28 @@ FILES = (
     "database/migrations/027-marketplace-listing-performance.pgsql.sql",
     "database/migrations/028-site-promotions.mysql.sql",
     "database/migrations/028-site-promotions.pgsql.sql",
-    "src/AccountRecovery.php",
-    "src/AddressSearchRoutes.php",
-    "src/AdminModerationRoutes.php",
-    "src/AdminModerationService.php",
-    "src/AdminRoutes.php",
-    "src/ApiRequestGuard.php",
-    "src/App.php",
-    "src/AppointmentRepository.php",
-    "src/AuthRateLimiter.php",
-    "src/AuthRoutes.php",
-    "src/CalendarRoutes.php",
-    "src/CompanyVerificationRepository.php",
-    "src/CompanyVerificationService.php",
-    "src/CompositePushNotificationSender.php",
-    "src/Database.php",
-    "src/IdentityVerificationRepository.php",
-    "src/IdentityVerificationService.php",
-    "src/Jwt.php",
-    "src/ListingRoutes.php",
-    # Publish backward-compatible dependencies before their new callers.
-    "src/UserExclusionRepository.php",
-    "src/ResponsiveImageVariantRepository.php",
-    "src/ResponsiveImageService.php",
-    "src/MarketplaceService.php",
-    "src/Messaging.php",
-    "src/MessagingRoutes.php",
-    "src/NativePushNotificationService.php",
-    "src/NotificationRepository.php",
-    "src/NotificationRoutes.php",
-    "src/PrivateIdentityFileCipher.php",
-    "src/ProductImageRepository.php",
-    "src/ProductRepository.php",
-    "src/ProductRoutes.php",
-    "src/ProductService.php",
-    "src/ProfessionalProfileMapper.php",
-    "src/ProfessionalProfileRepository.php",
-    "src/ProfessionalProfileSearch.php",
-    "src/ProfileMedia.php",
-    "src/PromotionRepository.php",
-    "src/PromotionRoutes.php",
-    "src/PromotionService.php",
-    "src/PushNotificationService.php",
-    "src/Repositories.php",
-    "src/ResponsiveImageProcessor.php",
-    "src/Response.php",
-    "src/SearchPagination.php",
-    "src/Seeder.php",
-    "src/Services.php",
-    "src/SupportRoutes.php",
-    "src/UserNotificationService.php",
-    "src/Validator.php",
     "resources/brand/brand-logo.png",
+    "resources/brand/brand-logo-84.webp",
     "resources/seed-images/carousel-basic-black.jpeg",
     "resources/seed-images/carousel-pink-lace-tie.jpeg",
     "resources/seed-images/carousel-pink-ring-thong.jpeg",
 )
+
+
+def release_files(workspace: Path) -> tuple[str, ...]:
+    source_root = workspace / "src"
+    sources = tuple(sorted(path.relative_to(workspace).as_posix() for path in source_root.rglob("*.php") if path.is_file()))
+    if not sources:
+        raise RuntimeError("Nenhuma classe PHP foi encontrada em src.")
+    # Existing callers stay active until every new class has been uploaded.
+    files = FILES + sources + ("bootstrap.php",)
+    for relative_name in files:
+        path = workspace / relative_name
+        if not path.is_file():
+            raise RuntimeError(f"Arquivo local ausente: {relative_name}")
+        if not path.resolve().is_relative_to(workspace.resolve()):
+            raise RuntimeError(f"Arquivo fora do projeto: {relative_name}")
+    return files
 
 
 def load_credentials() -> tuple[str, int, str, str]:
@@ -245,6 +211,7 @@ def main() -> int:
     options = parser.parse_args()
     workspace = Path(__file__).resolve().parent.parent
     try:
+        files = release_files(workspace)
         host, port, user, password = load_credentials()
     except Exception as error:
         print(f"Falha ao carregar credenciais de deploy: {error}", file=sys.stderr)
@@ -262,7 +229,7 @@ def main() -> int:
             ftp.set_pasv(True)
             ftp.voidcmd("TYPE I")
 
-            for relative_name in FILES:
+            for relative_name in files:
                 local = workspace / relative_name
                 if not local.is_file():
                     raise RuntimeError(f"Arquivo local ausente: {relative_name}")

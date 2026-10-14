@@ -309,6 +309,11 @@ final class MarketplaceService
             : $media;
     }
 
+    public function cachedPhotoSourceHash(int $userId, int $mediaId, int $width): ?string
+    {
+        return $this->responsiveImages->cachedProfilePhotoHashForUser($userId, $mediaId, $width);
+    }
+
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string} */
     public function responsivePhoto(int $userId, int $mediaId, int $width): array
     {

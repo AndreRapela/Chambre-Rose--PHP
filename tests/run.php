@@ -1853,4 +1853,8 @@ $addressFeature = ['properties' => ['street' => 'Rue de Rivoli', 'housenumber' =
 $addresses = \ChambreRose\AddressSearchRoutes::suggestions([$addressFeature, $addressFeature, ['properties' => ['name' => 'Unknown']]]);
 $assert(count($addresses) === 1, 'Address suggestions deduplicate and reject missing locality');
 $assert($addresses[0] === ['address' => 'Rue de Rivoli, 33', 'city' => 'Paris', 'region' => 'Île-de-France', 'country' => 'France', 'postalCode' => '75001'], 'Address suggestion preserves street and locality separately');
+if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    require __DIR__ . '/image-revalidation.php';
+    runImageRevalidationChecks($assert);
+}
 fwrite(STDOUT, "OK - {$tests} assertions\n");

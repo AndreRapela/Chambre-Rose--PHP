@@ -3,6 +3,11 @@
   "description": "API PHP da loja Chambre Rose, compativel com o frontend Angular existente.",
   "license": "proprietary",
   "type": "project",
+  "autoload": {
+    "psr-4": {
+      "ChambreRose\\": "src/"
+    }
+  },
   "require": {
     "php": "^8.2",
     "ext-curl": "*",
@@ -25,7 +30,10 @@
     "serve": "php -S localhost:8080 -t public public/router.php",
     "setup": "php bin/setup.php",
     "analyse": "phpstan analyse --configuration=phpstan.neon --no-progress",
-    "test": "php tests/run.php",
+    "test": [
+      "php tests/autoload.php",
+      "php tests/run.php"
+    ],
     "test:integration": "php tests/integration.php",
     "test:cleanup": "php tests/cleanup-integration-data.php",
     "notifications:work": "php bin/process-notification-outbox.php --watch"

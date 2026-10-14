@@ -27,6 +27,8 @@ COPY composer.json composer.lock ./
 RUN composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader
 COPY . .
 
+RUN composer dump-autoload --no-dev --optimize --strict-psr
+
 RUN chown -R www-data:www-data /var/www/html
 
 EXPOSE 80

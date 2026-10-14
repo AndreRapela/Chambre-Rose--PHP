@@ -387,9 +387,13 @@ final class ListingRoutes implements RouteHandler
     private function profileMediaVariant(Request $request, int $userId, int $mediaId, int $width): Response
     {
         $isPublic = $this->authorizeProfileMedia($request, $userId, $mediaId);
+        $cache = $isPublic ? self::PUBLIC_MEDIA_CACHE : 'private, no-store';
+        $cachedResponse = $this->cachedPhotoResponse($request, $userId, $mediaId, $width, $cache);
+        if ($cachedResponse !== null) {
+            return $cachedResponse;
+        }
         $image = $this->marketplace->responsivePhoto($userId, $mediaId, $width);
         $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $image['sourceHash'] . '|' . $width);
-        $cache = $isPublic ? self::PUBLIC_MEDIA_CACHE : 'private, no-store';
         if (ApiResponder::etagMatches($request, $etag)) {
             return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
         }
@@ -434,9 +438,13 @@ final class ListingRoutes implements RouteHandler
     private function profilePhotoVariant(Request $request, int $userId, int $width): Response
     {
         [$mediaId, $isPublic] = $this->authorizeProfilePhoto($request, $userId);
+        $cache = $this->profilePhotoCache($request, $mediaId, $isPublic);
+        $cachedResponse = $this->cachedPhotoResponse($request, $userId, $mediaId, $width, $cache, '|profile-photo');
+        if ($cachedResponse !== null) {
+            return $cachedResponse;
+        }
         $image = $this->marketplace->responsiveProfilePhoto($userId, $mediaId, $width);
         $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $image['sourceHash'] . '|' . $width . '|profile-photo');
-        $cache = $this->profilePhotoCache($request, $mediaId, $isPublic);
         if (ApiResponder::etagMatches($request, $etag)) {
             return new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache]);
         }
@@ -448,6 +456,31 @@ final class ListingRoutes implements RouteHandler
             'Cache-Control' => $cache,
             'ETag' => $etag,
         ]);
+    }
+
+    /** Called only after the route's existing authorization checks. */
+    private function cachedPhotoResponse(
+        Request $request,
+        int $userId,
+        int $mediaId,
+        int $width,
+        string $cache,
+        string $etagSuffix = ''
+    ): ?Response {
+        // Keep ordinary image loads on their existing single-payload-query
+        // path; only conditional requests need the metadata lookup.
+        if (trim($request->header('if-none-match') ?? '') === '') {
+            return null;
+        }
+        $hash = $this->marketplace->cachedPhotoSourceHash($userId, $mediaId, $width);
+        if ($hash === null) {
+            return null;
+        }
+        $etag = ApiResponder::etag($userId . '|' . $mediaId . '|' . $hash . '|' . $width . $etagSuffix);
+
+        return ApiResponder::etagMatches($request, $etag)
+            ? new Response(304, '', ['ETag' => $etag, 'Cache-Control' => $cache])
+            : null;
     }
 
     /** @return array{int, bool} */

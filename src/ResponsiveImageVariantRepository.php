@@ -121,6 +121,31 @@ final class ResponsiveImageVariantRepository
     }
 
     /**
+     * Reads only the validator for an owned, cached photo. Conditional GETs
+     * must not transfer image_data just to discover they can return 304.
+     */
+    public function findProfilePhotoHashForUser(int $userId, int $mediaId, int $maxWidth, int $minWidth): ?string
+    {
+        $statement = $this->pdo->prepare(
+            "SELECT image_variant.source_hash
+             FROM responsive_image_variants image_variant
+             JOIN profile_media profile_media ON profile_media.id=image_variant.profile_media_id
+             WHERE profile_media.user_id=:user_id AND profile_media.id=:media_id AND profile_media.media_type='PHOTO'
+               AND image_variant.width<=:max_width AND image_variant.width>=:min_width
+             ORDER BY image_variant.width DESC LIMIT 1"
+        );
+        $statement->execute([
+            'user_id' => $userId,
+            'media_id' => $mediaId,
+            'max_width' => $maxWidth,
+            'min_width' => $minWidth,
+        ]);
+        $hash = $statement->fetchColumn();
+
+        return is_string($hash) ? $hash : null;
+    }
+
+    /**
      * @param list<array{width: int, height: int, contentType: string, size: int, bytes: string}> $variants
      */
     public function replace(string $ownerType, int $ownerId, string $sourceHash, array $variants): void

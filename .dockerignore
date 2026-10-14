@@ -1,6 +1,15 @@
 .env
+.env.*
+!.env.example
 .git
 .phpstan-cache
 tests
 vendor
 README.md
+tmp
+deployment
+.idea
+.vscode
+__pycache__
+*.py[cod]
+*.log

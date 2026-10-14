@@ -2,6 +2,12 @@
 
 Backend PHP 8.2+ do marketplace Chambre Rose. Ele suporta MySQL na EasyHost e PostgreSQL no desenvolvimento local.
 
+## Organização do código
+
+As classes de aplicação seguem PSR-4: `ChambreRose\\` corresponde a `src/`, com uma declaração por arquivo e nome correspondente. Repositórios, serviços e rotas mantêm responsabilidades separadas; o bootstrap não carrega antecipadamente classes de outras áreas. O fallback de autoload suporta instalações existentes enquanto o autoloader Composer é regenerado.
+
+`composer test` verifica tanto o autoload quanto os testes de comportamento. O build Docker gera o mapa otimizado depois de copiar os fontes. Testes, ambientes locais, diagnósticos e ferramentas de publicação não entram na imagem de execução. O publicador inclui todos os fontes PHP, faz a conferência antes da conexão e atualiza o bootstrap por último.
+
 ### Sugestões de endereço
 
 `POST /api/locations/search` recebe `query` e `language` (`en`/`fr`) e consulta Photon/OpenStreetMap. `ADDRESS_SEARCH_URL` permite configurar uma instância HTTPS própria; o padrão é `https://photon.komoot.io/api/`. O serviço público não oferece SLA: para tráfego elevado, use uma instância dedicada. Há limite de 40 buscas por IP/minuto, timeout e preenchimento manual no frontend. A consulta é enviada ao provedor, sem identidade da conta; a resposta não deve ser armazenada em cache. A rua continua privada no perfil. Atribuição OpenStreetMap é exibida junto à busca.
