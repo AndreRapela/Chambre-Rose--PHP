@@ -1333,6 +1333,23 @@ $assert(
     && strpos($orientedWebp, 'EXIF') === false,
     'JPEG orientation must be applied before EXIF is removed from sanitized originals.'
 );
+$orientedPreview = $imageProcessor->blurredPreview($orientedJpegWithExif);
+$assert($orientedPreview['width'] === 10 && $orientedPreview['height'] === 20
+    && strpos($orientedPreview['bytes'], 'EXIF') === false,
+    'Direct VIP preview processing keeps EXIF orientation without encoding a full-sized intermediate image.');
+$assert(ResponsiveImageProcessor::displayDimensions($orientedJpegWithExif) === ['width' => 10, 'height' => 20],
+    'Legacy cache planning uses oriented display dimensions.');
+$largeOriented = imagecreatetruecolor(800, 400);
+imagefill($largeOriented, 0, 0, imagecolorallocate($largeOriented, 220, 20, 60));
+ob_start();
+imagejpeg($largeOriented);
+$largeJpeg = (string) ob_get_clean();
+unset($largeOriented);
+$largeExifJpeg = substr($largeJpeg, 0, 2) . "\xFF\xE1" . pack('n', strlen($exifPayload) + 2) . $exifPayload . substr($largeJpeg, 2);
+$directVariants = $imageProcessor->generate($largeExifJpeg);
+$assert(count($directVariants) === 1 && $directVariants[0]['width'] === 320 && $directVariants[0]['height'] === 640
+    && strpos($directVariants[0]['bytes'], 'EXIF') === false,
+    'Direct thumbnail generation applies orientation before choosing sizes and strips metadata without enlarging the photo.');
 $responsiveVariants = $imageProcessor->generate($widePng);
 $blurredPreview = $imageProcessor->blurredPreview($widePng);
 $assert(
@@ -1856,5 +1873,7 @@ $assert($addresses[0] === ['address' => 'Rue de Rivoli, 33', 'city' => 'Paris', 
 if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     require __DIR__ . '/image-revalidation.php';
     runImageRevalidationChecks($assert);
+    require __DIR__ . '/profile-image-cache.php';
+    runProfileImageCacheChecks($assert);
 }
 fwrite(STDOUT, "OK - {$tests} assertions\n");

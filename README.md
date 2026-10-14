@@ -120,6 +120,19 @@ Abra `http://localhost:4200`. O proxy do Angular envia `/api` para `http://local
 
 ## Testes
 
+### Cache das fotos existentes
+
+Uploads novos e fotos dos seeds já geram as miniaturas e a prévia VIP antes da publicação. Para fotos antigas, prepare o cache fora das requisições HTTP:
+
+```powershell
+php bin/warm-profile-images.php
+php bin/warm-profile-images.php --apply
+```
+
+Sem `--apply`, o comando apenas valida e informa o trabalho pendente. Com `--apply`, altera somente `responsive_image_variants`; mantém os perfis, arquivos originais, fotos e vídeos. `--user=ID` limita a um perfil e `--batch-size=25` controla o lote.
+
+Originais antigos acima do limite atual são preservados: o comando usa uma miniatura pública já armazenada somente quando seu fingerprint corresponde ao arquivo original. Sem uma versão confiável, informa a falha sem decodificar a imagem acima do limite.
+
 ```powershell
 composer test
 ```

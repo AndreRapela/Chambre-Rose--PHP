@@ -12,6 +12,7 @@ final class Seeder
     private const MVP_CONTENT_SEED = 'mvp-marketplace-content-v1';
     private const PROFILE_DIVERSITY_SEED = 'mvp-profile-diversity-v2';
     private const PROFILE_DEMO_LOGIN_SEED = 'mvp-profile-demo-login-v3';
+    private const PROFILE_PORTRAIT_SEED = 'mvp-profile-portraits-v4';
     private const MALE_COMPANION_EMAIL = 'demo-companion-man@chambre-rose.invalid';
     private const MALE_COMPANION_PASSWORD = 'ChambreRose2026!Man';
     private const TRANS_COMPANION_EMAIL = 'demo-companion-trans@chambre-rose.invalid';
@@ -35,6 +36,9 @@ final class Seeder
         if ($seedMvpContent || $this->seedApplied(self::MVP_CONTENT_SEED)) {
             $this->seedProfileDiversityOnce();
             $this->seedProfileDemoLoginsOnce();
+        }
+        if ($seedMvpContent) {
+            $this->repairDefaultPortraits();
         }
         if (!Config::bool('SEED_DEMO_USERS', false)) {
             return;
@@ -82,6 +86,40 @@ final class Seeder
     {
         $this->applySeedOnce(self::PROFILE_DIVERSITY_SEED, function (): void {
             $this->seedDiverseCompanions();
+        });
+    }
+
+    /** Repairs only known demo covers, retaining every existing media record. */
+    public function repairDefaultPortraits(): void
+    {
+        $this->applySeedOnce(self::PROFILE_PORTRAIT_SEED, function (): void {
+            $portraits = [
+                self::MALE_COMPANION_EMAIL => ['carousel-basic-black.jpeg', 'companion-man.jpg'],
+                self::TRANS_COMPANION_EMAIL => ['carousel-pink-lace-tie.jpeg', 'companion-trans.jpg'],
+            ];
+            foreach ($portraits as $email => [$oldName, $newName]) {
+                $user = $this->users->findByEmail($email);
+                if ($user === null || $user['role'] !== 'ESCORT') continue;
+                $userId = (int) $user['id'];
+                $cover = $this->pdo->prepare("SELECT file_name,media_data FROM profile_media WHERE user_id=:user AND media_type='PHOTO' ORDER BY position,id LIMIT 1");
+                $cover->execute(['user' => $userId]);
+                $row = $cover->fetch();
+                // Never replace an uploaded or edited portrait, even if its name matches.
+                if (!is_array($row) || $row['file_name'] !== $oldName) continue;
+                $oldBytes = file_get_contents(dirname(__DIR__) . '/resources/seed-images/' . $oldName);
+                $storedBytes = $row['media_data'];
+                if (is_resource($storedBytes)) $storedBytes = stream_get_contents($storedBytes);
+                if ($oldBytes === false || !is_string($storedBytes)
+                    || !hash_equals(hash('sha256', $oldBytes), hash('sha256', $storedBytes))) continue;
+                if (!is_file(dirname(__DIR__) . '/resources/seed-images/' . $newName)) {
+                    throw new \RuntimeException('The demo portrait source is missing.');
+                }
+                $this->pdo->prepare("UPDATE profile_media SET position=position+1 WHERE user_id=:user AND media_type='PHOTO'")
+                    ->execute(['user' => $userId]);
+                $this->seedProfilePhotos($userId, [$newName]);
+                $this->pdo->prepare('UPDATE professional_profiles SET updated_at=CURRENT_TIMESTAMP WHERE user_id=:user')
+                    ->execute(['user' => $userId]);
+            }
         });
     }
 
@@ -340,7 +378,7 @@ final class Seeder
                 'birthDate' => '1994-03-12', 'heightCm' => 183, 'weightKg' => 78,
                 'hair' => 'Brown', 'eyes' => 'Hazel', 'origin' => 'Belgian', 'vip' => false,
                 'bio' => 'Profil masculin fictif de démonstration. Une présence élégante, attentionnée et discrète pour des rencontres respectueuses.',
-                'image' => 'carousel-basic-black.jpeg',
+                'image' => 'companion-man.jpg',
             ],
             [
                 'name' => 'Alexia Lumière', 'email' => self::TRANS_COMPANION_EMAIL,
@@ -348,7 +386,7 @@ final class Seeder
                 'birthDate' => '1997-08-24', 'heightCm' => 176, 'weightKg' => 63,
                 'hair' => 'Black', 'eyes' => 'Brown', 'origin' => 'European', 'vip' => true,
                 'bio' => 'Profil trans fictif de démonstration. Une personnalité lumineuse, chaleureuse et discrète pour des échanges respectueux.',
-                'image' => 'carousel-pink-lace-tie.jpeg',
+                'image' => 'companion-trans.jpg',
             ],
         ];
 
@@ -387,12 +425,7 @@ final class Seeder
                     ->execute(['id' => $userId]);
             }
 
-            $gallery = array_values(array_unique([
-                (string) $profile['image'],
-                'carousel-basic-black.jpeg',
-                'carousel-pink-lace-tie.jpeg',
-                'carousel-pink-ring-thong.jpeg',
-            ]));
+            $gallery = [(string) $profile['image']];
             $this->seedProfilePhotosIfMissing($userId, $gallery);
             $this->seedReviewsIfMissing($userId, (string) $profile['name']);
         }
@@ -415,8 +448,11 @@ final class Seeder
     /** @param list<string> $fileNames */
     private function seedProfilePhotos(int $userId, array $fileNames): void
     {
+        $images = new ResponsiveImageService(new ResponsiveImageProcessor(), new ResponsiveImageVariantRepository($this->pdo));
+        $mysql = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
         $statement = $this->pdo->prepare(
-            "INSERT INTO profile_media (user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) VALUES (:user,'PHOTO',:name,'image/jpeg',:size,:data,:position,CURRENT_TIMESTAMP)"
+            "INSERT INTO profile_media (user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) VALUES (:user,'PHOTO',:name,'image/webp',:size,:data,:position,CURRENT_TIMESTAMP)"
+            . ($mysql ? '' : ' RETURNING id')
         );
         foreach ($fileNames as $position => $fileName) {
             $path = dirname(__DIR__) . '/resources/seed-images/' . $fileName;
@@ -424,13 +460,19 @@ final class Seeder
             if ($bytes === false) {
                 continue;
             }
+            $bytes = $images->sanitize($bytes);
+            $prepared = $images->prepare($bytes);
+            $prepared[] = $images->prepareVipPreview($bytes);
             $statement->execute([
                 'user' => $userId,
-                'name' => $fileName,
+                'name' => pathinfo($fileName, PATHINFO_FILENAME) . '.webp',
                 'size' => strlen($bytes),
                 'data' => $bytes,
                 'position' => $position,
             ]);
+            $mediaId = $mysql ? (int) $this->pdo->lastInsertId() : (int) $statement->fetchColumn();
+            $statement->closeCursor();
+            $images->storePrepared('PROFILE', $mediaId, $bytes, $prepared);
         }
     }
 

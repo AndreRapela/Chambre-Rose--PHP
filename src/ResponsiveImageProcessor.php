@@ -44,6 +44,12 @@ final class ResponsiveImageProcessor
             throw new ApiException(400, 'The uploaded image could not be decoded.');
         }
 
+        if (strtolower((string) $dimensions['mime']) === 'image/jpeg') {
+            $source = self::applyExifOrientation($source, self::jpegExifOrientation($sourceBytes));
+            $sourceWidth = imagesx($source);
+            $sourceHeight = imagesy($source);
+        }
+
         $requestedWidths = array_values(array_unique($widths ?? self::WIDTHS));
         $targetWidths = array_values(array_filter(
             $requestedWidths,
@@ -178,8 +184,6 @@ final class ResponsiveImageProcessor
             throw new ApiException(503, 'VIP image preview processing is unavailable.');
         }
 
-        $sourceBytes = $this->sanitize($sourceBytes);
-
         $dimensions = @getimagesizefromstring($sourceBytes);
         if (!is_array($dimensions)) {
             throw new ApiException(400, 'The uploaded image is invalid or corrupted.');
@@ -197,6 +201,12 @@ final class ResponsiveImageProcessor
         $source = @imagecreatefromstring($sourceBytes);
         if (!$source instanceof GdImage) {
             throw new ApiException(400, 'The uploaded image could not be decoded.');
+        }
+
+        if (strtolower((string) $dimensions['mime']) === 'image/jpeg') {
+            $source = self::applyExifOrientation($source, self::jpegExifOrientation($sourceBytes));
+            $sourceWidth = imagesx($source);
+            $sourceHeight = imagesy($source);
         }
 
         $targetWidth = min(160, $sourceWidth);
@@ -250,6 +260,24 @@ final class ResponsiveImageProcessor
         } finally {
             unset($target, $source);
         }
+    }
+
+    /** @return array{width:int,height:int} */
+    public static function displayDimensions(string $sourceBytes): array
+    {
+        $dimensions = @getimagesizefromstring($sourceBytes);
+        if (!is_array($dimensions)) {
+            throw new ApiException(400, 'The uploaded image is invalid or corrupted.');
+        }
+        $width = (int) $dimensions[0];
+        $height = (int) $dimensions[1];
+        self::assertSupportedDimensions($width, $height);
+        if (strtolower((string) $dimensions['mime']) === 'image/jpeg'
+            && in_array(self::jpegExifOrientation($sourceBytes), [5, 6, 7, 8], true)) {
+            [$width, $height] = [$height, $width];
+        }
+
+        return ['width' => $width, 'height' => $height];
     }
 
     private static function assertSupportedDimensions(int $width, int $height): void

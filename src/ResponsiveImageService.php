@@ -66,8 +66,7 @@ final class ResponsiveImageService
             }
         }
 
-        $sanitizedBytes = $this->processor->sanitize($sourceBytes);
-        $generated = $this->processor->generate($sanitizedBytes, [$width]);
+        $generated = $this->processor->generate($sourceBytes, [$width]);
         if ($generated === []) {
             if (!$allowSmaller) {
                 throw new ApiException(404, 'Responsive image size is larger than the source image.');
@@ -76,7 +75,7 @@ final class ResponsiveImageService
             // Legacy uploads have no derivatives yet. Generate all supported
             // widths once and serve the largest non-upscaled candidate when
             // the browser asks for a width larger than the source can provide.
-            $generated = $this->processor->generate($sanitizedBytes);
+            $generated = $this->processor->generate($sourceBytes);
             $available = array_values(array_filter(
                 $generated,
                 static fn (array $variant): bool => $variant['width'] <= $width
@@ -99,7 +98,7 @@ final class ResponsiveImageService
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string, sourceHash: string, updatedAt: string}|null */
     public function cachedVipPreview(string $ownerType, int $ownerId): ?array
     {
-        return $this->variants->find($ownerType, $ownerId, self::VIP_PREVIEW_WIDTH);
+        return $this->variants->findLargestAtOrBelow($ownerType, $ownerId, self::VIP_PREVIEW_WIDTH, 1);
     }
 
     /** @return array{width: int, height: int, contentType: string, size: int, bytes: string} */
@@ -112,15 +111,15 @@ final class ResponsiveImageService
     public function vipPreview(string $ownerType, int $ownerId, string $sourceBytes): array
     {
         $sourceHash = self::sourceHash($sourceBytes);
-        $cached = $this->variants->find($ownerType, $ownerId, self::VIP_PREVIEW_WIDTH, $sourceHash);
-        if ($cached !== null) {
+        $cached = $this->cachedVipPreview($ownerType, $ownerId);
+        if ($cached !== null && $cached['sourceHash'] === $sourceHash) {
             return $cached;
         }
 
         $preview = $this->prepareVipPreview($sourceBytes);
         $this->variants->save($ownerType, $ownerId, $sourceHash, [$preview]);
 
-        return $this->variants->find($ownerType, $ownerId, self::VIP_PREVIEW_WIDTH, $sourceHash)
+        return $this->variants->find($ownerType, $ownerId, $preview['width'], $sourceHash)
             ?? throw new ApiException(503, 'Unable to cache the VIP photo preview.');
     }
 
@@ -204,7 +203,7 @@ final class ResponsiveImageService
         }
     }
 
-    private static function sourceHash(string $sourceBytes): string
+    public static function sourceHash(string $sourceBytes): string
     {
         return hash('sha256', self::PROCESSING_VERSION . "\0" . $sourceBytes);
     }

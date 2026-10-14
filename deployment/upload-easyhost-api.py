@@ -18,6 +18,7 @@ FTP_ROOT = PurePosixPath("/chambre-rose-api")
 HEALTH_URL = "https://chambre-rose.com/api/health"
 FILES = (
     "bin/process-notification-outbox.php",
+    "bin/warm-profile-images.php",
     "database/migrations/023-native-push-devices.mysql.sql",
     "database/migrations/023-native-push-devices.pgsql.sql",
     "database/migrations/024-private-identity-verification.mysql.sql",
@@ -35,6 +36,8 @@ FILES = (
     "resources/seed-images/carousel-basic-black.jpeg",
     "resources/seed-images/carousel-pink-lace-tie.jpeg",
     "resources/seed-images/carousel-pink-ring-thong.jpeg",
+    "resources/seed-images/companion-man.jpg",
+    "resources/seed-images/companion-trans.jpg",
 )
 
 
