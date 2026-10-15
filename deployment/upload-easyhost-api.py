@@ -7,6 +7,7 @@ import io
 import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import sys
 import time
 import urllib.request
@@ -129,10 +130,14 @@ def replace_file(
     content: bytes,
     release: str,
     backup_root: PurePosixPath | None,
+    journal: dict[PurePosixPath, tuple[bytes | None, bytes]] | None = None,
 ) -> bool:
     previous = read_remote(ftp, remote)
     if previous == content:
         return False
+
+    if journal is not None:
+        journal.setdefault(remote, (previous, content))
 
     if previous is not None and backup_root is not None:
         relative = remote.relative_to(FTP_ROOT)
@@ -155,6 +160,39 @@ def replace_file(
             remove_if_present(ftp, temporary)
             raise
     return True
+
+
+def restore_release(
+    ftp: ftplib.FTP,
+    journal: dict[PurePosixPath, tuple[bytes | None, bytes]],
+    release: str,
+) -> None:
+    environment = FTP_ROOT / ".env"
+    paths = ([environment] if environment in journal else []) + [path for path in reversed(journal) if path != environment]
+    failures = []
+    for remote in paths:
+        try:
+            if not remote.is_relative_to(FTP_ROOT) or ".." in remote.parts:
+                raise RuntimeError("Rollback target outside the API directory.")
+            previous, attempted = journal[remote]
+            current = read_remote(ftp, remote)
+            if current != previous:
+                if current is not None and current != attempted:
+                    raise RuntimeError("The file was changed by another operation.")
+                if previous is None:
+                    remove_if_present(ftp, remote)
+                else:
+                    replace_file(ftp, remote, previous, release + "-rollback", None)
+                if read_remote(ftp, remote) != previous:
+                    raise RuntimeError("Restored file verification failed.")
+            remove_if_present(ftp, PurePosixPath(f"{remote}.next-{release}"))
+            if remote == environment:
+                remove_if_present(ftp, PurePosixPath(f"{remote}.next-{release}-restore"))
+        except Exception:
+            valid_target = remote.is_relative_to(FTP_ROOT) and ".." not in remote.parts
+            failures.append(str(remote.relative_to(FTP_ROOT)) if valid_target else "invalid target")
+    if failures:
+        raise RuntimeError("Rollback requires manual recovery for: " + ", ".join(failures))
 
 
 def enable_auto_migrate(environment: bytes) -> bytes:
@@ -219,10 +257,11 @@ def main() -> int:
         print(f"Falha ao carregar credenciais de deploy: {error}", file=sys.stderr)
         return 2
 
-    release = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    release = time.strftime("%Y%m%d-%H%M%S", time.gmtime()) + "-" + secrets.token_hex(4)
     backup_root = PurePosixPath(f"/chambre-rose-api-backup-{release}")
     changed = 0
     environment_path = FTP_ROOT / ".env"
+    journal: dict[PurePosixPath, tuple[bytes | None, bytes]] = {}
 
     try:
         with ftplib.FTP() as ftp:
@@ -245,6 +284,7 @@ def main() -> int:
                     local.read_bytes(),
                     release,
                     backup_root,
+                    journal,
                 )
                 print(f"{'Enviado' if uploaded else 'Sem alteracao'}: {relative_name}", flush=True)
                 changed += int(uploaded)
@@ -256,17 +296,24 @@ def main() -> int:
                 release_environment = enable_mvp_content_seed(release_environment)
             else:
                 release_environment = disable_automatic_seeds(release_environment)
+            if read_remote(ftp, environment_path) != original_environment:
+                raise RuntimeError("O ambiente foi alterado durante o envio; a configuracao externa foi preservada.")
+            if release_environment != original_environment:
+                journal[environment_path] = (original_environment, release_environment)
             try:
                 replace_file(ftp, environment_path, release_environment, release, None)
                 check_health(release + "-schema")
                 for relative_name in files[-2:]:
                     uploaded = replace_file(
-                        ftp, FTP_ROOT / relative_name, (workspace / relative_name).read_bytes(), release, backup_root
+                        ftp, FTP_ROOT / relative_name, (workspace / relative_name).read_bytes(), release, backup_root, journal
                     )
                     print(f"{'Enviado' if uploaded else 'Sem alteracao'}: {relative_name}", flush=True)
                     changed += int(uploaded)
                 check_health(release)
             finally:
+                current_environment = read_remote(ftp, environment_path)
+                if current_environment is not None and current_environment not in (original_environment, release_environment):
+                    raise RuntimeError("O ambiente foi alterado por outra operacao e nao sera sobrescrito.")
                 replace_file(ftp, environment_path, original_environment, release + "-restore", None)
 
             restored = read_remote(ftp, environment_path)
@@ -276,6 +323,18 @@ def main() -> int:
         check_health(release + "-final")
     except Exception as error:
         print(f"Falha no deploy da API: {error}", file=sys.stderr)
+        if journal:
+            try:
+                with ftplib.FTP() as recovery:
+                    recovery.connect(host, port, timeout=35)
+                    recovery.login(user, password)
+                    recovery.set_pasv(True)
+                    recovery.voidcmd("TYPE I")
+                    restore_release(recovery, journal, release)
+                check_health(release + "-rollback")
+                print("Arquivos anteriores e ambiente restaurados; nenhuma migracao foi revertida automaticamente.", flush=True)
+            except Exception as recovery_error:
+                print(f"Recuperacao incompleta: {recovery_error}. Backup: {backup_root}", file=sys.stderr)
         return 1
 
     migration_status = "migracoes nao solicitadas" if options.skip_migrations and not options.seed_mvp_content else "migracoes pendentes aplicadas"

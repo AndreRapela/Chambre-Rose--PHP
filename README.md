@@ -322,6 +322,8 @@ O teste `php tests/search-pagination.php` percorre produtos, acompanhantes e loj
 
 Releases sem novas migrations podem usar `python deployment/upload-easyhost-api.py --skip-migrations`, preservando o `.env` de produção sem ativar o migrator. O uploader mantém backup dos arquivos substituídos e verifica a saúde da API.
 
+Falhas de envio ou de saúde acionam a recuperação dos arquivos substituídos por uma nova conexão FTP. Alterações externas detectadas são preservadas; essa conferência não substitui uma trava de publicação, portanto evite operações simultâneas. O rollback não desfaz migrations: mudanças incompatíveis com o código anterior precisam de backup de banco e de um plano de recuperação próprio. Encerramentos forçados do processo e falhas persistentes de conexão exigem recuperação manual.
+
 Para publicar também os perfis, a loja, os produtos e as mídias de demonstração disponíveis no ambiente local, use `python deployment/upload-easyhost-api.py --seed-mvp-content`. A opção ativa o seed apenas durante a verificação do release, restaura integralmente o `.env` de produção e não duplica registros já instalados.
 
 ## Adicionando migrations

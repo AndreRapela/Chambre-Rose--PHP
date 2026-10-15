@@ -79,6 +79,11 @@ jobs:
       - name: Run unit tests
         run: composer test
 
+      - name: Check deployment manifest and recovery
+        run: |
+          python3 deployment/test-release-manifest.py
+          python3 deployment/test-release-rollback.py
+
       - name: Prepare integration database
         run: composer setup
 
