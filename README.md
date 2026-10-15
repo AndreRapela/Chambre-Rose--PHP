@@ -26,7 +26,7 @@ As classes de aplicação seguem PSR-4: `ChambreRose\\` corresponde a `src/`, co
 - notificacoes Web Push por outbox persistente, com trava concorrente, tentativas exponenciais e registro de falhas;
 - recuperacao de senha por token de uso unico e limites persistentes de tentativas de login e recuperacao;
 - CORS, headers de seguranca, respostas padronizadas de erro;
-- migrations incrementais e contas de acesso opcionais, sem perfis ou midias ficticios;
+- migrations incrementais, contas de teste opcionais e conteúdo de demonstração habilitado separadamente;
 - Apache/EasyHost, servidor embutido do PHP e Docker.
 
 ## Requisitos
@@ -42,7 +42,7 @@ As classes de aplicação seguem PSR-4: `ChambreRose\\` corresponde a `src/`, co
 O backend procura primeiro o `.env` da raiz do projeto e depois um `.env` nesta pasta. Ele entende tanto as variaveis antigas do Spring quanto as novas `DB_*`.
 
 ```powershell
-Copy-Item ..\.env.example ..\.env
+Copy-Item .env.example .env
 ```
 
 Variaveis essenciais na EasyHost:
@@ -94,16 +94,16 @@ dedicado ou, quando vazio, a assinatura usa `JWT_SECRET`.
 
 ## Rodar localmente
 
-Com Docker, a partir da raiz:
+Com Docker, a partir do repositório irmão do frontend:
 
 ```powershell
+cd ../Chambre-Rose--angular
 docker compose up --build
 ```
 
-Sem Docker:
+Sem Docker, na raiz deste repositório e com o banco configurado:
 
 ```powershell
-cd backend-php
 php bin\setup.php
 php -S localhost:8080 -t public public\router.php
 ```
@@ -111,7 +111,7 @@ php -S localhost:8080 -t public public\router.php
 Em outro terminal:
 
 ```powershell
-cd ..
+cd ../Chambre-Rose--angular
 npm install
 npm start
 ```
@@ -160,6 +160,8 @@ Invoke-RestMethod http://localhost:8080/api/health
 - `GET|PUT /api/profiles/{userId}`: consulta ou edita qualquer perfil como administrador.
 - `GET /api/listings` e `GET /api/listings/{userId}`: busca publica paginada de acompanhantes e lojas aprovadas.
 - `POST /api/profiles/me/media`: upload real multipart no campo `media`; acompanhantes comuns têm limite de 10 fotos e 2 videos, acompanhantes VIP têm mídia ilimitada e lojas mantêm 15 fotos e 3 videos.
+- `POST /api/profiles/me/card-cover`: upload multipart no campo `image`, exclusivo da capa dos cartões. As variantes WebP são preparadas no envio e armazenadas separadamente do avatar e da galeria; os perfis retornam `cardCoverUrl` e `cardCoverSrcSet`.
+- `DELETE /api/profiles/me/card-cover`: remove somente a capa personalizada, sem alterar o avatar ou a galeria. Sem uma capa escolhida, os cartões usam a foto de perfil.
 - `GET|POST /api/conversations` e `GET|POST /api/conversations/{id}/messages`: mensagens internas autenticadas.
 - `GET /api/events`: canal SSE autenticado para mensagens e atualizacoes da conta, com cursor de reconexao.
 - `PATCH /api/conversations/{id}/read|archive` e `DELETE /api/conversations/{id}`: leitura, arquivamento e remocao do proprio inbox.
@@ -253,6 +255,9 @@ GET    /api/profiles/{id}
 PUT    /api/profiles/{id}
 POST   /api/profiles/me/media
 DELETE /api/profiles/me/media/{id}
+POST   /api/profiles/me/card-cover
+DELETE /api/profiles/me/card-cover
+GET    /api/profiles/{id}/card-cover/{width}.webp
 GET    /api/favorites
 POST   /api/favorites/{profileId}
 DELETE /api/favorites/{profileId}
@@ -280,9 +285,9 @@ home/SEU_USUARIO/
     index.html             build do Angular
     assets/
     api/
-      index.php            copiado de backend-php/public
-      .htaccess            copiado de backend-php/public
-      .user.ini            copiado de backend-php/public
+      index.php            copiado de public/ deste repositório
+      .htaccess            copiado de public/ deste repositório
+      .user.ini            copiado de public/ deste repositório
 ```
 
 O `index.php` ja procura automaticamente `~/chambre-rose-api/bootstrap.php`. No `public_html`, envie o conteudo de `dist/chambre-rose/browser`, e nao a pasta `browser` em si.

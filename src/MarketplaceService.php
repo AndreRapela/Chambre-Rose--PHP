@@ -16,7 +16,8 @@ final class MarketplaceService
         private readonly ProfessionalProfileRepository $profiles,
         private readonly ProfileMediaRepository $media,
         private readonly ResponsiveImageService $responsiveImages,
-        private readonly ?UserExclusionRepository $exclusions = null
+        private readonly ?UserExclusionRepository $exclusions = null,
+        private readonly ?ProfileCardCoverRepository $cardCovers = null
     ) {
     }
 
@@ -525,6 +526,7 @@ final class MarketplaceService
     {
         $profile['media'] = $this->media->listFor((int) $profile['userId'], $public);
         $this->applyProfileImage($profile, $profile['media']);
+        $profile = array_replace($profile, $this->cardCovers?->forUser((int) $profile['userId']) ?? []);
 
         return $profile;
     }
@@ -536,6 +538,7 @@ final class MarketplaceService
     private function withPublicMedia(array $profile, ?array $viewer, int $limit, int $offset): array
     {
         $userId = (int) $profile['userId'];
+        $profile = array_replace($profile, $this->cardCovers?->forUser($userId) ?? []);
         $counts = $this->media->countTypes($userId);
         if ($this->mediaLocked($profile, $viewer)) {
             $total = $counts['PHOTO'];
@@ -599,13 +602,14 @@ final class MarketplaceService
         }
         $userIds = array_keys($profilesByUser);
         $covers = $this->media->firstPhotosForUsers($userIds, true);
+        $cardCovers = $this->cardCovers?->forUsers($userIds) ?? [];
         $lockedUserIds = array_values(array_filter(
             $userIds,
             fn (int $userId): bool => $this->mediaLocked($profilesByUser[$userId], $viewer)
         ));
         $lockedPhotoCounts = $this->media->countTypeForUsers($lockedUserIds, 'PHOTO');
 
-        return array_map(function (array $profile) use ($covers, $lockedPhotoCounts, $viewer): array {
+        return array_map(function (array $profile) use ($covers, $cardCovers, $lockedPhotoCounts, $viewer): array {
             $userId = (int) $profile['userId'];
             $profileCover = $covers[$userId] ?? [];
             $locked = $this->mediaLocked($profile, $viewer);
@@ -613,6 +617,7 @@ final class MarketplaceService
             $profile['mediaLocked'] = $locked;
             $profile['lockedMediaCount'] = $locked ? ($lockedPhotoCounts[$userId] ?? 0) : 0;
             $this->applyProfileImage($profile, $profileCover);
+            $profile = array_replace($profile, $cardCovers[$userId] ?? ['cardCoverUrl' => null, 'cardCoverSrcSet' => null]);
 
             return $profile;
         }, $profiles);

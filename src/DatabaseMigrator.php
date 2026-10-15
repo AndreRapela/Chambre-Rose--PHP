@@ -256,6 +256,13 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-29-profile-card-covers',
+                'file' => dirname(__DIR__) . '/database/migrations/029-profile-card-covers.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 

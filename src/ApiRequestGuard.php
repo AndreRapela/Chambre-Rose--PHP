@@ -26,10 +26,7 @@ final class ApiRequestGuard
     }
 
     /**
-     * Authentication and current-user hydration share the same lookup. The
-     * previous flow loaded the same user twice on every authenticated request,
-     * which was especially expensive while several profile photos loaded in
-     * parallel.
+     * Reuses the identity and user lookup within the current request.
      *
      * @return array{identity: array{sub: string, role: string, pwd: string, iat?: int, exp: int}, user: array<string,mixed>}
      */

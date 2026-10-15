@@ -54,7 +54,9 @@ final class App
         );
         $passwordResets = new PasswordResetRepository($pdo);
         $mail = new MailService($pdo);
-        $marketplace = new MarketplaceService($users, $profiles, $profileMedia, $responsiveImages, $exclusions);
+        $cardCovers = new ProfileCardCoverRepository($pdo);
+        $cardCoverService = new ProfileCardCoverService($cardCovers, new ResponsiveImageProcessor());
+        $marketplace = new MarketplaceService($users, $profiles, $profileMedia, $responsiveImages, $exclusions, $cardCovers);
         $products = new ProductRepository($pdo);
         $productImages = new ProductImageRepository($pdo, $responsiveImages);
         $productService = new ProductService($products, $productImages, $users);
@@ -80,6 +82,7 @@ final class App
             new PromotionRoutes($promotionService, $guard),
             new AuthRoutes($auth, $guard, $sessionCookie, $pushDeviceCookie, $rateLimiter, $userNotifications),
             new ListingRoutes($marketplace, $profiles, $profileMedia, $favorites, $products, $guard, $userNotifications),
+            new ProfileCardCoverRoutes($cardCovers, $cardCoverService, $marketplace, $guard),
             new ProductRoutes($productService, $products, $productImages, $guard, $userNotifications),
             new MessagingRoutes($messaging, $users, $guard, $userNotifications, $realtimeEvents),
             new SupportRoutes($pdo, $messaging, $guard, $userNotifications, $realtimeEvents),

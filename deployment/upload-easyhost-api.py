@@ -19,18 +19,6 @@ HEALTH_URL = "https://chambre-rose.com/api/health"
 FILES = (
     "bin/process-notification-outbox.php",
     "bin/warm-profile-images.php",
-    "database/migrations/023-native-push-devices.mysql.sql",
-    "database/migrations/023-native-push-devices.pgsql.sql",
-    "database/migrations/024-private-identity-verification.mysql.sql",
-    "database/migrations/024-private-identity-verification.pgsql.sql",
-    "database/migrations/025-private-company-verification.mysql.sql",
-    "database/migrations/025-private-company-verification.pgsql.sql",
-    "database/migrations/026-personal-area.mysql.sql",
-    "database/migrations/026-personal-area.pgsql.sql",
-    "database/migrations/027-marketplace-listing-performance.mysql.sql",
-    "database/migrations/027-marketplace-listing-performance.pgsql.sql",
-    "database/migrations/028-site-promotions.mysql.sql",
-    "database/migrations/028-site-promotions.pgsql.sql",
     "resources/brand/brand-logo.png",
     "resources/brand/brand-logo-84.webp",
     "resources/seed-images/carousel-basic-black.jpeg",
@@ -43,11 +31,14 @@ FILES = (
 
 def release_files(workspace: Path) -> tuple[str, ...]:
     source_root = workspace / "src"
-    sources = tuple(sorted(path.relative_to(workspace).as_posix() for path in source_root.rglob("*.php") if path.is_file()))
+    sources = tuple(sorted(path.relative_to(workspace).as_posix() for path in source_root.rglob("*.php")
+                           if path.is_file() and path.name != "App.php"))
+    migrations = tuple(sorted(path.relative_to(workspace).as_posix()
+                              for path in (workspace / "database/migrations").glob("*.sql") if path.is_file()))
     if not sources:
         raise RuntimeError("Nenhuma classe PHP foi encontrada em src.")
     # Existing callers stay active until every new class has been uploaded.
-    files = FILES + sources + ("bootstrap.php",)
+    files = FILES + migrations + sources + ("src/App.php", "bootstrap.php")
     for relative_name in files:
         path = workspace / relative_name
         if not path.is_file():
@@ -169,12 +160,11 @@ def replace_file(
 def enable_auto_migrate(environment: bytes) -> bytes:
     text = environment.decode("utf-8")
     updated, replacements = re.subn(
-        r"(?m)^APP_AUTO_MIGRATE[ \t]*=[ \t]*false[ \t]*$",
+        r"(?m)^APP_AUTO_MIGRATE[ \t]*=.*$",
         "APP_AUTO_MIGRATE=true",
         text,
-        count=1,
     )
-    if replacements == 0 and not re.search(r"(?m)^APP_AUTO_MIGRATE[ \t]*=[ \t]*true[ \t]*$", text):
+    if replacements == 0:
         updated = text.rstrip() + "\nAPP_AUTO_MIGRATE=true\n"
     return updated.encode("utf-8")
 
@@ -190,6 +180,15 @@ def enable_mvp_content_seed(environment: bytes) -> bytes:
     if replacements == 0:
         updated = text.rstrip() + "\nSEED_MVP_CONTENT=true\n"
     return updated.encode("utf-8")
+
+
+def disable_automatic_seeds(environment: bytes) -> bytes:
+    text = environment.decode("utf-8")
+    for key in ("SEED_MVP_CONTENT", "SEED_DEMO_USERS"):
+        text, replacements = re.subn(r"(?m)^" + key + r"[ \t]*=.*$", key + "=false", text)
+        if replacements == 0:
+            text = text.rstrip() + "\n" + key + "=false\n"
+    return text.encode("utf-8")
 
 
 def check_health(release: str) -> None:
@@ -232,7 +231,11 @@ def main() -> int:
             ftp.set_pasv(True)
             ftp.voidcmd("TYPE I")
 
-            for relative_name in files:
+            original_environment = read_remote(ftp, environment_path)
+            if original_environment is None:
+                raise RuntimeError("O .env de producao nao foi encontrado.")
+
+            for relative_name in files[:-2]:
                 local = workspace / relative_name
                 if not local.is_file():
                     raise RuntimeError(f"Arquivo local ausente: {relative_name}")
@@ -246,16 +249,22 @@ def main() -> int:
                 print(f"{'Enviado' if uploaded else 'Sem alteracao'}: {relative_name}", flush=True)
                 changed += int(uploaded)
 
-            original_environment = read_remote(ftp, environment_path)
-            if original_environment is None:
-                raise RuntimeError("O .env de producao nao foi encontrado.")
             release_environment = original_environment
             if not options.skip_migrations or options.seed_mvp_content:
                 release_environment = enable_auto_migrate(release_environment)
             if options.seed_mvp_content:
                 release_environment = enable_mvp_content_seed(release_environment)
+            else:
+                release_environment = disable_automatic_seeds(release_environment)
             try:
                 replace_file(ftp, environment_path, release_environment, release, None)
+                check_health(release + "-schema")
+                for relative_name in files[-2:]:
+                    uploaded = replace_file(
+                        ftp, FTP_ROOT / relative_name, (workspace / relative_name).read_bytes(), release, backup_root
+                    )
+                    print(f"{'Enviado' if uploaded else 'Sem alteracao'}: {relative_name}", flush=True)
+                    changed += int(uploaded)
                 check_health(release)
             finally:
                 replace_file(ftp, environment_path, original_environment, release + "-restore", None)
