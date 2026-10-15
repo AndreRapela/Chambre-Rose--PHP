@@ -1878,4 +1878,8 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
 }
 require __DIR__ . '/profile-validation.php';
 runProfileValidationChecks($assert);
+if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    require __DIR__ . '/product-responsive-urls.php';
+    runProductResponsiveUrlChecks($assert);
+}
 fwrite(STDOUT, "OK - {$tests} assertions\n");

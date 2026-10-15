@@ -386,25 +386,21 @@ final class ProductRepository
 
         return array_map(static function (array $product) use ($storedImages, $widths): array {
             $productId = (int) $product['id'];
-            $mainWidths = $widths[$productId]['MAIN'] ?? [];
-            $secondaryWidths = $widths[$productId]['SECONDARY'] ?? [];
-            // Images uploaded before responsive variants were introduced still
-            // need to avoid sending the multi-megabyte original to catalogue
-            // cards. Advertising the supported URLs lets the first request
-            // generate the small WebP once; every later request uses the
-            // persisted variant.
-            if ($mainWidths === [] && ($storedImages[$productId]['MAIN'] ?? false)) {
-                $mainWidths = ResponsiveImageProcessor::WIDTHS;
+            foreach (['MAIN' => ['imageUrl', 'imageSrcSet'], 'SECONDARY' => ['secondaryImageUrl', 'secondaryImageSrcSet']] as $role => [$urlField, $srcSetField]) {
+                $url = $product[$urlField];
+                $base = '/api/products/' . $productId . '/images/' . strtolower($role);
+                $product[$srcSetField] = null;
+                if (!is_string($url) || ($url !== $base && !str_starts_with($url, $base . '?'))
+                    || !($storedImages[$productId][$role] ?? false)) {
+                    continue;
+                }
+                // Older uploads generate the supported derivatives on first use.
+                // Unused stored images must not invent variants for another URL.
+                $product[$srcSetField] = ResponsiveImageService::srcSet(
+                    $url,
+                    $widths[$productId][$role] ?? ResponsiveImageProcessor::WIDTHS
+                );
             }
-            if ($secondaryWidths === [] && ($storedImages[$productId]['SECONDARY'] ?? false)) {
-                $secondaryWidths = ResponsiveImageProcessor::WIDTHS;
-            }
-            $product['imageSrcSet'] = $mainWidths === []
-                ? null
-                : ResponsiveImageService::srcSet((string) $product['imageUrl'], $mainWidths);
-            $product['secondaryImageSrcSet'] = $secondaryWidths === [] || $product['secondaryImageUrl'] === null
-                ? null
-                : ResponsiveImageService::srcSet((string) $product['secondaryImageUrl'], $secondaryWidths);
 
             return $product;
         }, $products);
