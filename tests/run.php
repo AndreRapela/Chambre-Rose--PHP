@@ -480,7 +480,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
           slot INTEGER PRIMARY KEY,label TEXT NOT NULL,title TEXT NOT NULL,subtitle TEXT NOT NULL,
           link_url TEXT NOT NULL,link_text TEXT NOT NULL,icon TEXT NOT NULL,image_path TEXT NULL,
           image_file_name TEXT NULL,image_content_type TEXT NULL,image_size_bytes INTEGER NULL,
-          image_data BLOB NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+          image_data BLOB NULL,image_sanitized_hash TEXT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         INSERT INTO site_promotions (slot,label,title,subtitle,link_url,link_text,icon,image_path) VALUES
           (1,'Gift edit','Gift-ready lingerie edits','Curated selection.','/catalogue','Explore gifts','gift','/assets/gift.jpg'),
@@ -1883,5 +1883,7 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     runProductResponsiveUrlChecks($assert);
     require __DIR__ . '/search-input-validation.php';
     runSearchInputChecks($assert);
+    require __DIR__ . '/promotion-image-cache.php';
+    runPromotionImageCacheChecks($assert);
 }
 fwrite(STDOUT, "OK - {$tests} assertions\n");

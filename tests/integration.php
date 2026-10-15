@@ -124,7 +124,7 @@ $binaryRequest = static function (string $method, string $path, array $headers =
     return [(int) ($statusMatch[1] ?? 0), is_string($raw) ? $raw : '', $headerMap];
 };
 
-$multipartRequest = static function (string $path, array $fields, array $files) use ($base): array {
+$multipartRequest = static function (string $path, array $fields, array $files, ?string $sessionCookie = null, string $method = 'POST') use ($base): array {
     $boundary = 'integration-form-' . bin2hex(random_bytes(12));
     $parts = [];
     foreach ($fields as $name => $value) {
@@ -137,8 +137,9 @@ $multipartRequest = static function (string $path, array $fields, array $files) 
     $parts[] = "--{$boundary}--\r\n";
     $multipart = implode('', $parts);
     $context = stream_context_create(['http' => [
-        'method' => 'POST',
-        'header' => "Accept: application/json\r\nContent-Type: multipart/form-data; boundary={$boundary}\r\nContent-Length: " . strlen($multipart),
+        'method' => $method,
+        'header' => "Accept: application/json\r\nContent-Type: multipart/form-data; boundary={$boundary}\r\nContent-Length: " . strlen($multipart)
+            . ($sessionCookie === null ? '' : "\r\nCookie: {$sessionCookie}\r\nX-Requested-With: XMLHttpRequest"),
         'content' => $multipart,
         'ignore_errors' => true,
     ]]);
@@ -566,6 +567,8 @@ $assert($pendingStatus === 403, 'Pending professional login must be blocked.');
 if ($adminPassword !== '') {
     [$adminStatus, $admin, $adminCookie] = $request('POST', '/api/auth/login', ['email' => $adminEmail, 'password' => $adminPassword]);
     $assert($adminStatus === 200 && is_string($adminCookie), 'Admin login must create a cookie-backed session.');
+    require __DIR__ . '/promotion-image-integration.php';
+    runPromotionHttpChecks($assert, $multipartRequest, $binaryRequest, $adminCookie, Database::connection(), $fixture);
     [$visitorListStatus, $visitorList] = $request(
         'GET',
         '/api/admin/users?email=' . rawurlencode($cleanup->email('visitor')) . '&role=VISITOR&page=1&pageSize=10',

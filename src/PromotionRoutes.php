@@ -43,21 +43,42 @@ final class PromotionRoutes implements RouteHandler
 
     private function image(Request $request, int $slot): Response
     {
+        if ($request->method === 'HEAD' || $request->header('if-none-match') !== null) {
+            $metadata = $this->service->imageMetadata($slot);
+            if ($metadata !== null) {
+                $headers = $this->imageHeaders($request, $slot, $metadata);
+                if (ApiResponder::etagMatches($request, $headers['ETag'])) {
+                    return new Response(304, '', $headers);
+                }
+                if ($request->method === 'HEAD') return new Response(200, '', $headers);
+            }
+        }
         $image = $this->service->image($slot);
-        $etag = ApiResponder::etag($slot . '|' . $image['size'] . '|' . $image['updatedAt']);
-        $cache = isset($request->query['v']) && trim((string) $request->query['v']) !== ''
-            ? 'public, max-age=31536000, immutable'
-            : 'public, max-age=3600, stale-while-revalidate=86400';
-        $headers = [
-            'Content-Type' => $image['contentType'],
-            'Content-Length' => (string) $image['size'],
-            'Cache-Control' => $cache,
-            'ETag' => $etag,
-        ];
-        if (ApiResponder::etagMatches($request, $etag)) {
+        $headers = $this->imageHeaders($request, $slot, $image);
+        if (ApiResponder::etagMatches($request, $headers['ETag'])) {
             return new Response(304, '', $headers);
         }
 
         return new Response(200, $request->method === 'HEAD' ? '' : $image['bytes'], $headers);
+    }
+
+    /**
+     * @param array{contentType:string,size:int,sourceHash:string,updatedAt:string} $image
+     * @return array<string,string>
+     */
+    private function imageHeaders(Request $request, int $slot, array $image): array
+    {
+        $version = $request->query['v'] ?? null;
+        $versioned = is_string($version) && $version !== ''
+            && ($version === $image['sourceHash'] || $version === $image['updatedAt']);
+
+        return [
+            'Content-Type' => $image['contentType'],
+            'Content-Length' => (string) $image['size'],
+            'Cache-Control' => $versioned
+                ? 'public, max-age=31536000, immutable'
+                : 'public, max-age=3600, stale-while-revalidate=86400',
+            'ETag' => ApiResponder::etag($slot . '|' . $image['sourceHash'] . '|promotion'),
+        ];
     }
 }

@@ -263,6 +263,13 @@ final class DatabaseMigrator
                 'ignoreDuplicateIndex' => false,
                 'resumable' => true,
             ],
+            [
+                'version' => 'php-' . $suffix . '-30-promotion-image-fingerprint',
+                'file' => dirname(__DIR__) . '/database/migrations/030-promotion-image-fingerprint.' . $suffix . '.sql',
+                'base' => false,
+                'ignoreDuplicateIndex' => false,
+                'resumable' => true,
+            ],
         ];
     }
 

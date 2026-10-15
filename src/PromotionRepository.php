@@ -17,7 +17,7 @@ final class PromotionRepository
     {
         $rows = $this->pdo->query(
             'SELECT slot,label,title,subtitle,link_url,link_text,icon,image_path,'
-            . 'image_data IS NOT NULL AS has_image,updated_at FROM site_promotions ORDER BY slot'
+            . 'image_data IS NOT NULL AS has_image,image_sanitized_hash,updated_at FROM site_promotions ORDER BY slot'
         )->fetchAll();
 
         return array_map([self::class, 'map'], $rows);
@@ -28,7 +28,7 @@ final class PromotionRepository
     {
         $statement = $this->pdo->prepare(
             'SELECT slot,label,title,subtitle,link_url,link_text,icon,image_path,'
-            . 'image_data IS NOT NULL AS has_image,updated_at FROM site_promotions WHERE slot=:slot'
+            . 'image_data IS NOT NULL AS has_image,image_sanitized_hash,updated_at FROM site_promotions WHERE slot=:slot'
         );
         $statement->execute(['slot' => $slot]);
         $row = $statement->fetch();
@@ -47,7 +47,7 @@ final class PromotionRepository
             ? 'CURRENT_TIMESTAMP(3)'
             : 'CURRENT_TIMESTAMP';
         $imageSql = $image === null ? '' : ',image_file_name=:image_name,image_content_type=:image_type,'
-            . 'image_size_bytes=:image_size,image_data=:image_data,image_path=NULL';
+            . 'image_size_bytes=:image_size,image_data=:image_data,image_sanitized_hash=:image_hash,image_path=NULL';
         $statement = $this->pdo->prepare(
             'UPDATE site_promotions SET label=:label,title=:title,subtitle=:subtitle,'
             . 'link_url=:link_url,link_text=:link_text,icon=:icon' . $imageSql
@@ -65,6 +65,7 @@ final class PromotionRepository
             $statement->bindValue(':image_type', $image['contentType']);
             $statement->bindValue(':image_size', strlen($image['bytes']), PDO::PARAM_INT);
             $statement->bindValue(':image_data', $image['bytes'], PDO::PARAM_LOB);
+            $statement->bindValue(':image_hash', hash('sha256', $image['bytes']));
         }
         $statement->execute();
         if ($statement->rowCount() < 1 && $this->find($slot) === null) {
@@ -74,11 +75,30 @@ final class PromotionRepository
         return $this->find($slot) ?? throw new ApiException(404, 'Promotion not found.');
     }
 
-    /** @return array{contentType:string,size:int,bytes:string,updatedAt:string}|null */
+    /** @return array{contentType:string,size:int,sourceHash:string,updatedAt:string}|null */
+    public function imageMetadata(int $slot): ?array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT image_content_type,image_size_bytes,image_sanitized_hash,updated_at '
+            . 'FROM site_promotions WHERE slot=:slot AND image_data IS NOT NULL'
+        );
+        $statement->execute(['slot' => $slot]);
+        $row = $statement->fetch();
+        if (!is_array($row) || !self::hasSanitizedImage($row)) return null;
+
+        return [
+            'contentType' => 'image/webp',
+            'size' => (int) $row['image_size_bytes'],
+            'sourceHash' => (string) $row['image_sanitized_hash'],
+            'updatedAt' => (string) $row['updated_at'],
+        ];
+    }
+
+    /** @return array{contentType:string,size:int,bytes:string,sanitizedHash:?string,updatedAt:string}|null */
     public function image(int $slot): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT image_content_type,image_size_bytes,image_data,updated_at FROM site_promotions WHERE slot=:slot'
+            'SELECT image_content_type,image_size_bytes,image_data,image_sanitized_hash,updated_at FROM site_promotions WHERE slot=:slot'
         );
         $statement->execute(['slot' => $slot]);
         $row = $statement->fetch();
@@ -97,8 +117,18 @@ final class PromotionRepository
             'contentType' => (string) $row['image_content_type'],
             'size' => (int) $row['image_size_bytes'],
             'bytes' => $bytes,
+            'sanitizedHash' => self::hasSanitizedImage($row) ? (string) $row['image_sanitized_hash'] : null,
             'updatedAt' => (string) $row['updated_at'],
         ];
+    }
+
+    /** @param array<string,mixed> $row */
+    private static function hasSanitizedImage(array $row): bool
+    {
+        return ($row['image_content_type'] ?? null) === 'image/webp'
+            && (int) ($row['image_size_bytes'] ?? 0) > 0
+            && is_string($row['image_sanitized_hash'] ?? null)
+            && preg_match('/^[a-f0-9]{64}$/D', $row['image_sanitized_hash']) === 1;
     }
 
     /** @param array<string, mixed> $row
@@ -108,6 +138,8 @@ final class PromotionRepository
     {
         $slot = (int) $row['slot'];
         $updatedAt = (string) $row['updated_at'];
+        $hash = $row['image_sanitized_hash'] ?? null;
+        $version = is_string($hash) && preg_match('/^[a-f0-9]{64}$/D', $hash) === 1 ? $hash : $updatedAt;
         $hasImage = in_array($row['has_image'], [true, 1, '1', 't', 'true'], true);
 
         return [
@@ -119,7 +151,7 @@ final class PromotionRepository
             'linkText' => (string) $row['link_text'],
             'icon' => (string) $row['icon'],
             'imageUrl' => $hasImage
-                ? '/api/promotions/' . $slot . '/image?v=' . rawurlencode($updatedAt)
+                ? '/api/promotions/' . $slot . '/image?v=' . rawurlencode($version)
                 : (string) ($row['image_path'] ?? ''),
             'updatedAt' => $updatedAt,
         ];

@@ -22,14 +22,27 @@ final class PromotionService
         return $this->promotions->all();
     }
 
-    /** @return array{contentType:string,size:int,bytes:string,updatedAt:string} */
+    /** @return array{contentType:string,size:int,sourceHash:string,updatedAt:string}|null */
+    public function imageMetadata(int $slot): ?array
+    {
+        self::assertSlot($slot);
+        return $this->promotions->imageMetadata($slot);
+    }
+
+    /** @return array{contentType:string,size:int,bytes:string,sourceHash:string,updatedAt:string} */
     public function image(int $slot): array
     {
         self::assertSlot($slot);
 
         $image = $this->promotions->image($slot)
             ?? throw new ApiException(404, 'Promotion image not found.');
-        $image['bytes'] = $this->sanitizeImage($image['bytes']);
+        $hash = hash('sha256', $image['bytes']);
+        if ($image['sanitizedHash'] === null || !hash_equals($image['sanitizedHash'], $hash)) {
+            $image['bytes'] = $this->sanitizeImage($image['bytes']);
+            $hash = hash('sha256', $image['bytes']);
+        }
+        unset($image['sanitizedHash']);
+        $image['sourceHash'] = $hash;
         $image['contentType'] = 'image/webp';
         $image['size'] = strlen($image['bytes']);
 
