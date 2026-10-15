@@ -1881,5 +1881,7 @@ runProfileValidationChecks($assert);
 if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     require __DIR__ . '/product-responsive-urls.php';
     runProductResponsiveUrlChecks($assert);
+    require __DIR__ . '/search-input-validation.php';
+    runSearchInputChecks($assert);
 }
 fwrite(STDOUT, "OK - {$tests} assertions\n");

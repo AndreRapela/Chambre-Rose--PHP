@@ -18,15 +18,14 @@ final class ProfessionalProfileSearch
      * @param array<string, mixed> $filters
      * @return array<string, mixed>
      */
-    public function search(array $filters): array
+    public function search(array $filters, int $viewerId = 0): array
     {
         if (empty($filters['city']) && !empty($filters['province'])) {
             $filters['city'] = $filters['province'];
         }
         $where = ["u.approval_status='APPROVED'", "u.role IN ('ESCORT','STORE')"];
         $params = [];
-        $viewerId = filter_var($filters['_viewerId'] ?? null, FILTER_VALIDATE_INT);
-        if ($viewerId !== false && $viewerId > 0) {
+        if ($viewerId > 0) {
             $where[] = 'NOT EXISTS (SELECT 1 FROM user_exclusions exclusion WHERE '
                 . '(exclusion.owner_id=:viewer_owner AND exclusion.excluded_user_id=u.id) OR '
                 . '(exclusion.owner_id=u.id AND exclusion.excluded_user_id=:viewer_target))';
@@ -75,8 +74,10 @@ final class ProfessionalProfileSearch
         }
         foreach (['minPrice' => ['p.price_to', '>='], 'maxPrice' => ['p.price_from', '<=']] as $key => [$column, $operator]) {
             if (isset($filters[$key]) && is_numeric($filters[$key])) {
+                $price = (float) $filters[$key];
+                if (!is_finite($price)) continue;
                 $where[] = "COALESCE({$column}, p.price_from, p.price_to) {$operator} :{$key}";
-                $params[$key] = (float) $filters[$key];
+                $params[$key] = $price;
             }
         }
         $ageExpression = $this->isMySql()
@@ -110,20 +111,14 @@ final class ProfessionalProfileSearch
             $total = (int) $count->fetchColumn();
             $pagination = SearchPagination::resolve($total, $filters['page'] ?? null, $filters['pageSize'] ?? null);
         } else {
-            $pageSize = min(50, max(1, (int) ($filters['pageSize'] ?? 20)));
-            $page = max(1, (int) ($filters['page'] ?? 1));
             $total = 0;
-            $pagination = [
-                'page' => $page,
-                'pageSize' => $pageSize,
-                'totalPages' => 0,
-                'offset' => ($page - 1) * $pageSize,
-            ];
+            $pagination = SearchPagination::withoutTotal($filters['page'] ?? null, $filters['pageSize'] ?? null);
+            $pagination['totalPages'] = 0;
         }
         ['page' => $page, 'pageSize' => $pageSize] = $pagination;
 
         [$proximityOrder, $proximityParams] = $this->proximityOrder($filters);
-        $newest = strtolower((string) ($filters['sort'] ?? '')) === 'newest';
+        $newest = strtolower(self::limitedText($filters['sort'] ?? '', 40)) === 'newest';
         $order = 'u.vip_active DESC';
         if ($newest) {
             $order .= ', p.created_at DESC, p.user_id DESC';

@@ -1189,6 +1189,29 @@ if ($adminPassword !== '') {
     );
     $assert($boundedFiltersStatus === 200, 'Oversized public filters must be normalized safely.');
 
+    foreach (['/api/listings', '/api/products'] as $searchPath) {
+        [$invalidSearchStatus, $invalidSearch] = $request(
+            'GET',
+            $searchPath . '?sort[]=newest&page[]=2&pageSize[]=40&minPrice=1e309&maxPrice=-1e309'
+        );
+        $assert(
+            $invalidSearchStatus === 200
+            && ($invalidSearch['page'] ?? null) === 1
+            && ($invalidSearch['pageSize'] ?? null) === 20,
+            'Malformed optional search filters must retain safe pagination and a valid JSON response.'
+        );
+    }
+    [$largePageStatus, $largePage] = $request(
+        'GET',
+        '/api/listings?includeTotal=false&page=' . PHP_INT_MAX . '&pageSize=50'
+    );
+    $assert(
+        $largePageStatus === 200
+        && ($largePage['page'] ?? null) === intdiv(PHP_INT_MAX, 50) + 1
+        && ($largePage['items'] ?? null) === [],
+        'Uncounted pagination must not overflow when an extreme page is requested.'
+    );
+
     [$storeRoleStatus] = $request(
         'PATCH',
         "/api/admin/users/{$id}/role",
@@ -1704,6 +1727,26 @@ if ($adminPassword !== '') {
         && $removedConversationStatus === 403
         && $removedPeerConversationStatus === 404,
         'Permanently removing a member must irreversibly revoke profile and conversation access for both sides.'
+    );
+    [$anonymousSearchStatus, $anonymousSearch] = $request(
+        'GET',
+        '/api/listings?q=' . rawurlencode($profileName) . '&_viewerId=' . $visitorId
+    );
+    $assert(
+        $anonymousSearchStatus === 200
+        && in_array($id, array_column($anonymousSearch['items'] ?? [], 'id'), true),
+        'Anonymous searches must not accept a public viewer parameter to inspect private exclusions.'
+    );
+    [$excludedSearchStatus, $excludedSearch] = $request(
+        'GET',
+        '/api/listings?q=' . rawurlencode($profileName) . '&_viewerId=0',
+        null,
+        $visitorCookie
+    );
+    $assert(
+        $excludedSearchStatus === 200
+        && !in_array($id, array_column($excludedSearch['items'] ?? [], 'id'), true),
+        'Public search filters must never bypass the authenticated viewer\'s exclusions.'
     );
     $currentDeviceEndpoint = 'https://push.example.invalid/current-' . rawurlencode($runId);
     $otherDeviceEndpoint = 'https://push.example.invalid/other-' . rawurlencode($runId);

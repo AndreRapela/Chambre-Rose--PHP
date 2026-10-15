@@ -346,9 +346,9 @@ final class ProfessionalProfileRepository
      * @param array<string, mixed> $filters
      * @return array<string, mixed>
      */
-    public function search(array $filters): array
+    public function search(array $filters, int $viewerId = 0): array
     {
-        return (new ProfessionalProfileSearch($this->pdo, self::LISTING_COLUMNS))->search($filters);
+        return (new ProfessionalProfileSearch($this->pdo, self::LISTING_COLUMNS))->search($filters, $viewerId);
     }
 
     /**

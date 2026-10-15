@@ -51,12 +51,14 @@ final class ProductRepository
         }
         foreach (['minPrice' => '>=', 'maxPrice' => '<='] as $key => $operator) {
             if (isset($filters[$key]) && is_numeric($filters[$key])) {
+                $price = (float) $filters[$key];
+                if (!is_finite($price)) continue;
                 $where[] = "price {$operator} :{$key}";
-                $params[$key] = max(0, (float) $filters[$key]);
+                $params[$key] = max(0, $price);
             }
         }
 
-        $sort = (string) ($filters['sort'] ?? 'popular');
+        $sort = self::text($filters['sort'] ?? null, 40) ?? 'popular';
         $order = match ($sort) {
             'newest' => 'created_at DESC, id DESC',
             'priceAsc' => 'price ASC, id DESC',

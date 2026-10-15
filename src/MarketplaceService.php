@@ -231,10 +231,7 @@ final class MarketplaceService
     public function listings(array $filters, ?array $viewer = null): array
     {
         $viewerId = (int) ($viewer['id'] ?? 0);
-        if ($viewerId > 0) {
-            $filters['_viewerId'] = $viewerId;
-        }
-        $result = $this->profiles->search($filters);
+        $result = $this->profiles->search($filters, $viewerId);
         $result['items'] = $this->withPublicCovers($result['items'], $viewer);
 
         return $result;
