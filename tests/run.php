@@ -1876,4 +1876,6 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     require __DIR__ . '/profile-image-cache.php';
     runProfileImageCacheChecks($assert);
 }
+require __DIR__ . '/profile-validation.php';
+runProfileValidationChecks($assert);
 fwrite(STDOUT, "OK - {$tests} assertions\n");

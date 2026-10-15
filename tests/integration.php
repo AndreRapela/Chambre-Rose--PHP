@@ -1223,6 +1223,26 @@ if ($adminPassword !== '') {
         'email' => $cleanup->email('profile'), 'password' => 'Integration9!pass',
     ]);
     $assert($professionalLoginStatus === 200 && is_string($professionalCookie), 'Approved professional login must work.');
+    [$validationBeforeStatus, $validationBefore] = $request('GET', '/api/profiles/me', null, $professionalCookie);
+    $assert($validationBeforeStatus === 200, 'The profile must be available before invalid-update checks.');
+    foreach ([
+        'displayName' => ['nested'], 'bio' => false, 'birthDate' => ['1995-05-12'],
+        'services' => [['nested']], 'interests' => ['name' => 'Travel'],
+        'languages' => [str_repeat('x', 81)], 'priceHour' => true, 'priceNight' => 100000000,
+    ] as $field => $invalidValue) {
+        [$invalidProfileStatus, $invalidProfile] = $request('PUT', '/api/profiles/me', [$field => $invalidValue], $professionalCookie);
+        $assert(
+            $invalidProfileStatus === 400 && isset($invalidProfile['fields'][$field]),
+            "Invalid {$field} updates must return a field-level error over HTTP."
+        );
+    }
+    [$validationAfterStatus, $validationAfter] = $request('GET', '/api/profiles/me', null, $professionalCookie);
+    foreach (['displayName', 'bio', 'birthDate', 'services', 'interests', 'languages', 'priceHour', 'priceNight', 'media'] as $field) {
+        $assert(
+            $validationAfterStatus === 200 && ($validationAfter[$field] ?? null) === ($validationBefore[$field] ?? null),
+            "Rejected profile updates must preserve the stored {$field}."
+        );
+    }
     [$escortVipStatus] = $request(
         'PATCH',
         "/api/admin/users/{$id}/vip",

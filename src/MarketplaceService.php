@@ -385,15 +385,21 @@ final class MarketplaceService
         if ($type === 'ESCORT' && trim((string) ($user['address'] ?? '')) === '') {
             $errors['address'] = 'is required for companion accounts';
         }
-        $display = trim((string)($input['displayName'] ?? ''));
+        $display = is_string($input['displayName'] ?? null) ? trim($input['displayName']) : '';
         if ($display === '' || self::len($display) > 120) {
             $errors['displayName'] = 'must contain between 1 and 120 characters';
         }
         $data = ['displayName' => $display];
         foreach (['gender' => 40,'location' => 260,'locationCity' => 80,'locationRegion' => 100,'locationCountry' => 80,'bio' => 3000,'hair' => 60,'eyes' => 60,'origin' => 80,'availability' => 500,'website' => 300,'businessName' => 160,'legalName' => 160,'segment' => 100,'businessAddress' => 200,'businessHours' => 500,'contactEmail' => 160,'responseTime' => 40] as $field => $max) {
+            $raw = $input[$field] ?? null;
+            if ($raw !== null && !is_string($raw)) {
+                $errors[$field] = 'must be a string';
+                $data[$field] = null;
+                continue;
+            }
             $value = in_array($field, ['location', 'locationCity', 'locationRegion', 'locationCountry'], true)
-                ? LocationNormalizer::display($input[$field] ?? '')
-                : (isset($input[$field]) ? trim((string)$input[$field]) : '');
+                ? LocationNormalizer::display($raw ?? '')
+                : trim($raw ?? '');
             if (self::len($value) > $max) {
                 $errors[$field] = "cannot exceed {$max} characters";
             }
@@ -417,21 +423,38 @@ final class MarketplaceService
         foreach (['languages','services','interests','contactOptions'] as $field) {
             $value = $input[$field] ?? [];
             if (is_string($value)) {
-                $decoded = json_decode($value, true);
-                $value = is_array($decoded) ? $decoded : array_filter(array_map('trim', explode(',', $value)));
+                $value = trim($value);
+                if (str_starts_with($value, '[')) {
+                    $value = json_decode($value, true);
+                } elseif (str_starts_with($value, '{')) {
+                    $value = null;
+                } else {
+                    $value = array_values(array_filter(array_map('trim', explode(',', $value)), static fn (string $item): bool => $item !== ''));
+                }
             }
-            if (!is_array($value) || count($value) > 30) {
-                $errors[$field] = 'must be a list with at most 30 values';
+            if (!is_array($value) || !array_is_list($value) || count($value) > 30) {
+                $errors[$field] = 'must be a list with at most 30 string values';
+                $data[$field] = [];
+                continue;
             }
-            $items = is_array($value) ? $value : [];
-            $items = array_map(static fn ($item) => trim((string) $item), $items);
-            $items = array_filter($items, static fn (string $item) => $item !== '' && self::len($item) <= 80);
+            $items = [];
+            foreach ($value as $item) {
+                if (!is_string($item) || self::len(trim($item)) > 80) {
+                    $errors[$field] = 'must contain only strings of at most 80 characters';
+                    continue;
+                }
+                if (trim($item) !== '') {
+                    $items[] = trim($item);
+                }
+            }
             $data[$field] = array_values(array_unique($items));
         }
         foreach (['priceFrom','priceTo','priceHour','priceNight','priceWeekend'] as $field) {
             $value = $input[$field] ?? null;
-            if ($value !== null && $value !== '' && (!is_numeric($value) || (float)$value < 0 || (float)$value > 99999999.99)) {
+            if ($value !== null && $value !== '' && (!is_numeric($value) || !is_finite((float)$value) || (float)$value < 0 || (float)$value > 99999999.99)) {
                 $errors[$field] = 'must be a valid non-negative amount';
+                $data[$field] = null;
+                continue;
             }
             $data[$field] = $value === null || $value === '' ? null : (float)$value;
         }
@@ -442,7 +465,7 @@ final class MarketplaceService
             $errors['priceTo'] = 'must be greater than or equal to priceFrom';
         }
         if ($type === 'ESCORT') {
-            $birth = trim((string)($input['birthDate'] ?? ''));
+            $birth = is_string($input['birthDate'] ?? null) ? trim($input['birthDate']) : '';
 
             try {
                 $date = $birth === '' ? null : new DateTimeImmutable($birth);
