@@ -1354,6 +1354,17 @@ if ($adminPassword !== '') {
         && ($vipPreviewHeaders['cache-control'] ?? '') === 'public, max-age=300, stale-while-revalidate=300',
         'The public profile photo must remain visible through its own path while every gallery original stays behind a safe blurred VIP preview.'
     );
+    foreach ([
+        ['startsAt' => '2026-02-30T18:00:00Z', 'endsAt' => '2026-03-03T20:00:00Z'],
+        ['title' => ['nested']],
+        ['startsAt' => '2026-10-10T18:00:00.000100Z', 'endsAt' => '2026-10-10T18:00:00.000900Z'],
+    ] as $invalidAppointment) {
+        [$invalidAppointmentStatus] = $request('POST', '/api/calendar/appointments', array_replace([
+            'title' => 'Invalid meeting', 'clientName' => 'Private client',
+            'startsAt' => '2026-10-10T18:00:00Z', 'endsAt' => '2026-10-10T20:00:00Z',
+        ], $invalidAppointment), $professionalCookie);
+        $assert($invalidAppointmentStatus === 400, 'Malformed calendar input must fail validation, not create a changed date or trigger a database error.');
+    }
     [$appointmentCreateStatus, $appointment] = $request('POST', '/api/calendar/appointments', [
         'title' => 'Integration meeting',
         'clientName' => 'Private client',
@@ -1395,6 +1406,9 @@ if ($adminPassword !== '') {
         && $appointmentDeleteStatus === 204,
         'A companion must be able to create, review, update and delete private appointments.'
     );
+    $assert(($appointment['startsAt'] ?? '') === '2026-10-10T18:00:00.000Z'
+        && ($updatedAppointment['endsAt'] ?? '') === '2026-10-10T20:30:00.000Z',
+        'The calendar API must preserve valid instants and serialize database timestamps in UTC milliseconds.');
     [$optionalRegionStatus, $optionalRegionProfile] = $request(
         'PUT',
         '/api/profiles/me',
