@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require dirname(__DIR__) . '/bootstrap.php';
 require __DIR__ . '/IntegrationDataCleanup.php';
+require __DIR__ . '/calendar-access-integration.php';
 
 use ChambreRose\ApiException;
 use ChambreRose\AuthRateLimiter;
@@ -1375,6 +1376,9 @@ if ($adminPassword !== '') {
         'status' => 'CONFIRMED',
     ], $professionalCookie);
     $appointmentId = (int) ($appointment['id'] ?? 0);
+    runCalendarAccessHttpChecks($assert, $request, $binaryRequest, Database::connection(),
+        $cleanup->email('calendar-peer'), $appointment,
+        ['owner' => $professionalCookie, 'visitor' => $visitorCookie, 'admin' => $adminCookie]);
     [$appointmentListStatus, $appointmentList] = $request('GET', '/api/calendar/appointments', null, $professionalCookie);
     [$appointmentUpdateStatus, $updatedAppointment] = $request(
         'PUT',

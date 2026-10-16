@@ -120,6 +120,8 @@ Abra `http://localhost:4200`. O proxy do Angular envia `/api` para `http://local
 
 ## Testes
 
+`tests/calendar-access-integration.php` verifica a separação das agendas entre contas, os papéis permitidos, a proteção de mutações por cookie e o uso da conta autenticada mesmo quando o JSON informa outro dono. A integração cria e remove registros: execute-a apenas em banco descartável, com envio de e-mail desativado (`MAIL_TRANSPORT=log` e `MAIL_ALLOW_LOG=true`), nunca no banco local compartilhado ou em produção.
+
 ### Cache das fotos existentes
 
 Uploads novos e fotos dos seeds já geram as miniaturas e a prévia VIP antes da publicação. Para fotos antigas, prepare o cache fora das requisições HTTP:

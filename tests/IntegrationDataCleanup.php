@@ -17,6 +17,7 @@ final class IntegrationDataCleanup
         'missing-address',
         'future-profile',
         'unsafe-website',
+        'calendar-peer',
     ];
 
     public function __construct(
