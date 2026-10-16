@@ -16,6 +16,11 @@ function runPromotionHttpChecks(callable $assert, Closure $multipart, Closure $b
     $data = ['label' => 'Image check', 'title' => 'Promotion integration', 'subtitle' => 'Temporary integration fixture.',
         'linkUrl' => '/catalogue', 'linkText' => 'Explore', 'icon' => 'gift'];
     try {
+        [$publicStatus, , $publicHeaders] = $binary('GET', '/api/promotions', []);
+        $vary = array_map('strtolower', array_map('trim', explode(',', $publicHeaders['vary'] ?? '')));
+        $assert($publicStatus === 200 && ($publicHeaders['cache-control'] ?? '') === 'public, max-age=30, stale-while-revalidate=300'
+            && in_array('cookie', $vary, true) && in_array('authorization', $vary, true),
+            'Public promotion metadata must retain a cache varied by browser authentication.');
         [$status, $promotion] = $multipart('/api/admin/promotions/1', $data, [
             'image' => ['name' => 'integration.png', 'contentType' => 'image/png', 'bytes' => $source],
         ], $adminCookie, 'PUT');
@@ -23,6 +28,11 @@ function runPromotionHttpChecks(callable $assert, Closure $multipart, Closure $b
         $assert($status === 200 && is_array($stored)
             && $stored['image_sanitized_hash'] === hash('sha256', $stored['image_data']),
             'The admin promotion endpoint must store sanitized image bytes and their fingerprint together.');
+        [$listStatus, $listBytes, $listHeaders] = $binary('GET', '/api/promotions', ['Cookie: ' . $adminCookie]);
+        $items = json_decode($listBytes, true, 512, JSON_THROW_ON_ERROR)['items'] ?? [];
+        $assert($listStatus === 200 && ($items[0]['title'] ?? '') === $data['title']
+            && ($listHeaders['cache-control'] ?? '') === 'private, no-store',
+            'An authenticated promotion read after saving must return the current record without caching it.');
         $url = (string) ($promotion['imageUrl'] ?? '');
         [$getStatus, $bytes, $headers] = $binary('GET', $url, []);
         $assert($getStatus === 200 && $bytes === $stored['image_data'] && ($headers['content-type'] ?? '') === 'image/webp'

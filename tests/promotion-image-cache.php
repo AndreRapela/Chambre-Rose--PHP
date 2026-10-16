@@ -54,6 +54,21 @@ function runPromotionImageCacheChecks(callable $assert): void
     $service = new PromotionService($repository);
     $jwt = new Jwt();
     $routes = new PromotionRoutes($service, new ApiRequestGuard(new UserRepository($pdo), $jwt, new AuthSessionCookie($jwt)));
+    foreach ([
+        [[], 'public, max-age=30, stale-while-revalidate=300'],
+        [['cookie' => 'preferences=en'], 'public, max-age=30, stale-while-revalidate=300'],
+        [['cookie' => 'chambre_rose_session=editor-session'], 'private, no-store'],
+        [['authorization' => 'Bearer editor-session'], 'private, no-store'],
+    ] as [$headers, $cacheControl]) {
+        $pdo->queries = [];
+        $listing = $routes->handle(new Request('GET', '/api/promotions', $headers, []));
+        $assert($listing?->status === 200 && ($listing->headers['Cache-Control'] ?? '') === $cacheControl,
+            'Promotion metadata must stay fresh for sessions while preserving anonymous caching.');
+        $assert(($listing->headers['Vary'] ?? '') === 'Cookie, Authorization',
+            'Anonymous promotion metadata must not be reused after a session or bearer token changes.');
+        $assert($pdo->queries === [] && !str_contains($listing->body, 'image_data'),
+            'Promotion cache selection must not add an authentication lookup or expose image BLOBs.');
+    }
     $data = ['label' => 'Gift', 'title' => 'Gift selection', 'subtitle' => 'A seasonal collection.',
         'linkUrl' => '/catalogue', 'linkText' => 'Explore', 'icon' => 'gift'];
     $source = (string) file_get_contents(dirname(__DIR__) . '/resources/brand/brand-logo.png');
