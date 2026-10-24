@@ -1,0 +1,118 @@
+services:
+  db:
+    image: mysql:8.4
+    container_name: chambre-rose-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: chambre_rose
+      MYSQL_USER: chambre_rose
+      MYSQL_PASSWORD: chambre_rose_pass
+      MYSQL_ROOT_PASSWORD: chambre_rose_root_pass
+    ports:
+      - "3307:3306"
+    volumes:
+      - chambre_rose_mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -pchambre_rose_root_pass --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    image: andrerapela/chambre-rose:backend-latest
+    container_name: chambre-rose-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8088:80"
+    environment: &backend_env
+      APP_ENV: development
+      APP_DEBUG: "true"
+      APP_AUTO_MIGRATE: "true"
+      APP_CORS_ALLOWED_ORIGINS: "http://localhost:4200,http://127.0.0.1:4200,http://localhost:8088,http://localhost:8089"
+      APP_FRONTEND_URL: "http://localhost:4200"
+      DB_DRIVER: mysql
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: chambre_rose
+      DB_USERNAME: chambre_rose
+      DB_PASSWORD: chambre_rose_pass
+      DB_CHARSET: utf8mb4
+      JWT_SECRET: local-dev-jwt-secret-with-at-least-32-characters-long
+      IDENTITY_DOCUMENT_SECRET: local-dev-identity-secret-with-at-least-32-characters
+      RATE_LIMIT_SECRET: local-dev-rate-limit-secret-with-at-least-32-characters
+      AUTH_LOGIN_ACCOUNT_ATTEMPTS: "1000"
+      AUTH_LOGIN_IP_ATTEMPTS: "1000"
+      AUTH_COOKIE_SECURE: "false"
+      MAIL_TRANSPORT: log
+      MAIL_ALLOW_LOG: "true"
+      SEED_DEMO_USERS: "true"
+      SEED_MVP_CONTENT: "true"
+      SEED_USER_EMAIL: visitante@chambre-rose.com
+      SEED_USER_PASSWORD: ChambreRose2026!User
+      SEED_ESCORT_EMAIL: acompanhante@chambre-rose.com
+      SEED_ESCORT_PASSWORD: ChambreRose2026!Escort
+      SEED_STORE_EMAIL: loja@chambre-rose.com
+      SEED_STORE_PASSWORD: ChambreRose2026!Store
+      SEED_ADMIN_EMAIL: admin@admin.com
+      SEED_ADMIN_PASSWORD: ChambreRose2026!Admin
+    volumes:
+      - ./src:/var/www/html/src
+      - ./public:/var/www/html/public
+      - ./bin:/var/www/html/bin
+      - ./database:/var/www/html/database
+      - ./resources:/var/www/html/resources
+      - ./tests:/var/www/html/tests
+      - ./bootstrap.php:/var/www/html/bootstrap.php
+      - ./composer.json:/var/www/html/composer.json
+
+  notification-worker:
+    image: andrerapela/chambre-rose:backend-latest
+    container_name: chambre-rose-worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *backend_env
+    command: ["php", "bin/process-notification-outbox.php", "--watch"]
+    volumes:
+      - ./src:/var/www/html/src
+      - ./bin:/var/www/html/bin
+      - ./database:/var/www/html/database
+      - ./resources:/var/www/html/resources
+      - ./tests:/var/www/html/tests
+      - ./bootstrap.php:/var/www/html/bootstrap.php
+      - ./composer.json:/var/www/html/composer.json
+
+  frontend:
+    image: andrerapela/chambre-rose:frontend-latest
+    container_name: chambre-rose-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "4200:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html
+
+  swagger:
+    image: swaggerapi/swagger-ui:latest
+    container_name: chambre-rose-swagger
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8089:8080"
+    environment:
+      URL: "http://localhost:8088/api/openapi.json"
+      DEEP_LINKING: "true"
+      DISPLAY_REQUEST_DURATION: "true"
+      FILTER: "true"
+      TRY_IT_OUT_ENABLED: "true"
+      PERSIST_AUTHORIZATION: "true"
+
+volumes:
+  chambre_rose_mysqldata:
+

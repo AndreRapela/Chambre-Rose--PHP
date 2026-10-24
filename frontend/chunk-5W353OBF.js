@@ -1,0 +1,1 @@
+import{b as e}from"./chunk-AY4ITTMZ.js?v=cr7";import"./chunk-7CGTOI24.js?v=cr7";var p=e("SplashScreen",{web:()=>import("./chunk-LEAESXOA.js?v=cr7").then(r=>new r.SplashScreenWeb)});export{p as SplashScreen};

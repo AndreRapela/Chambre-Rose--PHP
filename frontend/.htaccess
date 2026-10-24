@@ -1,0 +1,74 @@
+RewriteEngine On
+RewriteBase /
+
+# An older release registered an Angular service worker on the non-canonical
+# domain. It can answer navigations before Apache gets a chance to redirect
+# them, leaving visitors trapped in that cached release. Serve a same-origin
+# retirement worker at the original script URL so the browser can replace it.
+RewriteCond %{HTTP_HOST} ^chambre-rose\.com$ [NC]
+RewriteRule ^ngsw-worker\.js$ assets/legacy-domain-worker.js [END]
+
+RewriteCond %{HTTP_HOST} ^chambre-rose\.com$ [NC]
+RewriteRule ^ https://www.chambre-rose.com%{REQUEST_URI} [R=301,L,NE]
+
+RewriteRule ^index3/?$ / [R=301,L,NE]
+RewriteRule ^taxi/?$ /contenu/contact [R=301,L,NE]
+RewriteRule ^(?:massage|escortes|girl_escort)/?$ /catalogue/acompanhantes [R=301,L,NE]
+RewriteRule ^(?:biseual|products-list|homme|couples|fatiches)/?$ /catalogue [R=301,L,NE]
+RewriteRule ^(?:blog-items|blog-content|history)/?$ /contenu/histoire [R=301,L,NE]
+RewriteRule ^contact/?$ /contenu/contact [R=301,L,NE]
+RewriteRule ^login/?$ /auth/login [R=301,L,NE]
+RewriteRule ^register/?$ /auth/register [R=301,L,NE]
+RewriteRule ^pag_prive/?$ /espace-prive [R=301,L,NE]
+
+RewriteRule ^api(/|$) - [L]
+
+# Serve each prerendered route directly so crawlers and first visits receive
+# useful HTML instead of the generic single-page-app shell.
+RewriteCond %{REQUEST_FILENAME}/index.html -f
+RewriteRule ^(.+?)/?$ $1/index.html [L]
+
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+RewriteRule ^ index.csr.html [L]
+
+<IfModule mod_headers.c>
+  Header always set Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://flagcdn.com data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "DENY"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "camera=(self), microphone=(), geolocation=()"
+
+  <FilesMatch "^(?:main|styles|chunk)-[A-Z0-9]+\.(?:css|js)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+
+  <FilesMatch "\.(?:woff2?|ttf|eot)$">
+    Header set Cache-Control "public, max-age=2592000"
+  </FilesMatch>
+
+  <FilesMatch "\.(?:svg|png|jpe?g|gif|webp|avif|ico)$">
+    Header set Cache-Control "public, max-age=604800, stale-while-revalidate=2592000"
+  </FilesMatch>
+
+  <FilesMatch "^index(?:\.csr)?\.html$">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+  </FilesMatch>
+
+  <FilesMatch "^(?:app-config|local-preview-reset)\.js$">
+    Header set Cache-Control "no-store"
+  </FilesMatch>
+
+  # The service worker manifest and script must always be revalidated so a
+  # browser can discover a new deployment instead of pinning an old shell.
+  <FilesMatch "^(?:ngsw\.json|ngsw-worker\.js|legacy-domain-worker\.js|safety-worker\.js|worker-basic\.min\.js)$">
+    Header set Cache-Control "no-store, no-cache, must-revalidate"
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_mime.c>
+  AddType text/plain .txt
+  AddType application/xml .xml
+</IfModule>

@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Disallow: /api/admin/
+Disallow: /api/auth/
+Disallow: /api/events
+Disallow: /api/favorites
+Disallow: /api/messages
+Disallow: /api/notification
+Disallow: /api/push-subscriptions
+Disallow: /api/profiles/me
+
+Sitemap: https://www.chambre-rose.com/sitemap.xml
