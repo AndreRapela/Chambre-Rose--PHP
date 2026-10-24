@@ -44,7 +44,8 @@ final class Config
 
     public static function get(string $name, ?string $default = null): ?string
     {
-        $value = $_ENV[$name] ?? $_SERVER[$name] ?? getenv($name);
+        $envValue = getenv($name);
+        $value = $envValue !== false ? $envValue : ($_ENV[$name] ?? $_SERVER[$name] ?? false);
 
         return $value === false || $value === '' ? $default : (string) $value;
     }

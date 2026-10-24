@@ -16,10 +16,9 @@ foreach ($sources as $source) {
     if (!$source instanceof SplFileInfo || $source->getExtension() !== 'php') {
         continue;
     }
-    $relative = substr($source->getPathname(), strlen($sourceRoot) + 1, -4);
-    $class = 'ChambreRose\\' . str_replace(['/', '\\'], '\\', $relative);
+    $class = 'ChambreRose\\' . $source->getBasename('.php');
     if (!class_exists($class) && !interface_exists($class) && !trait_exists($class) && !enum_exists($class)) {
-        throw new RuntimeException('Source does not provide its PSR-4 declaration: ' . $relative);
+        throw new RuntimeException('Source does not provide its PSR-4 declaration: ' . $source->getPathname());
     }
     $assertions++;
     $reflection = new ReflectionClass($class);

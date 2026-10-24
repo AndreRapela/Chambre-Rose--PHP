@@ -13,6 +13,7 @@ final class Seeder
     private const PROFILE_DIVERSITY_SEED = 'mvp-profile-diversity-v2';
     private const PROFILE_DEMO_LOGIN_SEED = 'mvp-profile-demo-login-v3';
     private const PROFILE_PORTRAIT_SEED = 'mvp-profile-portraits-v4';
+    private const QUICK_ACCESS_LOGIN_SEED = 'mvp-quick-access-logins-v1';
     private const MALE_COMPANION_EMAIL = 'demo-companion-man@chambre-rose.invalid';
     private const MALE_COMPANION_PASSWORD = 'ChambreRose2026!Man';
     private const TRANS_COMPANION_EMAIL = 'demo-companion-trans@chambre-rose.invalid';
@@ -46,31 +47,90 @@ final class Seeder
         $this->createUserIfMissing(
             Config::get('SEED_USER_EMAIL', ''),
             Config::get('SEED_USER_PASSWORD'),
-            'Visitor',
-            'Account',
+            'Alexandre',
+            'Mercier',
             'VISITOR'
         );
         $this->createProfessionalUserIfMissing(
             Config::get('SEED_ESCORT_EMAIL', ''),
             Config::get('SEED_ESCORT_PASSWORD'),
-            'Test',
-            'Companion',
+            'Camille',
+            'Beauchamp',
             'ESCORT'
         );
         $this->createProfessionalUserIfMissing(
             Config::get('SEED_STORE_EMAIL', ''),
             Config::get('SEED_STORE_PASSWORD'),
-            'Test',
-            'Store',
+            'Atelier',
+            'Velours',
             'STORE'
         );
         $this->createUserIfMissing(
             Config::get('SEED_ADMIN_EMAIL', ''),
             Config::get('SEED_ADMIN_PASSWORD'),
-            'Admin',
+            'Direction',
             'Chambre Rose',
             'ADMIN'
         );
+        $this->seedQuickAccessAccountsOnce();
+    }
+
+    private function seedQuickAccessAccountsOnce(): void
+    {
+        $this->applySeedOnce(self::QUICK_ACCESS_LOGIN_SEED, function (): void {
+            $this->createUserIfMissing(
+                'visitor-preview@chambre-rose.invalid',
+                'q9NLoA1iS4iuIE_E4Kjz_nykqwg5TZJDaA9!',
+                'Camille',
+                'Laurent',
+                'VISITOR'
+            );
+
+            $vip = $this->createUserIfMissing(
+                'vip-preview@chambre-rose.invalid',
+                'o8j05PEnGAb3m-5-YrHfbFIOCSMq-ehjaA9!',
+                'Julien',
+                'Moreau',
+                'VISITOR'
+            );
+            if ($vip !== null) {
+                $this->pdo->prepare('UPDATE users SET vip_active=TRUE,vip_since=CURRENT_TIMESTAMP WHERE id=:id')
+                    ->execute(['id' => (int) $vip['id']]);
+            }
+
+            $this->createProfessionalUserIfMissing(
+                'demo-companion-complete@chambre-rose.invalid',
+                '4FU8FLV8ohnvkLT2WbzVUKkM3yTY0o_2aA9!',
+                'Chloé',
+                'Rose',
+                'ESCORT'
+            );
+
+            $this->createProfessionalUserIfMissing(
+                'demo-boutique@chambre-rose.invalid',
+                '1kd8xKjsBzjKRQDNP6nafBB_MEzFeJBVaA9!',
+                'Maison',
+                'Rose',
+                'STORE'
+            );
+            $store = $this->users->findByEmail('demo-boutique@chambre-rose.invalid');
+            if ($store !== null) {
+                $storeId = (int) $store['id'];
+                $this->users->updatePassword(
+                    $storeId,
+                    password_hash('1kd8xKjsBzjKRQDNP6nafBB_MEzFeJBVaA9!', PASSWORD_BCRYPT, ['cost' => 12])
+                );
+                $this->users->setApproval($storeId, 'APPROVED', null);
+            }
+
+            $this->createUserIfMissing(
+                'admin-preview@chambre-rose.invalid',
+                'ai3oCH-KztV2_XTlTNOo9ZUuSa1uI_cCaA9!',
+                'Admin',
+                'Preview',
+                'ADMIN'
+            );
+        });
     }
 
     private function seedMvpContentOnce(): void
@@ -106,12 +166,12 @@ final class Seeder
                 $row = $cover->fetch();
                 // Never replace an uploaded or edited portrait, even if its name matches.
                 if (!is_array($row) || $row['file_name'] !== $oldName) continue;
-                $oldBytes = file_get_contents(dirname(__DIR__) . '/resources/seed-images/' . $oldName);
+                $oldBytes = file_get_contents(dirname(__DIR__, 2) . '/resources/seed-images/' . $oldName);
                 $storedBytes = $row['media_data'];
                 if (is_resource($storedBytes)) $storedBytes = stream_get_contents($storedBytes);
                 if ($oldBytes === false || !is_string($storedBytes)
                     || !hash_equals(hash('sha256', $oldBytes), hash('sha256', $storedBytes))) continue;
-                if (!is_file(dirname(__DIR__) . '/resources/seed-images/' . $newName)) {
+                if (!is_file(dirname(__DIR__, 2) . '/resources/seed-images/' . $newName)) {
                     throw new \RuntimeException('The demo portrait source is missing.');
                 }
                 $this->pdo->prepare("UPDATE profile_media SET position=position+1 WHERE user_id=:user AND media_type='PHOTO'")
@@ -215,14 +275,14 @@ final class Seeder
                 'displayName' => 'Maison Rose Intime',
                 'location' => 'Brussels, Belgium',
                 'locationCity' => 'Brussels', 'locationRegion' => 'Brussels-Capital', 'locationCountry' => 'Belgium',
-                'bio' => 'Boutique fictive du MVP spécialisée dans le bien-être intime, la lingerie et les accessoires pour adultes.',
+                'bio' => 'Boutique spécialisée dans le bien-être intime, la lingerie fine et les accessoires pour adultes.',
                 'languages' => ['French', 'English'],
                 'services' => ['Discreet delivery', 'Store pickup', 'Private advice'],
                 'interests' => [], 'contactOptions' => ['Internal message'],
                 'contactEmail' => 'contact@maison-rose.invalid', 'responseTime' => 'WITHIN_DAY',
                 'availability' => 'Monday to Saturday, 10:00–20:00', 'website' => null,
                 'priceFrom' => 19, 'priceTo' => 189, 'businessName' => 'Maison Rose Intime',
-                'legalName' => 'MVP demonstration account', 'segment' => 'Sex shop & intimate wellness',
+                'legalName' => 'Maison Rose Intime SRL', 'segment' => 'Sex shop & intimate wellness',
                 'businessAddress' => 'Brussels, Belgium', 'businessHours' => 'Monday to Saturday, 10:00–20:00',
                 'birthDate' => null, 'gender' => null, 'heightCm' => null, 'weightKg' => null,
                 'bustCm' => null, 'waistCm' => null, 'hipsCm' => null, 'hair' => null, 'eyes' => null, 'origin' => null,
@@ -343,7 +403,7 @@ final class Seeder
                 $this->profiles->upsert($userId, 'ESCORT', [
                     'displayName' => $name, 'birthDate' => $birth, 'gender' => 'WOMAN', 'location' => $location,
                     'locationCity' => $city, 'locationRegion' => $region, 'locationCountry' => 'France',
-                    'bio' => 'Profil fictif de démonstration du MVP. Une présence élégante, attentive et discrète pour des échanges respectueux.',
+                    'bio' => 'Une présence élégante, attentive et discrète pour des moments privilégiés et des échanges respectueux.',
                     'languages' => ['French', 'English'], 'heightCm' => $height, 'weightKg' => $weight,
                     'bustCm' => 90, 'waistCm' => 60, 'hipsCm' => 90, 'hair' => $hair, 'eyes' => $eyes, 'origin' => $origin,
                     'services' => ['Private message', 'Personalized photos', 'Video call'],
@@ -377,7 +437,7 @@ final class Seeder
                 'gender' => 'MAN', 'city' => 'Brussels', 'region' => 'Brussels-Capital',
                 'birthDate' => '1994-03-12', 'heightCm' => 183, 'weightKg' => 78,
                 'hair' => 'Brown', 'eyes' => 'Hazel', 'origin' => 'Belgian', 'vip' => false,
-                'bio' => 'Profil masculin fictif de démonstration. Une présence élégante, attentionnée et discrète pour des rencontres respectueuses.',
+                'bio' => 'Une présence élégante, attentionnée et discrète pour des rencontres privilégiées et respectueuses.',
                 'image' => 'companion-man.jpg',
             ],
             [
@@ -385,7 +445,7 @@ final class Seeder
                 'gender' => 'TRANS', 'city' => 'Antwerp', 'region' => 'Flanders',
                 'birthDate' => '1997-08-24', 'heightCm' => 176, 'weightKg' => 63,
                 'hair' => 'Black', 'eyes' => 'Brown', 'origin' => 'European', 'vip' => true,
-                'bio' => 'Profil trans fictif de démonstration. Une personnalité lumineuse, chaleureuse et discrète pour des échanges respectueux.',
+                'bio' => 'Une personnalité lumineuse, chaleureuse et discrète pour des moments raffinés et respectueux.',
                 'image' => 'companion-trans.jpg',
             ],
         ];
@@ -449,13 +509,15 @@ final class Seeder
     private function seedProfilePhotos(int $userId, array $fileNames): void
     {
         $images = new ResponsiveImageService(new ResponsiveImageProcessor(), new ResponsiveImageVariantRepository($this->pdo));
-        $mysql = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
+        $driver = (string) $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $mysql = $driver === 'mysql';
+        $pgsql = $driver === 'pgsql';
         $statement = $this->pdo->prepare(
             "INSERT INTO profile_media (user_id,media_type,file_name,content_type,size_bytes,media_data,position,created_at) VALUES (:user,'PHOTO',:name,'image/webp',:size,:data,:position,CURRENT_TIMESTAMP)"
             . ($mysql ? '' : ' RETURNING id')
         );
         foreach ($fileNames as $position => $fileName) {
-            $path = dirname(__DIR__) . '/resources/seed-images/' . $fileName;
+            $path = dirname(__DIR__, 2) . '/resources/seed-images/' . $fileName;
             $bytes = is_file($path) ? file_get_contents($path) : false;
             if ($bytes === false) {
                 continue;
@@ -463,13 +525,12 @@ final class Seeder
             $bytes = $images->sanitize($bytes);
             $prepared = $images->prepare($bytes);
             $prepared[] = $images->prepareVipPreview($bytes);
-            $statement->execute([
-                'user' => $userId,
-                'name' => pathinfo($fileName, PATHINFO_FILENAME) . '.webp',
-                'size' => strlen($bytes),
-                'data' => $bytes,
-                'position' => $position,
-            ]);
+            $statement->bindValue(':user', $userId, PDO::PARAM_INT);
+            $statement->bindValue(':name', pathinfo($fileName, PATHINFO_FILENAME) . '.webp');
+            $statement->bindValue(':size', strlen($bytes), PDO::PARAM_INT);
+            $statement->bindValue(':data', $bytes, $pgsql ? PDO::PARAM_LOB : PDO::PARAM_STR);
+            $statement->bindValue(':position', $position, PDO::PARAM_INT);
+            $statement->execute();
             $mediaId = $mysql ? (int) $this->pdo->lastInsertId() : (int) $statement->fetchColumn();
             $statement->closeCursor();
             $images->storePrepared('PROFILE', $mediaId, $bytes, $prepared);
@@ -539,30 +600,35 @@ final class Seeder
 
         $isStore = $role === 'STORE';
         $this->profiles->upsert($userId, $role, [
-            'displayName' => $isStore ? 'Test Store' : 'Test Companion',
-            'birthDate' => $isStore ? null : '1995-01-01',
+            'displayName' => $isStore ? 'Atelier Velours Intime' : 'Camille Beauchamp',
+            'birthDate' => $isStore ? null : '1996-05-14',
             'gender' => $isStore ? null : 'WOMAN',
             'location' => 'Brussels, Belgium',
             'locationCity' => 'Brussels',
             'locationRegion' => 'Brussels-Capital',
             'locationCountry' => 'Belgium',
-            'bio' => 'Local test profile for development.',
+            'bio' => $isStore
+                ? 'Maison de lingerie fine, créations en dentelle et accessoires de bien-être sélectionnés avec soin à Bruxelles.'
+                : 'Une présence élégante, attentive et discrète pour des moments privilégiés à Bruxelles.',
             'languages' => ['French', 'English'],
-            'services' => $isStore ? ['Store pickup', 'Private advice'] : ['Private message', 'Video call'],
-            'availability' => 'Available for local testing',
-            'priceFrom' => $isStore ? 19 : null,
-            'priceTo' => $isStore ? 189 : null,
-            'priceHour' => $isStore ? null : 89,
-            'priceNight' => $isStore ? null : 390,
-            'priceWeekend' => $isStore ? null : 690,
-            'businessName' => $isStore ? 'Test Store' : null,
-            'legalName' => $isStore ? 'Local Test Store' : null,
-            'segment' => $isStore ? 'Development test account' : null,
-            'businessAddress' => $isStore ? 'Brussels, Belgium' : null,
-            'businessHours' => $isStore ? 'Monday to Friday, 10:00–19:00' : null,
+            'services' => $isStore ? ['Discreet delivery', 'Store pickup', 'Private advice'] : ['Private message', 'Personalized photos', 'Video call'],
+            'availability' => $isStore ? 'Monday to Saturday, 10:30–19:30' : 'Online today',
+            'priceFrom' => $isStore ? 29 : null,
+            'priceTo' => $isStore ? 240 : null,
+            'priceHour' => $isStore ? null : 95,
+            'priceNight' => $isStore ? null : 410,
+            'priceWeekend' => $isStore ? null : 710,
+            'businessName' => $isStore ? 'Atelier Velours Intime' : null,
+            'legalName' => $isStore ? 'Atelier Velours Intime SRL' : null,
+            'segment' => $isStore ? 'Lingerie fine & haute couture intime' : null,
+            'businessAddress' => $isStore ? 'Avenue Louise, Brussels, Belgium' : null,
+            'businessHours' => $isStore ? 'Monday to Saturday, 10:30–19:30' : null,
             'contactOptions' => ['Internal message'],
             'contactEmail' => strtolower(trim($email ?? '')),
             'responseTime' => 'FEW_HOURS',
         ]);
+        $this->pdo->prepare('UPDATE professional_profiles SET purchase_count=:purchases,views_count=:views,verified=TRUE WHERE user_id=:id')
+            ->execute(['id' => $userId, 'purchases' => 6, 'views' => 214]);
+        $this->seedProfilePhotosIfMissing($userId, [$isStore ? 'carousel-basic-black.jpeg' : 'carousel-pink-ring-thong.jpeg']);
     }
 }

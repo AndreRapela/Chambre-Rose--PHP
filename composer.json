@@ -5,7 +5,17 @@
   "type": "project",
   "autoload": {
     "psr-4": {
-      "ChambreRose\\": "src/"
+      "ChambreRose\\": [
+        "src/Core/",
+        "src/Database/",
+        "src/Http/",
+        "src/Media/",
+        "src/Notifications/",
+        "src/Repositories/",
+        "src/Routes/",
+        "src/Security/",
+        "src/Services/"
+      ]
     }
   },
   "require": {

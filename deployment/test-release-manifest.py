@@ -16,7 +16,7 @@ class ReleaseManifestTests(unittest.TestCase):
 
     def test_bootstrap_is_uploaded_after_dependencies(self):
         self.assertEqual(deployment.release_files(workspace)[-1], "bootstrap.php")
-        self.assertEqual(deployment.release_files(workspace)[-2], "src/App.php")
+        self.assertEqual(deployment.release_files(workspace)[-2], "src/Core/App.php")
 
     def test_includes_all_migrations_before_the_migrator_and_app(self):
         files = deployment.release_files(workspace)
@@ -24,8 +24,8 @@ class ReleaseManifestTests(unittest.TestCase):
         self.assertTrue(expected)
         for migration in expected:
             self.assertIn(migration, files)
-            self.assertLess(files.index(migration), files.index("src/DatabaseMigrator.php"))
-            self.assertLess(files.index(migration), files.index("src/App.php"))
+            self.assertLess(files.index(migration), files.index("src/Database/DatabaseMigrator.php"))
+            self.assertLess(files.index(migration), files.index("src/Core/App.php"))
 
     def test_has_no_duplicate_entries(self):
         files = deployment.release_files(workspace)

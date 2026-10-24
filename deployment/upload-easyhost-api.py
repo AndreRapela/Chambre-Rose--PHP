@@ -22,6 +22,7 @@ FILES = (
     "bin/warm-profile-images.php",
     "resources/brand/brand-logo.png",
     "resources/brand/brand-logo-84.webp",
+    "resources/openapi/openapi.json",
     "resources/seed-images/carousel-basic-black.jpeg",
     "resources/seed-images/carousel-pink-lace-tie.jpeg",
     "resources/seed-images/carousel-pink-ring-thong.jpeg",
@@ -39,7 +40,7 @@ def release_files(workspace: Path) -> tuple[str, ...]:
     if not sources:
         raise RuntimeError("Nenhuma classe PHP foi encontrada em src.")
     # Existing callers stay active until every new class has been uploaded.
-    files = FILES + migrations + sources + ("src/App.php", "bootstrap.php")
+    app_path = "src/Core/App.php" if (workspace / "src/Core/App.php").is_file() else "src/App.php"; files = FILES + migrations + sources + (app_path, "bootstrap.php")
     for relative_name in files:
         path = workspace / relative_name
         if not path.is_file():

@@ -13,12 +13,28 @@ spl_autoload_register(static function (string $class): void {
         return;
     }
 
-    $relative = substr($class, strlen($prefix));
-    $file = __DIR__ . '/src/' . str_replace('\\', '/', $relative) . '.php';
-    if (is_file($file)) {
-        require $file;
+    $relative = str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+    $directories = [
+        __DIR__ . '/src',
+        __DIR__ . '/src/Core',
+        __DIR__ . '/src/Database',
+        __DIR__ . '/src/Http',
+        __DIR__ . '/src/Media',
+        __DIR__ . '/src/Notifications',
+        __DIR__ . '/src/Repositories',
+        __DIR__ . '/src/Routes',
+        __DIR__ . '/src/Security',
+        __DIR__ . '/src/Services',
+    ];
+    foreach ($directories as $directory) {
+        $file = $directory . '/' . $relative;
+        if (is_file($file)) {
+            require $file;
+
+            return;
+        }
     }
-});
+}, true, true);
 
 use ChambreRose\Config;
 

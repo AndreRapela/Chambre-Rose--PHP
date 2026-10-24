@@ -154,7 +154,7 @@ final class ProductImageRepository
     {
         $offset = $role === 'SECONDARY' ? 1 : 0;
         $index = (max(1, $productId) - 1 + $offset) % count(self::LEGACY_PLACEHOLDER_FALLBACKS);
-        $path = dirname(__DIR__) . '/resources/seed-images/' . self::LEGACY_PLACEHOLDER_FALLBACKS[$index];
+        $path = dirname(__DIR__, 2) . '/resources/seed-images/' . self::LEGACY_PLACEHOLDER_FALLBACKS[$index];
         $bytes = is_file($path) ? file_get_contents($path) : false;
         if ($bytes === false) {
             return $row;
