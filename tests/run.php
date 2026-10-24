@@ -1888,4 +1888,21 @@ if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     require __DIR__ . '/promotion-image-cache.php';
     runPromotionImageCacheChecks($assert);
 }
+$openApiSpec = (new \ChambreRose\OpenApiRoutes())->handle(new Request("GET", "/api/openapi.json", [], []));
+$decodedSpec = json_decode((string) $openApiSpec->body, true);
+$assert(
+    $openApiSpec->status === 200
+    && is_array($decodedSpec)
+    && ($decodedSpec["openapi"] ?? null) === "3.1.0"
+    && isset($decodedSpec["paths"]["/api/health"], $decodedSpec["paths"]["/api/listings"], $decodedSpec["paths"]["/api/products"]),
+    "OpenAPI spec endpoint must return a valid OpenAPI 3.1.0 JSON document."
+);
+$swaggerDoc = (new \ChambreRose\OpenApiRoutes())->handle(new Request("GET", "/api/docs", [], []));
+$assert(
+    $swaggerDoc->status === 200
+    && str_contains((string) ($swaggerDoc->headers["Content-Type"] ?? ""), "text/html")
+    && str_contains((string) $swaggerDoc->body, "SwaggerUIBundle")
+    && str_contains((string) $swaggerDoc->body, "/api/openapi.json"),
+    "Swagger UI endpoint must serve the interactive REST documentation page."
+);
 fwrite(STDOUT, "OK - {$tests} assertions\n");

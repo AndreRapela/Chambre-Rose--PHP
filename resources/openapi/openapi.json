@@ -1,0 +1,819 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Chambre Rose REST API",
+    "version": "1.0.0",
+    "description": "RESTful API for the Chambre Rose marketplace, boutique commerce, private messaging, appointments, push notifications, and administration.",
+    "contact": {
+      "name": "Chambre Rose Support",
+      "email": "support@chambre-rose.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8088",
+      "description": "Direct API Server (Port 8088)"
+    },
+    {
+      "url": "http://localhost:4200",
+      "description": "Frontend Reverse Proxy (Port 4200)"
+    }
+  ],
+  "tags": [
+    { "name": "System", "description": "Health check, brand assets, and SEO sitemap" },
+    { "name": "Authentication", "description": "Login, registration, session profile, locale, and password recovery" },
+    { "name": "Listings & Profiles", "description": "Companion & boutique directory, profile details, gallery media, and reviews" },
+    { "name": "Card Covers", "description": "Custom profile card cover cropping and responsive WebP delivery" },
+    { "name": "Favorites", "description": "Member favorite profile management" },
+    { "name": "Products", "description": "Boutique product catalog, images, purchases, and store management" },
+    { "name": "Promotions", "description": "Homepage & catalog promotional banners" },
+    { "name": "Messaging", "description": "Private conversations, messages, user blocking, and reporting" },
+    { "name": "Support", "description": "Member and visitor support inquiries" },
+    { "name": "Calendar", "description": "Companion & professional appointment scheduling" },
+    { "name": "Notifications", "description": "Account notifications, preferences, Web Push, and native push devices" },
+    { "name": "Locations", "description": "Address and locality autocomplete search" },
+    { "name": "Administration", "description": "User moderation, VIP activation, identity/company verification, and report handling" },
+    { "name": "Realtime", "description": "Server-Sent Events (SSE) stream for live notifications and messages" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT token returned by POST /api/auth/login or stored in session."
+      },
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "CR_SESSION",
+        "description": "HTTP-only session cookie issued on login."
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "timestamp": { "type": "string", "format": "date-time" },
+          "status": { "type": "integer", "example": 400 },
+          "error": { "type": "string", "example": "Bad Request" },
+          "message": { "type": "string" },
+          "path": { "type": "string" },
+          "fields": { "type": "object", "additionalProperties": { "type": "string" } }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["email", "password"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "example": "admin@admin.com" },
+          "password": { "type": "string", "example": "ChambreRose2026!Admin" }
+        }
+      },
+      "UserSummary": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "example": 1 },
+          "email": { "type": "string", "format": "email" },
+          "firstName": { "type": "string" },
+          "lastName": { "type": "string" },
+          "role": { "type": "string", "enum": ["VISITOR", "ESCORT", "STORE", "ADMIN"] },
+          "approvalStatus": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] },
+          "vipActive": { "type": "boolean" },
+          "locale": { "type": "string", "example": "fr" }
+        }
+      },
+      "ListingItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "userId": { "type": "integer" },
+          "type": { "type": "string", "enum": ["ESCORT", "STORE"] },
+          "displayName": { "type": "string" },
+          "location": { "type": "string" },
+          "locationCity": { "type": "string" },
+          "locationRegion": { "type": "string" },
+          "locationCountry": { "type": "string" },
+          "bio": { "type": "string" },
+          "verified": { "type": "boolean" },
+          "vip": { "type": "boolean" },
+          "purchaseCount": { "type": "integer" },
+          "viewsCount": { "type": "integer" }
+        }
+      },
+      "ProductItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "storeUserId": { "type": "integer" },
+          "name": { "type": "string" },
+          "category": { "type": "string" },
+          "price": { "type": "number" },
+          "originalPrice": { "type": "number", "nullable": true },
+          "imageUrl": { "type": "string" },
+          "secondaryImageUrl": { "type": "string", "nullable": true },
+          "tag": { "type": "string", "nullable": true },
+          "saleLabel": { "type": "string", "nullable": true },
+          "purchaseCount": { "type": "integer" },
+          "description": { "type": "string" },
+          "storeName": { "type": "string" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Service health check",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "UP" },
+                    "timestamp": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/brand/logo": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Retrieve official Chambre Rose brand logo (WebP or PNG)",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["webp", "png"] },
+            "description": "Pass 'png' for email-compatible PNG; defaults to WebP."
+          }
+        ],
+        "responses": {
+          "200": { "description": "Binary logo image" }
+        }
+      }
+    },
+    "/api/seo/sitemap.xml": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Dynamic XML sitemap of approved profiles and products",
+        "responses": {
+          "200": { "description": "XML Sitemap" }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Authenticate user and issue JWT + HTTP-only session cookie",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated user profile and session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": { "type": "string" },
+                    "user": { "$ref": "#/components/schemas/UserSummary" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Invalid credentials" },
+          "429": { "description": "Rate limit exceeded" }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Clear active authentication session cookie",
+        "responses": {
+          "204": { "description": "Logged out" }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": ["Authentication"],
+        "summary": "Get current authenticated user and profile",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Current user payload" },
+          "401": { "description": "Unauthenticated" }
+        }
+      },
+      "put": {
+        "tags": ["Authentication"],
+        "summary": "Update current user personal details or password",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Updated user payload" }
+        }
+      },
+      "delete": {
+        "tags": ["Authentication"],
+        "summary": "Delete current user account",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "204": { "description": "Account removed" }
+        }
+      }
+    },
+    "/api/auth/check-registration-email": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Validate email syntax for registration preflight",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "email": { "type": "string", "format": "email" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Validation result" }
+        }
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Register a new Visitor, Companion (ESCORT), or Boutique (STORE) account",
+        "responses": {
+          "201": { "description": "Account created" },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/api/auth/forgot-password": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Request a 6-digit password recovery code by email",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "email": { "type": "string", "format": "email" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Recovery challenge initiated" }
+        }
+      }
+    },
+    "/api/auth/verify-reset-code": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Verify a 6-digit password reset code",
+        "responses": {
+          "200": { "description": "Code verified" },
+          "400": { "description": "Invalid or expired code" }
+        }
+      }
+    },
+    "/api/auth/reset-password": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Set a new password using a verified recovery code",
+        "responses": {
+          "200": { "description": "Password updated" }
+        }
+      }
+    },
+    "/api/auth/locale": {
+      "patch": {
+        "tags": ["Authentication"],
+        "summary": "Update preferred interface and notification language",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Locale updated" }
+        }
+      }
+    },
+    "/api/auth/location": {
+      "patch": {
+        "tags": ["Authentication"],
+        "summary": "Record member browsing location preference",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Location updated" }
+        }
+      }
+    },
+    "/api/listings": {
+      "get": {
+        "tags": ["Listings & Profiles"],
+        "summary": "Search and paginate approved companion and boutique listings",
+        "parameters": [
+          { "name": "type", "in": "query", "schema": { "type": "string", "enum": ["ESCORT", "STORE"] } },
+          { "name": "q", "in": "query", "schema": { "type": "string" }, "description": "Keyword search" },
+          { "name": "city", "in": "query", "schema": { "type": "string" } },
+          { "name": "country", "in": "query", "schema": { "type": "string" } },
+          { "name": "gender", "in": "query", "schema": { "type": "string", "enum": ["WOMAN", "MAN", "TRANS"] } },
+          { "name": "nearCity", "in": "query", "schema": { "type": "string" } },
+          { "name": "nearRegion", "in": "query", "schema": { "type": "string" } },
+          { "name": "nearCountry", "in": "query", "schema": { "type": "string" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "pageSize", "in": "query", "schema": { "type": "integer", "default": 20 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated listing results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": { "type": "array", "items": { "$ref": "#/components/schemas/ListingItem" } },
+                    "page": { "type": "integer" },
+                    "pageSize": { "type": "integer" },
+                    "total": { "type": "integer" },
+                    "totalPages": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Listings & Profiles"],
+        "summary": "Create or update professional listing",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Updated listing" }
+        }
+      }
+    },
+    "/api/listings/{id}": {
+      "get": {
+        "tags": ["Listings & Profiles"],
+        "summary": "Get full public profile details by user ID",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Listing details" },
+          "404": { "description": "Listing not found" }
+        }
+      }
+    },
+    "/api/listings/{id}/gallery": {
+      "get": {
+        "tags": ["Listings & Profiles"],
+        "summary": "Get paginated profile media gallery",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "pageSize", "in": "query", "schema": { "type": "integer", "default": 12 } }
+        ],
+        "responses": {
+          "200": { "description": "Gallery media items" }
+        }
+      }
+    },
+    "/api/listings/{id}/contact": {
+      "get": {
+        "tags": ["Listings & Profiles"],
+        "summary": "Get companion or boutique contact details",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Contact information" }
+        }
+      }
+    },
+    "/api/listings/{id}/purchases": {
+      "post": {
+        "tags": ["Listings & Profiles"],
+        "summary": "Register a VIP companion selection",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Selection recorded" }
+        }
+      }
+    },
+    "/api/listings/{id}/reviews": {
+      "post": {
+        "tags": ["Listings & Profiles"],
+        "summary": "Submit a review for a selected companion profile",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "201": { "description": "Review published" }
+        }
+      }
+    },
+    "/api/profiles/me": {
+      "get": {
+        "tags": ["Listings & Profiles"],
+        "summary": "Get authenticated professional's own profile",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Professional profile" }
+        }
+      },
+      "put": {
+        "tags": ["Listings & Profiles"],
+        "summary": "Update authenticated professional's own profile",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Updated profile" }
+        }
+      }
+    },
+    "/api/profiles/me/media": {
+      "post": {
+        "tags": ["Listings & Profiles"],
+        "summary": "Upload photo or video to professional gallery",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "201": { "description": "Media uploaded" }
+        }
+      }
+    },
+    "/api/profiles/me/card-cover": {
+      "put": {
+        "tags": ["Card Covers"],
+        "summary": "Upload or update custom cropped profile card cover",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Card cover saved" }
+        }
+      },
+      "delete": {
+        "tags": ["Card Covers"],
+        "summary": "Reset custom profile card cover to default portrait",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Card cover reset" }
+        }
+      }
+    },
+    "/api/favorites": {
+      "get": {
+        "tags": ["Favorites"],
+        "summary": "List current user's favorite profiles",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Favorite listings" }
+        }
+      }
+    },
+    "/api/favorites/{profileId}": {
+      "post": {
+        "tags": ["Favorites"],
+        "summary": "Add a profile to favorites",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "profileId", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Added to favorites" }
+        }
+      },
+      "delete": {
+        "tags": ["Favorites"],
+        "summary": "Remove a profile from favorites",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "profileId", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Removed from favorites" }
+        }
+      }
+    },
+    "/api/products": {
+      "get": {
+        "tags": ["Products"],
+        "summary": "Search and paginate boutique products",
+        "parameters": [
+          { "name": "category", "in": "query", "schema": { "type": "string" } },
+          { "name": "q", "in": "query", "schema": { "type": "string" } },
+          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["popular", "price-asc", "price-desc", "newest"] } },
+          { "name": "storeUserId", "in": "query", "schema": { "type": "integer" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "pageSize", "in": "query", "schema": { "type": "integer", "default": 20 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated product catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": { "type": "array", "items": { "$ref": "#/components/schemas/ProductItem" } },
+                    "page": { "type": "integer" },
+                    "pageSize": { "type": "integer" },
+                    "total": { "type": "integer" },
+                    "totalPages": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Products"],
+        "summary": "Create a new boutique product",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "201": { "description": "Product created" }
+        }
+      }
+    },
+    "/api/products/{id}": {
+      "get": {
+        "tags": ["Products"],
+        "summary": "Get product details and reviews",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Product detail" },
+          "404": { "description": "Product not found" }
+        }
+      },
+      "put": {
+        "tags": ["Products"],
+        "summary": "Update an existing boutique product",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Product updated" }
+        }
+      },
+      "delete": {
+        "tags": ["Products"],
+        "summary": "Delete a boutique product",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "204": { "description": "Product deleted" }
+        }
+      }
+    },
+    "/api/products/{id}/purchases": {
+      "post": {
+        "tags": ["Products"],
+        "summary": "Purchase a boutique product and increment store star count",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Purchase registered" }
+        }
+      }
+    },
+    "/api/promotions": {
+      "get": {
+        "tags": ["Promotions"],
+        "summary": "List active promotional banners",
+        "responses": {
+          "200": { "description": "Promotional slots" }
+        }
+      }
+    },
+    "/api/admin/promotions/{slot}": {
+      "put": {
+        "tags": ["Promotions"],
+        "summary": "Update promotional banner slot (1 or 2)",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "slot", "in": "path", "required": true, "schema": { "type": "integer", "enum": [1, 2] } }
+        ],
+        "responses": {
+          "200": { "description": "Promotion updated" }
+        }
+      }
+    },
+    "/api/conversations": {
+      "get": {
+        "tags": ["Messaging"],
+        "summary": "List user's private conversations",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Conversation list" }
+        }
+      },
+      "post": {
+        "tags": ["Messaging"],
+        "summary": "Start or retrieve a conversation with a member",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "201": { "description": "Conversation created or opened" }
+        }
+      }
+    },
+    "/api/conversations/{id}/messages": {
+      "get": {
+        "tags": ["Messaging"],
+        "summary": "List messages in a conversation",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Message page" }
+        }
+      },
+      "post": {
+        "tags": ["Messaging"],
+        "summary": "Send a message in a conversation",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "201": { "description": "Message sent" }
+        }
+      }
+    },
+    "/api/support/messages": {
+      "post": {
+        "tags": ["Support"],
+        "summary": "Send a support message to the Chambre Rose administration team",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "201": { "description": "Support ticket message created" }
+        }
+      }
+    },
+    "/api/calendar/appointments": {
+      "get": {
+        "tags": ["Calendar"],
+        "summary": "List appointments for the authenticated professional",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Appointment list" }
+        }
+      },
+      "post": {
+        "tags": ["Calendar"],
+        "summary": "Create a new calendar appointment",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "201": { "description": "Appointment created" }
+        }
+      }
+    },
+    "/api/notifications": {
+      "get": {
+        "tags": ["Notifications"],
+        "summary": "List in-app notifications for the current user",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Notifications list and unread count" }
+        }
+      }
+    },
+    "/api/notification-preferences": {
+      "get": {
+        "tags": ["Notifications"],
+        "summary": "Get notification and quiet-hours preferences",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Preferences object" }
+        }
+      },
+      "put": {
+        "tags": ["Notifications"],
+        "summary": "Update notification and quiet-hours preferences",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Updated preferences" }
+        }
+      }
+    },
+    "/api/locations/search": {
+      "post": {
+        "tags": ["Locations"],
+        "summary": "Autocomplete street address and locality search",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                  "query": { "type": "string", "example": "Rue de Rivoli, Paris" },
+                  "country": { "type": "string", "example": "France" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Normalized address suggestions" }
+        }
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "tags": ["Administration"],
+        "summary": "Paginate and filter accounts for administrator review",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] } },
+          { "name": "role", "in": "query", "schema": { "type": "string", "enum": ["VISITOR", "ESCORT", "STORE", "ADMIN"] } },
+          { "name": "q", "in": "query", "schema": { "type": "string" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "pageSize", "in": "query", "schema": { "type": "integer", "default": 20 } }
+        ],
+        "responses": {
+          "200": { "description": "Paginated user accounts" }
+        }
+      }
+    },
+    "/api/admin/users/{id}/approval": {
+      "patch": {
+        "tags": ["Administration"],
+        "summary": "Approve or reject a professional account",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Updated approval status" }
+        }
+      }
+    },
+    "/api/admin/users/{id}/vip": {
+      "patch": {
+        "tags": ["Administration"],
+        "summary": "Toggle VIP membership status for a user",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Updated VIP status" }
+        }
+      }
+    },
+    "/api/admin/reports": {
+      "get": {
+        "tags": ["Administration"],
+        "summary": "List user moderation reports",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Moderation reports" }
+        }
+      }
+    },
+    "/api/events": {
+      "get": {
+        "tags": ["Realtime"],
+        "summary": "Server-Sent Events (SSE) stream for live notifications and messages",
+        "security": [{ "bearerAuth": [] }, { "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "text/event-stream realtime feed" }
+        }
+      }
+    }
+  }
+}
+
